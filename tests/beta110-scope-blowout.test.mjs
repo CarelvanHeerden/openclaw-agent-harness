@@ -421,7 +421,7 @@ test("beta110: commit() excludes BEFORE it stages", () => {
 });
 
 test("beta110: the blowout is not swallowed at the call site", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("const scopeFindings = await this.runFinalScopeCheck");
   assert.ok(i > 0);
   // No try/catch wrapping the call itself -- it must propagate to loop.failed.

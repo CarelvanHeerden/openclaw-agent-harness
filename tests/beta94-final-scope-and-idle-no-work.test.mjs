@@ -501,7 +501,7 @@ test("beta94 F1: source wiring — lead exports the elision, loop imports + audi
   assert.match(lead, /export function isElidableFinalScopeSubTask/);
   assert.match(lead, /export function elideFinalScopeSubTask/);
   assert.match(lead, /scope\|boundar\|final/);
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /import \{[^}]*elideFinalScopeSubTask[^}]*\} from ".\/lead.js"/);
   assert.match(loop, /loop\.final_verify_subtask_elided/);
   assert.match(loop, /runFinalScopeCheck/);
@@ -511,7 +511,7 @@ test("beta94 F1: source wiring — lead exports the elision, loop imports + audi
 });
 
 test("beta94 F2: source wiring — idle-no-work event, threshold config, abort via WorkerTimeoutError", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /loop\.worker_idle_no_work/);
   assert.match(loop, /handleWorkerIdleNoWork/);
   assert.match(loop, /worker_idle_consecutive_slow/);

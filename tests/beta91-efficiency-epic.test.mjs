@@ -219,7 +219,7 @@ test("NIT-5: generalise/extract-prop cues classify mechanical when no non-mechan
 });
 
 test("NIT-6: loop.revise_scope_skipped audit carries unfiledFindingCount", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /loop\.revise_scope_skipped/);
   assert.match(loop, /unfiledFindingCount/);
 });
@@ -249,7 +249,7 @@ test("Fix3: selectWorkerModel returns mechanical model only when mechanical + co
 // ---------------------------------------------------------------------------
 
 test("wiring: loop.ts imports and uses the surviving modules", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /from "\.\/revise-scope\.js"/);
   assert.match(loop, /from "\.\/worker-model-select\.js"/);
   // Fix 1: computes scope on a revise cycle, gated on revise_scoping_enabled, and skips per sub-task
@@ -302,7 +302,7 @@ test("wiring: config + manifest declare all new keys with conservative defaults"
 });
 
 test("F4: CI grace-window wired in loop + config + manifest", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   // grace-poll on none when a workflow was authored this session
   assert.match(loop, /workflowAuthoredThisSession/);
   assert.match(loop, /none_grace_seconds/);

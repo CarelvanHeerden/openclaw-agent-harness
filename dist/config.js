@@ -8,6 +8,11 @@
  */
 // ---- Defaults ----
 const DEFAULTS = {
+    control: {
+        lease_ttl_ms: 120_000,
+        authority_ttl_seconds: 7_200,
+        readiness_timeout_seconds: 1_800,
+    },
     slack: {
         channel: "",
         authorised_users: [],

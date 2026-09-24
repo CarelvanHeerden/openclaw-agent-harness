@@ -426,7 +426,7 @@ test("rc4: no timeout, however classified, can produce a passing verdict", skip,
 test("rc4: a timed-out adversary reaches the loop as a review crash, which fails closed", skip, () => {
   // The ladder throws; the loop's review-crash path preserves the worktree and
   // refuses the push. This asserts the two ends still meet.
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /loop\.review_failed/, "a throwing review is audited as a failure");
   const salvage = loop.slice(loop.indexOf("private refuseUnreviewedSalvage"));
   assert.match(salvage.slice(0, 600), /no adversary review has ever run/,

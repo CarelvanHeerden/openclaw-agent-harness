@@ -200,7 +200,7 @@ test("rc.9: every attempt's denials are audited, not just the first", async () =
   // retry as well as after the first turn. At rc.8 it ran once, before the
   // retry loop, so attempt 2's denial left no row.
   const { readFileSync } = await import("node:fs");
-  const text = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const text = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const calls = [...text.matchAll(/this\.auditDeniedToolCalls\(\{/g)];
   assert.ok(calls.length >= 3, `expected the auditor at the first turn and both retry sites, saw ${calls.length}`);
   assert.match(text, /attempt: protocolRetries \+ 1/);

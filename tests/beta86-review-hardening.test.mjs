@@ -31,7 +31,7 @@ test("beta.86: version bumped to >= beta.86 in package.json + version.ts", () =>
 });
 
 test("beta.86 #1: empty targetedFiles keeps STRICT (relaxation gated on non-empty set)", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   // The relaxation loop must be gated on targetedFiles.length > 0.
   assert.ok(
     // beta.88: the gate tightened from `targetedFiles.length > 0` to
@@ -53,7 +53,7 @@ test("beta.86 #1: empty targetedFiles keeps STRICT (relaxation gated on non-empt
 });
 
 test("beta.86 #1(a): revise_contract_relaxed audit + log echo the targeted set", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   // both the audit and the interaction log carry targetedFiles for post-mortems.
   assert.ok(/revise_contract_relaxed[\s\S]{0,200}targetedFiles/.test(src), "audit echoes targetedFiles");
   assert.ok(/event: "revise_contract_relaxed"[\s\S]{0,160}targetedFiles/.test(src), "interaction log echoes targetedFiles");

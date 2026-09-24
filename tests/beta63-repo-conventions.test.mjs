@@ -206,7 +206,7 @@ test("beta63: brief + verify blocks declared in manifest configSchema (additiona
 });
 
 test("beta63: loop ingests conventions at plan-ready + runs final-verify checks + emits findings (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /ingestRepoConventions\(plan\.worktreePath/);
   assert.match(src, /loop\.repo_conventions_ingested/);
   assert.match(src, /runFinalVerifyChecks\(sessionId, plan, cycle\)/);

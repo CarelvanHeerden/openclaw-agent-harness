@@ -374,7 +374,7 @@ test("the loop still works off the bare ciCombinedStatus dep when ciSnapshot is 
 // ---------------------------------------------------------------------------
 
 test("an indeterminate CI overrides the merge recommendation to needs_human_review", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf('ci.outcome === "indeterminate"');
   assert.ok(i > 0, "the finalize path must handle the indeterminate outcome");
   const block = src.slice(i, i + 900);

@@ -230,7 +230,7 @@ test("beta63: harness_logs tool declared in manifest contracts.tools + registrat
 });
 
 test("beta63: loop threads interactionLog into SDK call boundaries (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /interactionLog\?: InteractionLog/);
   assert.match(src, /logSdkRequest\(sessionId, \{\s*\n\s*role: "lead"/);
   assert.match(src, /logSdkResponse\(sessionId, \{\s*\n\s*role: "worker"/);

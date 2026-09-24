@@ -220,7 +220,7 @@ test("P0-5: worker no longer verifies (loop is the single verification site)", (
 });
 
 test("P0-5: loop still verifies every sub-task via inferVerifyContract (beta.67: now threads effectiveTaskMode)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // beta.67 (Bug C): the call now passes the EFFECTIVE task-mode as a second
   // arg so a revise-no-change mutate sub-task drops commit_made/file_committed.
   // beta.76 renamed `const contract` -> `const rawContract` (re-derivation maps

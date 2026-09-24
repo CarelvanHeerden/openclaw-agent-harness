@@ -239,7 +239,7 @@ test("beta69 (F4): worktree bootstrap re-installs when a declared check-script b
 });
 
 test("beta69 (F5): loop discards a post-cancel adversary review + audits converged_on_green (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /"loop\.review_discarded_post_cancel"/);
   assert.match(src, /postReviewReactions\.abort/);
   assert.match(src, /"loop\.converged_on_green"/);

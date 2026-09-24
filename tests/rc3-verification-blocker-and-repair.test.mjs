@@ -141,7 +141,7 @@ test("25: the ship note tells a human what would clear the blocker", skipDist, a
   assert.match(note, /Action required:/);
   // And the loop actually appends it, or the operator reads "do not merge: the
   // typecheck could not run" with nothing to act on but the log.
-  assert.match(S("src/orchestrator/loop.ts"), /describeVerificationBlocker\(f, b\)/);
+  assert.match(S("src/orchestrator/legacy-loop.ts"), /describeVerificationBlocker\(f, b\)/);
 });
 
 test("25: do_not_merge survives while the automated loop stops", skipDist, async () => {

@@ -14,6 +14,7 @@ import type { GeneratorMapping } from "./orchestrator/generated-artifacts.js";
 export type { GeneratorMapping };
 
 export interface HarnessConfig {
+  control: ControlConfig;
   slack: SlackConfig;
   budgets: BudgetsConfig;
   repos: ReposConfig;
@@ -61,6 +62,15 @@ export interface HarnessConfig {
    * fallback to them, by design (see adapters/credential-vault.ts).
    */
   credentials: CredentialsConfig;
+}
+
+export interface ControlConfig {
+  /** Durable executor lease; every state write must carry its fence. */
+  lease_ttl_ms: number;
+  /** Confirmation authority validity window. */
+  authority_ttl_seconds: number;
+  /** Exact-head CI must reach a determinate result inside this window. */
+  readiness_timeout_seconds: number;
 }
 
 export interface LoggingConfig {
@@ -1705,6 +1715,11 @@ export interface PatAuthConfig {
 // ---- Defaults ----
 
 const DEFAULTS: HarnessConfig = {
+  control: {
+    lease_ttl_ms: 120_000,
+    authority_ttl_seconds: 7_200,
+    readiness_timeout_seconds: 1_800,
+  },
   slack: {
     channel: "",
     authorised_users: [],

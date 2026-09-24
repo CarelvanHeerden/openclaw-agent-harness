@@ -176,7 +176,7 @@ test("beta73 fix2: git adapter exposes remoteBranchExistsByUrl (worktree-free ch
 // ---------------------------------------------------------------------------
 
 test("beta73 fix3: finaliseFailed audits its reason (loop.failed) — no more silent fails", () => {
-  const src = readFileSync(join(root, "src/orchestrator/loop.ts"), "utf8");
+  const src = readFileSync(join(root, "src/orchestrator/legacy-loop.ts"), "utf8");
   const idx = src.indexOf("private async finaliseFailed(");
   assert.ok(idx > 0, "finaliseFailed exists");
   const body = src.slice(idx, idx + 2400);
@@ -185,7 +185,7 @@ test("beta73 fix3: finaliseFailed audits its reason (loop.failed) — no more si
 });
 
 test("beta73 fix3: main PR-open path emits pr_open_started + pr_open_failed", () => {
-  const src = readFileSync(join(root, "src/orchestrator/loop.ts"), "utf8");
+  const src = readFileSync(join(root, "src/orchestrator/legacy-loop.ts"), "utf8");
   assert.match(src, /audit\(\s*["']loop\.pr_open_started["']/, "pr_open_started emitted");
   assert.match(src, /audit\(\s*["']loop\.pr_open_failed["']/, "pr_open_failed emitted");
   // pr_open_failed must carry the underlying error

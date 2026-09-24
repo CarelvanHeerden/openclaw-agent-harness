@@ -41,6 +41,8 @@ export interface WorktreeHealDeps {
      * should pass whatever it can resolve).
      */
     protectedWorktreePaths?: string[];
+    /** Worktrees owned by durable control runs in autonomous execution. */
+    protectedAutonomousWorktreePaths?: string[];
     /**
      * beta.45: return the last-modified time (ms) of a worktree dir, or null if
      * it can't be stat'd. Used to protect just-allocated `pending-<ts>` dirs

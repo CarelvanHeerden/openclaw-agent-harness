@@ -263,7 +263,7 @@ test("rc5: convention guidance no longer defers regeneration to a phase that doe
 });
 
 test("beta70 F2: loop convention-fold only force-revises on a BLOCKING finding", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // rc.5: `blocksMerge` joined the import when the merge gate stopped reading
   // raw severity. The claim here is only that the cycling decision still reads
   // the classifier, so match the two names it needs rather than the whole line.
@@ -280,14 +280,14 @@ test("beta70 F3: runAdversary wires the format-error retry", () => {
 });
 
 test("beta70 F4: loop threads heapRetryMb + treats persisted OOM as blocking finding", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /heapRetryMb: vcfg\.check_script_heap_retry_mb \?\? 8192/);
   assert.match(src, /if \(r\.oom\)/);
   assert.match(src, /loop\.convention_check_oom/);
 });
 
 test("beta70 F5: loop skips observe re-probe on revise only when reviseSpecApplied", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /st\.taskMode === "observe" &&\s*\n\s*reviseSpecApplied &&/);
   assert.match(src, /priorObserveCompleted\(sessionId, cycle, st\.seq\)/);
   assert.match(src, /loop\.observe_reprobe_skipped/);

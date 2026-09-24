@@ -174,7 +174,7 @@ test("beta.92: confab detector is a no-op with no required paths (empty contract
 // ---- loop / config / manifest wiring source-asserts -----------------------
 
 test("beta.92: loop deletes the LLM revise-spec turn and wires deterministic mapping", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /mapFindingsToSubTasks/);
   assert.match(src, /buildScopedReviseHint/);
   assert.match(src, /reviseSpecApplied = reviseMapping\.anyTargeted/);

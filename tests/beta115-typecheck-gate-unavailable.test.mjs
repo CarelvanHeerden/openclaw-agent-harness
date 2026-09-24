@@ -237,7 +237,7 @@ test("beta115: an unavailable gate blocks the merge but does not drive revise cy
 
   // The marker is what the loop actually emits, not just what this test passes.
   const { readFileSync } = await import("node:fs");
-  const loopSrc = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loopSrc = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const emitted = loopSrc.slice(loopSrc.indexOf("Typecheck gate could not run"));
   assert.match(emitted.slice(0, 1200), /source: "harness_env"/);
   assert.equal(isBlockingFinding(f, cls), false, "a worker cannot fix a missing binary, so this must not cycle");
@@ -249,7 +249,7 @@ test("beta115: an unavailable gate blocks the merge but does not drive revise cy
 
 test("beta115: the gate's own source keeps the unavailable path loud", async () => {
   const { readFileSync } = await import("node:fs");
-  const src = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const gate = src.slice(src.indexOf("private async runTypecheckGate"));
   const body = gate.slice(0, gate.indexOf("\n  private ", 10));
   assert.match(body, /typecheck_gate_unavailable/, "the no-route case must be its own audit event, not a generic skip");

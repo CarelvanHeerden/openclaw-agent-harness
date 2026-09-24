@@ -340,7 +340,7 @@ test("beta104: a per-allocation bootstrapDeps overrides the adapter default", { 
 });
 
 test("beta104: the loop audits whether the lead actually saw the repo", { skip }, () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /"loop\.lead_scout"/,
     "b102 could not tell a delivered dispatch hint from a dropped one; the scout must not repeat that");
   assert.match(src, /skippedReason: plan\.scout\.skippedReason/);

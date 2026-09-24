@@ -602,7 +602,7 @@ test("rc.9: `last_completed_sub_task` is only written after verification passes"
   // `failed_verification`, `commit_sha: null` -- the documentation edit the
   // guard blocked. It got there because the only writer ran BEFORE verification
   // had an opinion.
-  const src = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
 
   // The write is now conditional on the caller declaring a completion.
   assert.match(
@@ -646,7 +646,7 @@ test("rc.9: a failed_verification sub-task is never counted as done", { skip }, 
 });
 
 test("rc.9: progress reports storage state, and `unknown` is its default", { skip }, () => {
-  const src = readFileSync(new URL("../src/orchestrator/progress.ts", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/orchestrator/legacy-progress.ts", import.meta.url), "utf8");
   assert.match(src, /storage_state, storage_reason, storage_checked_at/, "the snapshot must read the columns");
   assert.match(src, /state: "unknown", reason: null, checkedAt: null, durableCheckpoint: null/,
     "an unread session defaults to unknown, not to healthy");

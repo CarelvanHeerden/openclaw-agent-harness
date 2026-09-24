@@ -22,8 +22,16 @@ export interface RuntimeLike {
     };
     [key: string]: unknown;
 }
+export interface RuntimeHandle {
+    readonly runtime: RuntimeLike;
+    readonly generation: number;
+}
 /** Publish the live runtime generation. Called on every (re-)register. */
 export declare function setCurrentRuntime(rt: RuntimeLike | null): void;
 /** Resolve the live runtime generation, or null before first register. */
 export declare function getCurrentRuntime(): RuntimeLike | null;
+/** Capture a fenced handle. A caller must revalidate it before every write. */
+export declare function getCurrentRuntimeHandle(): RuntimeHandle | null;
+export declare function isCurrentRuntimeHandle(handle: RuntimeHandle): boolean;
+export declare function assertCurrentRuntimeHandle(handle: RuntimeHandle): RuntimeLike;
 //# sourceMappingURL=runtime-registry.d.ts.map

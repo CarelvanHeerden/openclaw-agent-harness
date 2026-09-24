@@ -96,7 +96,7 @@ test("beta64/P1-6: a running sub-task that has ALREADY billed (cost>0) is NOT fl
 
 // ---- source-assertions ----
 test("beta64/P1-5+6: progress snapshot exposes msSinceLastSdkActivity + costZeroStallSuspected (source)", () => {
-  const prog = S("src/orchestrator/progress.ts");
+  const prog = S("src/orchestrator/legacy-progress.ts");
   assert.match(prog, /msSinceLastSdkActivity: number \| null/);
   assert.match(prog, /costZeroStallSuspected: boolean/);
   assert.match(prog, /SDK_ACTIVITY_EVENTS/);

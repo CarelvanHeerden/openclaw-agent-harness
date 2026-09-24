@@ -195,7 +195,7 @@ test("budget headroom is measured from this run's own per-cycle spend", async ()
   assert.equal(projectCycleCostUsd(0, 3), 0, "nothing measured is not the same as free");
   assert.equal(projectCycleCostUsd(10, 0), 0, "no cycles is not the same as free");
 
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private hardCapsAllow");
   assert.ok(i > 0, "the operator caps must live in one named place");
   const body = src.slice(i, src.indexOf("private hasBudgetHeadroomForAnotherCycle", i));
@@ -253,7 +253,7 @@ test("the preserved-work message names the branch, the worktree and the command"
 });
 
 test("the PR-open failure path preserves the worktree instead of releasing it", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf('"loop.pr_open_failed"');
   assert.ok(i > 0);
   // The catch block must end in the PRESERVING finaliser, not the releasing one.
@@ -310,7 +310,7 @@ test("the missing-scope message offers the web-editor route the operator used", 
 });
 
 test("the pre-check runs before any sub-task and only a definite false stops the run", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const check = src.indexOf("loop.workflow_scope_precheck");
   const firstCycle = src.indexOf("let cycle = 0;");
   assert.ok(check > 0 && firstCycle > check, "the check must precede the execute loop");

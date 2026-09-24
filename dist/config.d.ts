@@ -9,6 +9,7 @@
 import type { GeneratorMapping } from "./orchestrator/generated-artifacts.js";
 export type { GeneratorMapping };
 export interface HarnessConfig {
+    control: ControlConfig;
     slack: SlackConfig;
     budgets: BudgetsConfig;
     repos: ReposConfig;
@@ -56,6 +57,14 @@ export interface HarnessConfig {
      * fallback to them, by design (see adapters/credential-vault.ts).
      */
     credentials: CredentialsConfig;
+}
+export interface ControlConfig {
+    /** Durable executor lease; every state write must carry its fence. */
+    lease_ttl_ms: number;
+    /** Confirmation authority validity window. */
+    authority_ttl_seconds: number;
+    /** Exact-head CI must reach a determinate result inside this window. */
+    readiness_timeout_seconds: number;
 }
 export interface LoggingConfig {
     level: "debug" | "info" | "warn" | "error";

@@ -80,7 +80,7 @@ test("pinnedSessionBranch overrides whatever the lead invented", () => {
 });
 
 test("the loop passes the branch it already recorded, not the one being planned", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /pinnedSessionBranch: \(row\.branch \?\? ""\)\.trim\(\) \|\| undefined/);
   // The read has to come from the sessions row. Taking it from the new plan
   // would be circular -- the plan is the thing that renamed it.
@@ -128,7 +128,7 @@ test("recovery refuses a SHA this repo does not have, rather than dying", () => 
 });
 
 test("the ledger tip is read from the same source the reachability guard uses", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /lastLedgerCommitSha\(sessionId: string\)/);
   assert.match(src, /private readLedgerCommits\(sessionId: string\)/);
   // Two readers of "this session's commits" that could disagree would mean the
@@ -186,7 +186,7 @@ test("a sibling with a longer name is never mistaken for a file inside a directo
 });
 
 test("the loop tries the directory rescue and audits which kind fired", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const chain = src.indexOf("proposeBasenameRescue({ expected, actual, repoDirs");
   assert.ok(chain > 0, "the basename rescue is still tried");
   assert.match(
@@ -369,7 +369,7 @@ test("a ten-sub-task plan reads 1/10 on its first sub-task, not 1/1", async () =
 });
 
 test("a revise cycle still counts rows, and the plan can never shrink the count", () => {
-  const src = S("src/orchestrator/progress.ts");
+  const src = S("src/orchestrator/legacy-progress.ts");
   const i = src.indexOf("let plannedTotal = 0;");
   assert.ok(i > 0);
   const window = src.slice(i, i + 1400);

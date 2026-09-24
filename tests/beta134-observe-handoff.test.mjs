@@ -202,7 +202,7 @@ test("beta134: 'do NOT re-explore' now has an escape hatch", { skip }, () => {
 
 // ---- source assertions: the loop wiring ----
 test("beta134: the loop records probe reports and hands them down", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /recordObserveReport/);
   assert.match(src, /withObserveReports/);
   assert.match(src, /loop\.observe_report_recorded/);
@@ -214,12 +214,12 @@ test("beta134: the loop records probe reports and hands them down", () => {
 
 test("beta134: the overlay is a copy — the stored plan never carries a report", () => {
   const src = S("src/orchestrator/observe-handoff.ts");
-  assert.doesNotMatch(S("src/orchestrator/loop.ts"), /st\.priorObserveReports\s*=/);
-  assert.match(S("src/orchestrator/loop.ts"), /\{ \.\.\.st, priorObserveReports: reports \}/);
+  assert.doesNotMatch(S("src/orchestrator/legacy-loop.ts"), /st\.priorObserveReports\s*=/);
+  assert.match(S("src/orchestrator/legacy-loop.ts"), /\{ \.\.\.st, priorObserveReports: reports \}/);
   assert.match(src, /export interface ObserveReport/);
 });
 
 test("beta134: only a PASSED observe hands its report on", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /if \(st\.taskMode !== "observe"\) return;/);
 });

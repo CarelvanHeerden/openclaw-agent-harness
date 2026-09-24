@@ -567,7 +567,7 @@ test("rc6: an unresolvable inputs[] entry costs proof, not the whole mapping", (
 });
 
 test("rc5: the basename rescue cannot launder a missing generated artifact onto a sibling", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // The rescue exists for a lead that guessed a SOURCE file's location wrong.
   // A derived path is declared, not guessed, so rescuing it onto a
   // same-basename file the worker happened to touch would turn "the generator

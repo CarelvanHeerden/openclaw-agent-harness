@@ -1,0 +1,12998 @@
+/**
+ * Orchestrator loop.
+ *
+ * The core state machine. Given a session id (already row-inserted with a
+ * crystallised prompt + brief), it walks:
+ *
+ *   crystallising -> planning -> executing -> reviewing -> {done|revise}
+ *
+ * Up to `config.loop.max_cycles` cycles of executing+reviewing, plus any
+ * extension `advance()` grants for a converging finding trend (b119). Early
+ * exits:
+ *   - Adversary verdict "pass"
+ *   - User ship-it reaction
+ *   - User abort reaction
+ *   - Session budget breached
+ *   - Session hard timeout
+ *
+ * The loop is deliberately structured as pure decision helpers + an outer
+ * driver, so `advance()` can be unit-tested standalone.
+ *
+ * That split has a failure mode worth naming, because it cost b119 through
+ * b123: a decision helper can be provably correct and still have no effect,
+ * because the driver never acts on what it returned. Unit tests on the helper
+ * pass, a grep for the handler passes, and the feature is dead. Anything that
+ * changes what `advance()` returns needs a SCENARIO test that asserts the run
+ * behaved differently, not a unit test that asserts the decision differed.
+ */
+
+import type { HarnessConfig } from "../config.js";
+import type { BudgetEnforcer } from "../budgets/enforcer.js";
+import type { PatRouter } from "../auth/pat-router.js";
+import type { StateStore } from "../state/store.js";
+import type { CrystallisedBrief } from "../crystallise/prompt-refiner.js";
+import type { LeadPlan, LeadPlanSubTask, SubTaskVerify } from "./lead.js";
+import { elideFinalScopeSubTask, validatePlan } from "./lead.js";
+import type { ReviewReport, ReviewFinding, AdversaryRevisionContext } from "./adversary.js";
+import type { WorkerResult } from "./worker.js";
+import type { AcpTargetEvidence, GuardDenial } from "../safety/bash-guard.js";
+import {
+  buildPolicyDenialClarification,
+  classifyWorkerOutcome,
+  policyDenialFrom,
+  correctFalseUserRejection,
+  buildProtocolRetryHint,
+  describeContractForRetry,
+  observeReportIsNarration,
+  observeEvidenceVerdict,
+  buildObserveEvidenceHint,
+  buildClarificationResumeHint,
+  type WorkerOutcome,
+} from "./worker-outcome.js";
+import type { RuntimeSnapshot } from "../vercel/logs.js";
+import { estimateSubTaskCost } from "../adapters/claude-code.js";
+import { deriveMergeRecommendation } from "./merge-recommendation.js";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  activeDeadlineSnapshot,
+  closeActiveDeadline,
+  extendActiveDeadline,
+  pauseActiveDeadline,
+  resumeActiveDeadline,
+} from "./active-deadline.js";
+import {
+  applyObserveBindings,
+  loadBearingObserveContractErrors,
+  renderObserveContractInstructions,
+  taskHash as observeTaskHash,
+  validateObserveResult,
+  type ObserveValidation,
+} from "./observe-contract.js";
+
+class AccountingPersistenceError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, { cause });
+    this.name = "AccountingPersistenceError";
+  }
+}
+
+/**
+ * rc.2: may a session adopt the worktree its stored plan names?
+ *
+ * Returns a human-readable reason it may NOT, or `null` when every condition
+ * holds. Conditions, per the rc.2 rule that a worktree is reused only for an
+ * explicit continuation whose state has been verified:
+ *
+ *   - the plan names a worktree, and that directory still exists;
+ *   - it is still a git worktree (a directory left behind by a partial removal
+ *     is not one, and checking out into it fails obscurely later);
+ *   - the plan's repo and branch match what the SESSION recorded.
+ *
+ * The last is the ownership test. Worktree directories are named
+ * `pending-<timestamp>-<random>` and carry no session identity, so the path
+ * itself can never prove whose it is; the branch can. A terminal session's
+ * leftovers therefore cannot be inherited by a different run, because a new run
+ * records a different branch.
+ *
+ * Exported so the guard can be tested without standing up a loop.
+ */
+export function verifyContinuationWorktree(
+  plan: Pick<LeadPlan, "repo" | "branch" | "worktreePath">,
+  session: { sessionId: string; repo: string; branch: string },
+): string | null {
+  const wt = (plan.worktreePath ?? "").trim();
+  if (!wt) return "the stored plan names no worktree";
+  if (!existsSync(wt)) return `worktree ${wt} no longer exists`;
+  if (!existsSync(join(wt, ".git"))) return `${wt} is not a git worktree any more`;
+  const planRepo = (plan.repo ?? "").trim();
+  const planBranch = (plan.branch ?? "").trim();
+  if (session.repo && planRepo && planRepo !== session.repo) {
+    return `stored plan targets ${planRepo} but session ${session.sessionId} is on ${session.repo}`;
+  }
+  if (session.branch && planBranch && planBranch !== session.branch) {
+    return `stored plan targets branch ${planBranch} but session ${session.sessionId} is on ${session.branch}`;
+  }
+  return null;
+}
+import type { RoleName } from "../adapters/backend.js";
+
+/**
+ * beta.64 (P0-3): parse the file paths out of a `git diff --stat base..HEAD`
+ * output. Each stat line looks like ` path/to/file.ts | 12 ++--`. The trailing
+ * ` N files changed, ...` summary line is skipped. Pure/deterministic.
+ */
+export function parseDiffStatPaths(diffStat: string): string[] {
+  const out: string[] = [];
+  for (const raw of (diffStat ?? "").split("\n")) {
+    const line = raw.trim();
+    if (!line || !line.includes("|")) continue;
+    const path = line.split("|")[0]!.trim();
+    if (!path || /\bfiles?\s+changed\b/.test(path)) continue;
+    // Handle rename form `old => new` -> keep the new path.
+    const renamed = /=>\s*(.+?)\}?$/.exec(path);
+    out.push(renamed ? renamed[1]!.replace(/[{}]/g, "").trim() : path);
+  }
+  return out;
+}
+
+/**
+ * beta.64 (P0-3): collect the union of `filesLikelyTouched` across all of a
+ * plan's sub-tasks -- the "expected files" set for the best-effort clean-diff
+ * check. Pure/deterministic.
+ */
+export function collectExpectedFiles(plan: LeadPlan): string[] {
+  const set = new Set<string>();
+  for (const st of plan.subTasks ?? []) {
+    for (const f of st.filesLikelyTouched ?? []) if (f) set.add(f);
+  }
+  return [...set];
+}
+
+/**
+ * beta.94 (Feature 1b): the UNION of every sub-task's DECLARED file scope --
+ * the concrete file paths carried on each sub-task's verify probes
+ * (file_written / file_committed / file_pushed / file_in_pr) PLUS its
+ * `filesLikelyTouched`. This is the authoritative "in-scope" set the
+ * deterministic final-scope check compares committed files against. A committed
+ * file OUTSIDE this union is out-of-scope. Pure/deterministic.
+ */
+export function collectDeclaredScopeFiles(plan: LeadPlan): string[] {
+  const set = new Set<string>();
+  for (const f of plan.approvedRevisionScopeFiles ?? []) if (f) set.add(f);
+  for (const st of plan.subTasks ?? []) {
+    for (const f of st.filesLikelyTouched ?? []) if (f) set.add(f);
+    for (const v of st.verify ?? []) {
+      const p = (v as { path?: string }).path;
+      if (typeof p === "string" && p) set.add(p);
+    }
+  }
+  return [...set];
+}
+
+/**
+ * beta.113: the phase-2 (stream-open -> first-token) window for one attempt.
+ *
+ * Escalating, because the DR/BCP run proved a fixed one does not survive a slow
+ * start: sub-task 3 timed out at 30s, the b64 retry fired, and attempt 2 timed
+ * out at 30s again. Exported so the escalation is testable without an SDK.
+ */
+export function firstTokenWindowForAttempt(
+  attempt: number,
+  baseSeconds: number,
+  multiplier: number,
+  capSeconds: number,
+): number {
+  const base = Math.max(1, baseSeconds);
+  const mult = Math.max(1, multiplier);
+  const cap = Math.max(base, capSeconds);
+  return Math.min(cap, Math.round(base * Math.pow(mult, Math.max(0, attempt - 1))));
+}
+
+/**
+ * beta.113: does a declared scope entry cover this committed file?
+ *
+ * The DR/BCP run declared `prisma/migrations` and then committed
+ * `prisma/migrations/20260807102822_continuity_resilience/migration.sql`. That
+ * was reported out-of-scope in both cycles, because the matcher compares two
+ * file paths and a directory is not one. The file was the entire point of the
+ * sub-task, and the spec demanded it -- `prisma migrate dev --name
+ * continuity_resilience` -- so nothing could have declared its real name in
+ * advance: migrate stamps a timestamp at generation time.
+ *
+ * A false out-of-scope entry is not cosmetic. b110 made a large enough count
+ * abort the cycle outright, and every entry here is noise in the diff the
+ * adversary reads.
+ *
+ * A declared entry is treated as a directory when it ends in a slash or glob,
+ * or when its last segment carries no extension. `prisma/migrations` covers
+ * files beneath it; `src/app/api/foo/route.ts` still only covers itself.
+ */
+export function declaredCovers(committedFile: string, declared: string): boolean {
+  if (pathMatches(committedFile, declared)) return true;
+  const d = declared.trim().replace(/\/+$/, "").replace(/\/\*+$/, "").replace(/^\.\//, "");
+  if (!d) return false;
+  const last = d.slice(d.lastIndexOf("/") + 1);
+  const looksLikeDir = !last.includes(".") || declared.trim().endsWith("/") || /\/\*+$/.test(declared.trim());
+  if (!looksLikeDir) return false;
+  const f = committedFile.trim().replace(/^\.\//, "");
+  return f.startsWith(`${d}/`);
+}
+
+/**
+ * rc.3: did this worker turn leave work on disk that nothing committed?
+ *
+ * The three no-change decisions in this file all asked `!result.commitSha`,
+ * which is true both for "the worker had nothing to do" and for "the worker did
+ * the work and the commit never happened". Only the second is a data-loss risk,
+ * and only the working tree can tell them apart. Falls back to the beta.53
+ * `uncommittedFiles` list for results produced before the reconciliation
+ * existed.
+ */
+export function workerLeftUncommittedWork(result: WorkerResult): boolean {
+  const recon = result.commitReconciliation;
+  if (recon) return recon.dirtyFiles.length > 0;
+  return (result.uncommittedFiles ?? []).length > 0;
+}
+
+/** rc.3: a TEXT column holding a JSON array, read defensively. */
+function parseJsonArray(raw: unknown): string[] {
+  if (typeof raw !== "string" || raw.trim() === "") return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** beta.34: extract the PR number from a GitHub PR URL (.../pull/846). */
+function parsePrNumber(prUrl: string): number | undefined {
+  const m = /\/pull\/(\d+)/.exec(prUrl) ?? /\/merge_requests\/(\d+)/.exec(prUrl);
+  return m ? Number(m[1]) : undefined;
+}
+import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
+import { inferVerifyContract } from "./verify-contract.js";
+import { rederiveContractPath, reconcileTestContractPaths } from "./contract-rederive.js";
+import { findPlanPolicyConflicts, describePlanPolicyConflicts, type PlanPolicyConflict } from "./plan-policy-conflict.js";
+import type { GitRunner } from "../state/checkpoint-bundle.js";
+import { redactTokenShapes } from "../state/interaction-log.js";
+import { pathMatches, resolveContractPath } from "./path-match.js";
+import { autoResolveContract, buildContractClarification } from "./contract-clarify.js";
+import { diagnosticsFrom, errorsInChangedFiles, buildTypecheckFinding } from "./typecheck-gate.js";
+import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedgerCommits, type LedgerCommit } from "./ledger-integrity.js";
+import { extractStatedReason } from "./worker-reason.js";
+import { findSuspectPlanPaths, describeSuspectPlanPaths, type SuspectPlanPath } from "./plan-path-validate.js";
+import { applyPathCorrections, describePathCorrections, type PathCorrection } from "./plan-path-writeback.js";
+import {
+  proposeBasenameRescue,
+  proposeDirectoryRescue,
+  repoDirsFromFiles,
+  describeBasenameRescue,
+  rescueMatchesContractPath,
+} from "./basename-rescue.js";
+import { verifySubTaskOutput, type VerifyProbes, type VerifyOutcome } from "./verify.js";
+import {
+  authorizedGeneratedOutputs,
+  generatorScriptDeclared,
+  pendingGenerations,
+  rescuableContractPaths,
+  resolveGenerators,
+} from "./generated-artifacts.js";
+import type { InteractionLog, InteractionPhase } from "../state/interaction-log.js";
+import { ingestRepoConventions, discoverCheckScripts, runCheckScripts, type CheckScriptResult, type CheckScript } from "./repo-conventions.js";
+import { blocksMerge, classifyFinding, isBlockingFinding, type ClassifyCtx } from "./finding-classify.js";
+import { dedupeFindings, reconcileFindings, type FindingRecord } from "./finding-lifecycle.js";
+import {
+  detectVerificationBlocker,
+  describeVerificationBlocker,
+  type VerificationBlocker,
+} from "./verification-blocker.js";
+import {
+  buildCiFailureFindings,
+  describeCiFindings,
+  CI_REPAIR_SUBTASK_TITLE,
+  renderCiRepairIntent,
+} from "./ci-findings.js";
+import { isInfraCrash } from "./infra-crash.js";
+import { computeReviseScope } from "./revise-scope.js";
+import {
+  mapFindingsToSubTasks,
+  buildScopedReviseHint,
+  groupUnownedFindingsForRepair,
+  renderRepairIntent,
+  repairSubTaskTitle,
+  type ReviseMappingResult,
+  type SubTaskAssignment,
+  type MapSubTask,
+  type MapFinding,
+} from "./revise-mapping.js";
+import { detectWorkerConfab } from "./worker-confab-detect.js";
+import {
+  detectStuckFindings,
+  findingKey,
+  coFixFiles,
+  describeUnresolvable,
+  type UnresolvableFinding,
+} from "./cross-cutting-findings.js";
+import { diagnosePushFailure, describePreservedPushFailure } from "./push-failure.js";
+import {
+  type PublicationEvidence,
+  type PublicationFailureKind,
+  type RemoteVerifyResult,
+  verifyRemoteSha,
+  evidenceCoversCandidate,
+  describeUnpublished,
+  describePublicationState,
+  shaMatches,
+} from "./publication.js";
+import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-scope.js";
+import { ABORT_REASONS_WORTH_SHIPPING, describeAbortSalvage, shouldReserveTimeToShip } from "./abort-salvage.js";
+import {
+  TIME_EXTENSION_SEQ,
+  parseTimeExtensionReply,
+  renderTimeExtensionMarker,
+  renderTimeExtensionQuestion,
+  type TimeExtensionTrigger,
+} from "./time-extension.js";
+import {
+  assessRepairFunding,
+  describeBudgetPolicy,
+  projectCycleCostUsd,
+  resolveBudgetPolicy,
+  type BudgetPolicy,
+} from "./budget-policy.js";
+import {
+  BUDGET_EXTENSION_SEQ,
+  maxExtensionUsd,
+  parseBudgetExtensionReply,
+  renderBudgetExtensionMarker,
+  renderBudgetExtensionQuestion,
+  type BudgetExtensionTrigger,
+} from "./budget-extension.js";
+import { selectWorkerModel } from "./worker-model-select.js";
+import {
+  selectObserveReports,
+  recoverObserveReports,
+  OBSERVE_REPORT_MAX_CHARS,
+  type ObserveReport,
+  type ObserveReportAuditRow,
+} from "./observe-handoff.js";
+export type LoopStatus =
+  | "crystallising"
+  | "planning"
+  | "executing"
+  | "reviewing"
+  | "done"
+  | "failed"
+  | "aborted"
+  // beta.55 (B2): a RESUMABLE pause. The loop hit a genuinely-blocking
+  // ambiguity (or a worker refused/confabulated a sub-task even after the
+  // beta.54 retry) and, rather than hard-fail, it persisted the question +
+  // the paused sub-task index and stopped. A human answers via harness_answer
+  // and the loop re-drives from the paused seq. NOT terminal: recovery treats
+  // it like `resumable`, and worktree-heal must NOT reap its worktree.
+  | "awaiting_clarification";
+
+export type LoopOutcome =
+  | { status: "shipped"; sessionId: string; prUrl: string; cycles: number; totalCostUsd: number }
+  | { status: "failed"; sessionId: string; reason: string; cycles: number; totalCostUsd: number }
+  | { status: "aborted"; sessionId: string; reason: string; cycles: number; totalCostUsd: number }
+  // beta.38: a re-entrant run() call for a session whose loop is ALREADY
+  // running in this process (see runningSessions guard below). Returned
+  // instead of starting a second concurrent loop.
+  | { status: "skipped_already_running"; sessionId: string; reason: string; cycles: number; totalCostUsd: number }
+  // beta.55 (B2): the loop paused resumably for a human decision. NOT a
+  // failure -- the worktree is preserved and harness_answer re-drives it.
+  | { status: "awaiting_clarification"; sessionId: string; question: string; seq: number; cycles: number; totalCostUsd: number };
+
+/**
+ * beta.38: module-level set of session ids whose loop is CURRENTLY running in
+ * THIS process. The single source of truth for "is this session's loop alive?"
+ *
+ * WHY: `recoverSessions` runs on every plugin bootstrap. A plugin RE-REGISTER
+ * (e.g. the OKF bundle-reindex churn) triggers bootstrap WITHOUT the process
+ * dying -- so the previous generation's `loop.run()` may still be executing in
+ * the background. Recovery, seeing a still-`executing` session, would assume
+ * the process died and re-drive `loop.run()` -- spawning a SECOND concurrent
+ * loop for the same session. That second loop's `git worktree add` then
+ * collides with the first loop's still-live worktree (Staging ProjectThanos
+ * smoke, session 36f53c40: `fatal: '<branch>' is already checked out at
+ * '<pending-...>'` -> loop.plan_failed -> whole run killed after sub-task 1).
+ *
+ * This module-level set answers the question precisely: within one process
+ * lifetime it tracks every live loop, so recovery can skip a session that is
+ * still running. On a REAL process restart the module is re-instantiated fresh
+ * (empty set), so recovery correctly auto-resumes genuinely-dead sessions.
+ * It lives at module scope (not on the runtime instance) so it survives a
+ * plugin re-register the same way `runtime-registry` does.
+ */
+const runningSessions = new Set<string>();
+
+/** The statuses from which a session never moves again. */
+export const TERMINAL_STATUSES: readonly string[] = ["done", "failed", "aborted"];
+
+/**
+ * rc.2: sessions with a cancel mid-flight.
+ *
+ * `cancelSession` awaits the salvage path, so two cancels arriving in the same
+ * tick would both pass the terminal check and both run a finaliser. Module
+ * scope matches `runningSessions`: one process owns a session at a time.
+ */
+const cancellingSessions = new Set<string>();
+
+/**
+ * beta.52/53: detect a worker that ended its turn WAITING for a mid-turn event
+ * that does not exist in the one-shot harness protocol. Two observed cases:
+ *   beta.51 seq-3 (session fc64d8ea): "I'll await the Monitor event signaling
+ *     tsc is ready rather than polling further." (one clause)
+ *   beta.52 seq-5 (session 8464f8ae): "npm ci is still running. The Monitor
+ *     will notify me when eslint is installed. Waiting for that event."
+ *     (split across TWO sentences -- the beta.52 regex REQUIRED the wait-verb,
+ *     the monitor/tool noun, and "event" within ONE clause ([^.\n] stops at the
+ *     period) so it FALSE-NEGATIVED this variant, mis-tagging it as a generic
+ *     refusal.)
+ *
+ * beta.53 (P1a) FIX: match on the DISTINCTIVE phrasings independently, then
+ * require an environment/tool word ANYWHERE in the message. `PART_RE` catches
+ * either half of the seq-5 split ("the Monitor will notify me", "waiting for
+ * that event", "await ... event", "Monitor event"); `ENV_RE` confirms it is an
+ * environment-wait hallucination (not some unrelated use of "event"). Both must
+ * be present. `matchesEnvWaitHallucination` is the exported predicate; the bare
+ * regex export is kept for backward-compat with the beta.52 test.
+ */
+const WORKER_ENV_WAIT_PART_RE =
+  /\b(monitor|observer|watcher|sentinel)\s+(event|will\s+notify|notif)|will\s+notify\s+me|await(ing)?\s+(the\s+)?[^.\n]{0,40}\bevent\b|waiting\s+for\s+(that|the|an?)\s+[^.\n]{0,20}\b(event|signal|install|build|completion)\b|poll(ing)?\s+for\s+[^.\n]{0,40}\b(event|signal|ready)\b/i;
+const WORKER_ENV_WAIT_ENV_RE =
+  /\b(install(ing|ed)?|npm|npm\s+ci|yarn|pnpm|node_modules|tsc|typecheck|eslint|lint|build|compil)/i;
+/** beta.53: true when the worker awaited a non-existent env/monitor event. */
+export function matchesEnvWaitHallucination(text: string): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ");
+  return WORKER_ENV_WAIT_PART_RE.test(t) && WORKER_ENV_WAIT_ENV_RE.test(t);
+}
+
+/**
+ * beta.54: BROADENED async-coordination-confabulation detector. beta.53's
+ * `matchesEnvWaitHallucination` AND-gated on an install/build word, on the
+ * (now-disproven) premise that this hallucination is triggered by a missing
+ * environment. Staging beta.53 #858 seq-3 refuted that: on a plain TypeScript
+ * mutate sub-task with NO install path, the worker still ended its turn with
+ *   "I'll wait for the completion notification from the background watcher
+ *    before running the test suite."
+ * -- confabulating an async coordination primitive (a "background watcher" /
+ * "completion notification") and yielding its turn instead of running the
+ * command inline. The env word ('test suite' is not in ENV_RE) was absent, and
+ * the phrase used 'wait for' (not 'waiting for'), so beta.53 missed it twice.
+ *
+ * This predicate captures the CLASS: the worker says it will wait/await for
+ * some notification/event/signal/callback from an imagined watcher/monitor/
+ * background process, WITHOUT requiring any env/install context. It is the
+ * gate for the retry-with-context path (still restricted to no-side-effect
+ * verification kinds, so a confabulated push/PR is never retried).
+ *
+ * Two independent shapes, either suffices:
+ *  (A) an explicit coordination NOUN the harness does not provide
+ *      (monitor/observer/watcher/sentinel/daemon/background process/
+ *       completion notification/callback/webhook) paired with a wait/await/
+ *       notify/resume verb; OR
+ *  (B) a wait/await/poll verb pointed at an event/signal/notification/
+ *      callback/completion the worker expects to ARRIVE (passive coordination).
+ */
+const ASYNC_COORD_NOUN_RE =
+  /\b(monitor|observer|watcher|sentinel|daemon|background\s+(process|task|job|watcher|runner)|completion\s+(notification|signal|event|message)|async\s+(runner|process)|callback|webhook)\b/i;
+const ASYNC_COORD_WAIT_VERB_RE =
+  /\b(wait(ing|s)?\s+for|await(ing|s)?|poll(ing|s)?\s+for|listen(ing)?\s+for|expect(ing)?\s+(a|an|the)?)\b/i;
+const ASYNC_COORD_ARRIVAL_RE =
+  /\b(event|signal|notification|notify|callback|completion|ready\s+message|message\s+from|to\s+(complete|finish|be\s+(ready|done|installed|built)))\b/i;
+/** beta.54: true when the worker confabulated an async coordination primitive. */
+export function matchesAsyncCoordConfabulation(text: string): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ");
+  if (!t) return false;
+  // Shape A: a coordination NOUN the harness never provides, near a wait verb.
+  const hasNoun = ASYNC_COORD_NOUN_RE.test(t);
+  const hasWaitVerb = ASYNC_COORD_WAIT_VERB_RE.test(t);
+  if (hasNoun && hasWaitVerb) return true;
+  // Shape B: a wait/await/poll verb aimed at an arriving event/signal/notif.
+  if (hasWaitVerb && ASYNC_COORD_ARRIVAL_RE.test(t)) return true;
+  // Backward-compat: the original env-wait shape is a strict subset.
+  return matchesEnvWaitHallucination(t);
+}
+/**
+ * beta.53 (P1b): verification kinds that are eligible for an env-wait retry.
+ * These are the "no observable change" kinds -- a worker that hallucinated a
+ * wait produced no commit/no committed-file/wrote-but-didnt-commit. We NEVER
+ * retry a confabulated push/PR (branch_pushed, pr_opened, ...): those aren't
+ * env-wait shapes and retrying could mask a real confabulation.
+ */
+const ENV_WAIT_RETRYABLE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
+
+/**
+ * beta.58 (Bug B): distinguish a GOOD-FAITH premise-contradicted skip from a
+ * bad-faith refusal. `loop.worker_refusal` conflated two opposite semantics:
+ *  - beta.53 seq-3: worker hallucinated a background watcher, wrote nothing
+ *    (bad-faith, genuine refusal).
+ *  - beta.54/55 seq-2: worker correctly determined a CONDITIONAL PREMISE was
+ *    contradicted per the brief's own rules and produced structured evidence
+ *    (good-faith, a correct no-op).
+ * Both produced identical `loop.worker_refusal` events. The discriminator
+ * (Staging's pipe marker): the worker's explanation references a contradicted
+ * premise / invalid finding. This is DIAGNOSTIC ONLY -- it does not change
+ * pass/fail (the escalation-to-clarification path is unchanged); it just emits
+ * a distinct, greppable audit event so operators can tell the two apart.
+ */
+const INVALID_PREMISE_RE =
+  /\b(premise\s+(is\s+)?contradict|contradict\w*\s+(the\s+)?premise|premise\s+(is\s+)?(false|invalid|not\s+met|does\s+not\s+hold)|finding\s+(is\s+)?invalid|invalid\s*[:\-]?\s*premise|premise\s+not\s+satisfied|conditional\s+premise)/i;
+export function matchesInvalidPremiseSkip(text: string): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ");
+  if (!t) return false;
+  return INVALID_PREMISE_RE.test(t);
+}
+
+/**
+ * beta.55 (B3): detect that a worker PASSED verification but deviated from the
+ * literal sub-task wording -- a judgment call it made and documented (the #858
+ * sub-task-2 grc case: "I left the non-empty grc/ dirs in place because deleting
+ * them would destroy unrelated code"). This is guess-and-document, which is
+ * defensible for an async harness ONLY if it's VISIBLE. We surface it as a
+ * first-class `loop.worker_deviation` audit event instead of burying it in the
+ * finalMessage prose. Does NOT change pass/fail (the sub-task passed).
+ */
+const WORKER_DEVIATION_RE =
+  /\b(instead of|rather than|chose (not )?to|decided (not )?to|opted (not )?to|I (did not|didn't|left|kept|skipped|avoided)|deviat|as opposed to|in lieu of|preserv\w* (both|the existing)|took a different approach)\b/i;
+export function matchesWorkerDeviation(text: string): boolean {
+  const t = (text ?? "").replace(/\s+/g, " ");
+  if (!t) return false;
+  return WORKER_DEVIATION_RE.test(t);
+}
+/** @deprecated beta.52 single-clause regex; kept for backward-compat tests. */
+const WORKER_PROTOCOL_ASSUMPTION_RE =
+  /\b(await|wait(ing)?\s+for|poll(ing)?\s+for)\b[^.\n]{0,80}\b(monitor|harness|install|build|tsc|ready|completion|background)\b[^.\n]{0,40}\b(event|signal|ready|notif|callback|complet)/i;
+void WORKER_PROTOCOL_ASSUMPTION_RE;
+
+/**
+ * beta.56 (P0-1): render the previous cycle's adversary review as a corrective
+ * dispatch hint for revise-cycle workers.
+ *
+ * ROOT CAUSE this fixes: on an `adversary_revise` verdict the loop re-ran the
+ * SAME sub-task prompts verbatim -- `runWorker({brief, subTask, plan})` carried
+ * no findings, so cycle 2 was cycle 1 replayed and the loop structurally could
+ * not converge (the immortal-finding treadmill beta.44-49 patched around, the
+ * beta.35 "revise no-op" carve-out, and the refusal spiral all trace here).
+ * The worker on a revise cycle now sees verdict, summary, and the concrete
+ * findings, scoped with an explicit "if none apply to your sub-task, change
+ * nothing" instruction so the beta.35 legal-no-op path still works.
+ */
+export function buildReviseDispatchHint(review: ReviewReport): string {
+  const all = review.findings ?? [];
+  const actionable = all.filter((f) => f.severity !== "info");
+  const shown = (actionable.length > 0 ? actionable : all).slice(0, 12);
+  const lines = shown.map((f) => {
+    const loc = f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : "";
+    return `- [${f.severity}/${f.dimension}] ${f.title}${loc}: ${f.detail}`.slice(0, 600);
+  });
+  return [
+    `REVISION CYCLE: an adversarial reviewer examined the previous cycle's diff and returned verdict "${review.verdict}".`,
+    `Reviewer summary: ${(review.summary ?? "").slice(0, 800)}`,
+    lines.length > 0 ? `Outstanding findings:` : `(The reviewer returned no itemised findings.)`,
+    ...lines,
+    ``,
+    `Address the findings that fall inside THIS sub-task's files/scope. If none of them apply to this sub-task, make NO changes and end your turn -- do not redo work that is already correct.`,
+  ].join("\n");
+}
+
+/**
+ * beta.42: active stall-watchdog timers, keyed by sessionId. When the
+ * re-entrancy guard SKIPS a re-entry (`loop.run_skipped_already_running`), it
+ * arms a timer here. beta.40's reclaim was PASSIVE -- it only re-evaluated
+ * staleness when something re-called run(); a loop that wedged with no
+ * subsequent re-register was never re-checked (Staging beta.40 smoke: session
+ * 18a3f0a1 wedged ~5h30m, staleMs read 10 at skip time because updated_at had
+ * just been written, and nothing ever re-called run() to notice it go stale).
+ * The watchdog fixes that: it re-checks `updated_at` after a delay and, if the
+ * tracked loop has made no progress, force-deregisters the stale handle so the
+ * next recovery/run can reclaim it, and emits `loop.wedge_detected`.
+ */
+const stallWatchdogs = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Test/diagnostic helper: clear any armed watchdog for a session. */
+export function clearStallWatchdog(sessionId: string): void {
+  const t = stallWatchdogs.get(sessionId);
+  if (t) { clearTimeout(t); stallWatchdogs.delete(sessionId); }
+}
+
+/** True if a loop for this session is currently running in this process. */
+export function isSessionLoopRunning(sessionId: string): boolean {
+  return runningSessions.has(sessionId);
+}
+
+/** Test/diagnostic helper: snapshot of currently-running session ids. */
+export function runningSessionIds(): string[] {
+  return [...runningSessions];
+}
+
+/**
+ * beta.42: bound a promise by a timeout. The worker SDK call was previously
+ * awaited with NO timeout (loop.ts runOne), so a hung worker (SDK socket
+ * stall, or the runtime torn down under the await by a plugin re-register)
+ * left the `await` unresolved forever -> the loop froze, `updated_at` stopped,
+ * and the hard-deadline check (only evaluated BETWEEN sub-tasks) never ran.
+ * That was the true root cause of the ~5h30m silent wedge on the beta.39 +
+ * beta.40 ProjectThanos smokes. Racing the worker against a rejecting timeout
+ * converts an infinite hang into a bounded, catchable failure that the loop's
+ * existing try/catch already handles (marks the sub_task failed, sets
+ * failed.err, returns). Returns a tuple so the caller can clear the timer.
+ */
+/**
+ * beta.110: the committed tree bears no resemblance to what the plan declared,
+ * so there is nothing worth reviewing. Thrown by runFinalScopeCheck.
+ *
+ * Distinct from ordinary scope creep, which stays a `medium` review finding.
+ * This is the 12,423-out-of-scope-files case from PR #932 session `9217236c`.
+ */
+export class ScopeBlowoutError extends Error {
+  constructor(
+    readonly outOfScopeCount: number,
+    readonly threshold: number,
+    readonly sample: string[],
+  ) {
+    super(
+      `scope_blowout: ${outOfScopeCount} committed file(s) fall outside every sub-task's declared scope ` +
+        `(threshold ${threshold}). This is almost always a tool cache or build output written into the ` +
+        `worktree, not project work. Review was skipped because a diff this size cannot be reviewed; the ` +
+        `worktree is preserved so any good commits can be recovered. First paths: ${sample.slice(0, 5).join(", ")}`,
+    );
+    this.name = "ScopeBlowoutError";
+  }
+}
+
+export class WorkerTimeoutError extends Error {
+  /**
+   * beta.106: `limit` names the knob that actually fired.
+   *
+   * This helper bounds the worker, the lead and the adversary, but the message
+   * hardcoded "worker_timeout_seconds" for all three. On the b105 smoke a LEAD
+   * timeout at 900s was reported as "worker exceeded worker_timeout_seconds
+   * (900s)" while `worker_timeout_seconds` was set to 1800 -- a number that
+   * appeared nowhere in the config, sending the diagnosis to the wrong phase.
+   * Defaults to the old text so existing callers and their assertions are
+   * unchanged.
+   */
+  constructor(public readonly seconds: number, public readonly limit = "worker_timeout_seconds") {
+    super(`worker exceeded ${limit} (${seconds}s) with no result`);
+    this.name = "WorkerTimeoutError";
+  }
+}
+
+export async function withTimeout<T>(p: Promise<T>, seconds: number, limit?: string): Promise<T> {
+  if (!(seconds > 0)) return p; // 0/undefined disables the bound (defensive)
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new WorkerTimeoutError(seconds, limit)), seconds * 1000);
+  });
+  try {
+    return await Promise.race([p, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export interface OrchestratorDeps {
+  config: HarnessConfig;
+  state: StateStore;
+  budget: BudgetEnforcer;
+  pat: PatRouter;
+  logger: { info: (m: string, meta?: unknown) => void; warn: (m: string, meta?: unknown) => void; error: (m: string, meta?: unknown) => void };
+
+  /**
+   * beta.63 (Part B): durable interaction log. Optional for back-compat with
+   * test doubles that don't exercise it; when present, EVERY state transition,
+   * verify probe, refusal/env-wait/deviation, and stall/recovery event is
+   * mirrored into a JSONL file OUTSIDE the worktree (the SDK adapters log their
+   * own sdk_request/sdk_response events via the same instance). Never throws.
+   */
+  interactionLog?: InteractionLog;
+  effectiveRouteFor?: (role: RoleName) => {
+    backend: string;
+    provider: string;
+    model?: string;
+    effort?: string;
+  };
+
+  /**
+   * Injected work-doers. Real impls in src/adapters + src/vercel.
+   *
+   * `requester` is the session's Slack user id, threaded through so PAT
+   * resolution can select THAT user's token (multi-user auth), rather than
+   * defaulting to the first authorised user. Optional for back-compat with
+   * test doubles that ignore it.
+   */
+  runLead: (
+    brief: CrystallisedBrief,
+    ctx?: {
+      requester?: string;
+      /**
+       * beta.105: the session the plan belongs to, so worktree allocation can
+       * audit which checkout path it took against that session. Optional for
+       * back-compat with test doubles.
+       */
+      sessionId?: string;
+      /**
+       * beta.122: the branch this session is ALREADY on. When set it is used
+       * verbatim, so a re-plan cannot rename the branch out from under commits
+       * that are already on it (the b121 dash-vs-slash commit loss).
+       */
+      pinnedSessionBranch?: string;
+      /**
+       * beta.122: the session's last recorded commit. Lets allocation re-attach
+       * a missing branch to real work instead of resetting to base.
+       */
+      recoverBranchFromSha?: string;
+      /**
+       * beta.105: called when allocation chooses its checkout path. The loop
+       * turns it into `loop.branch_allocation`, because the b103 smoke could
+       * not tell from the trail whether a resume preserved the branch or reset
+       * it off eight of its own commits.
+       */
+      onBranchDecision?: (d: BranchAllocationDecision) => void;
+    },
+  ) => Promise<LeadPlan>;
+  /**
+   * beta.67 (P0b): the Fable revise-spec turn. On an adversary `revise`
+   * verdict, runs ONCE at the top of the revise cycle: Fable reads findings +
+   * plan, investigates, and returns REFRESHED sub-tasks whose workerContext
+   * carries a resolved changeSpec. Fed to cycle-2 workers via beta.66's warm
+   * render path -- workers never see raw findings (the beta.63/64 no-op
+   * regression). Optional: unwired OR throws -> fall back to
+   * buildReviseDispatchHint (never worse than beta.66).
+   */
+  /**
+   * beta.99: the revise-spec turn.
+   *
+   * NOTE (v2.0.0-beta.1): declared and wired in `index.ts`, but nothing in this
+   * file calls it — beta.120's deterministic revise mapping took over the job.
+   * Left in place rather than deleted because removing a dep is a breaking
+   * change for anyone constructing the loop directly, but it is dead weight and
+   * a candidate for removal. Its cost fields are threaded through anyway, so
+   * that reviving it does not reintroduce the leak this milestone closed.
+   */
+  runLeadReviseSpec?: (params: {
+    brief: CrystallisedBrief;
+    plan: LeadPlan;
+    review: ReviewReport;
+    requester?: string;
+  }) => Promise<{ subTasks: LeadPlanSubTask[]; costUsd?: number; tokensIn?: number; tokensOut?: number }>;
+  /**
+   * What the worker will ACTUALLY run on, for the sub-task ledger.
+   *
+   * The ledger used to record `config.models.worker` unconditionally, which was
+   * wrong in two directions at once: it ignored beta.91's per-sub-task
+   * `modelOverride`, and from v2 it ignored per-role backend routing entirely —
+   * a turn served by OpenCode was filed under the Claude Code model name. That
+   * is not a cosmetic slip. The A/B matrix in docs/V2_SMOKE.md compares cost per
+   * merged PR across backends by reading exactly this column, so a mislabelled
+   * row does not merely lose information, it silently attributes one backend's
+   * spend to the other and flatters whichever one is not actually running.
+   *
+   * Optional so that pre-v2 stubs keep compiling; absent means "the planned
+   * model is the truth", which is correct for a single-backend install.
+   */
+  describeWorkerModel?: (plannedModel: string) => string;
+  runWorker: (params: {
+    brief: CrystallisedBrief;
+    subTask: LeadPlanSubTask;
+    plan: LeadPlan;
+    /**
+     * beta.117: the checkout this worker must actually work in.
+     *
+     * Before b117 the worker derived it from `plan.worktreePath`, because there
+     * was only ever one. Under parallelism that is the integration checkout,
+     * and a worker editing it would defeat the isolation entirely -- so the
+     * loop now states the worktree explicitly and the implementation must
+     * honour THIS value, not the plan's. Optional only so pre-b117 stubs keep
+     * compiling; callers fall back to `plan.worktreePath` when it is absent.
+     */
+    worktreePath?: string;
+    resumeSessionId?: string;
+    requester?: string;
+    /** beta.53 (P1b): corrective dispatch context appended on a retry. */
+    dispatchHint?: string;
+    /**
+     * beta.91 (Fix 3): per-sub-task worker model override. When set, the SDK
+     * call uses this model instead of config.models.worker (mechanical
+     * scaffolding sub-tasks -> cheaper/faster model). Absent = config.models.worker.
+     */
+    modelOverride?: string;
+    /**
+     * beta.90 (Feature 2): stream-slow liveness callback. Invoked when the
+     * worker SDK stream opens then goes idle (no token/activity delta) past
+     * the configured threshold. OBSERVABILITY ONLY -- never aborts.
+     */
+    onStreamSlow?: (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => void;
+    onActivity?: (info: { kind: string; at: number }) => void;
+    /** beta.113: per-attempt phase-2 watchdog widening; see runWorkerCallWithRetry. */
+    firstTokenTimeoutSecondsOverride?: number;
+  }) => Promise<WorkerResult>;
+  runAdversary: (params: {
+    brief: CrystallisedBrief;
+    plan: LeadPlan;
+    /** rc.7: so diff-shaping done in the adapter is attributable to the run. */
+    sessionId: string;
+    runtime?: RuntimeSnapshot;
+    requester?: string;
+    /**
+     * beta.67 (Bug B): the persisted branch fork-point sha to diff the review
+     * against (`git diff <baseSha>..HEAD`). When set, the adversary sees ONLY
+     * the branch's own commits; when omitted, the implementation falls back to
+     * the default base branch name (prior behaviour).
+     */
+    baseSha?: string;
+    /**
+     * beta.69 (F3): the prior cycle's review, so the adversary is told which
+     * findings the worker already attempted (prompt) and the verdict gate can
+     * treat recycled findings as non-new (they cannot sustain a `revise`).
+     */
+    priorFindings?: ReviewFinding[];
+    /**
+     * rc.3: labelled brief sections for a revise review -- the feature
+     * contract, the operator's directives and the revision-only exclusions,
+     * kept apart so an exclusion cannot be read as a complaint about code that
+     * predates it. Undefined on an ordinary run, which keeps the old prompt.
+     */
+    revision?: AdversaryRevisionContext;
+  }) => Promise<ReviewReport>;
+  fetchRuntime?: (params: { plan: LeadPlan; sessionId: string; waitForPreview?: boolean; commitSha?: string }) => Promise<RuntimeSnapshot | undefined>;
+  previewVerificationEnabled?: boolean;
+  /** Pushes the candidate branch without opening a PR and returns its verified remote tip. */
+  pushBranchForPreview?: (params: { plan: LeadPlan; requester?: string; commitSha: string }) => Promise<{ remoteSha: string }>;
+  /** Opens/updates the PR after the preview-enriched review has passed. */
+  openPullRequest?: (params: {
+    plan: LeadPlan;
+    brief: CrystallisedBrief;
+    reviewReport: ReviewReport;
+    requester?: string;
+  }) => Promise<string>;
+  pushBranchAndOpenPr: (params: {
+    plan: LeadPlan;
+    brief: CrystallisedBrief;
+    reviewReport: ReviewReport;
+    requester?: string;
+  }) => Promise<string>;
+
+  /** Signal source: user Slack reactions on our messages. */
+  readReactions: (sessionId: string) => Promise<{ shipIt: boolean; abort: boolean; pause: boolean; budgetBump: boolean }>;
+  reportProgress?: (sessionId: string, status: LoopStatus, meta?: unknown) => Promise<void>;
+  /**
+   * beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
+   * `setStatus` on EVERY phase + terminal transition (the single choke point).
+   * The implementation (index.ts) best-effort direct-posts the current
+   * `harness_progress` headline to Slack via a vault-resolved bot token WHEN the
+   * session has a real Slack binding -- an INDEPENDENT path from the wedge-prone
+   * agent `api.sendMessage` turn. Fire-and-forget; the loop stays Slack-agnostic
+   * (no Slack import here) and a throw here can NEVER escape `setStatus`.
+   * Clarifications/inbound stay agent-mediated (`harness_answer`) -- unchanged.
+   */
+  deliverProgress?: (sessionId: string, status: LoopStatus) => void;
+
+  /**
+   * beta.78 (Feature 1+2): harness-native OUTBOUND ad-hoc warning delivery.
+   * Same independent direct-post channel as `deliverProgress` (vault bot token,
+   * gated on a real Slack binding), but for an arbitrary one-line warning
+   * (soft session-budget breach; daily-cap hit). Fire-and-forget, best-effort,
+   * never throws. Loop stays Slack-agnostic (no Slack import); a no-op when
+   * there is no poster or no real binding (agent-orchestrated runs).
+   */
+  postWarning?: (sessionId: string, text: string) => void;
+
+  /**
+   * beta.8 fix #1 (done right): HARNESS-SIDE observable-side-effect probes.
+   * The loop builds a VerifyProbes for a given plan/branch/worktree and runs
+   * the inferred contract AFTER each sub-task, independent of the worker's
+   * SDK stop reason. This is what actually catches a confabulated "I pushed"
+   * / "I opened a PR" -- the harness hits git / the provider API itself.
+   *
+   * Optional so existing test doubles that don't exercise verification keep
+   * working; when absent, verification is skipped (SDK signal trusted).
+   */
+  buildVerifyProbes?: (params: { plan: LeadPlan; requester: string; worktreePath: string; baseSha: string }) => VerifyProbes;
+
+  /**
+   * beta.63 (convention-awareness Fix 2): injectable check-script runner used by
+   * the final-verify convention-check pass. Defaults to `npm run <name>`
+   * (spawnSync) inside the worktree. Injected in tests so no real npm process
+   * spawns. When absent, {@link runCheckScripts}'s built-in runner is used.
+   */
+  runCheckScript?: (name: string, cwd: string, timeoutMs: number) => { status: number | null; stdout: string; stderr: string; error?: unknown; timedOut?: boolean };
+
+  /**
+   * beta.115: run the TypeScript compiler WITHOUT the repo's npm script, for
+   * when `npm run typecheck` is unrunnable (exit 127) but the compiler itself
+   * is reachable -- the b114 state, where CI typechecked the same tree fine
+   * via `npx tsc --noEmit`. Returns null when no route exists, which the gate
+   * must report as unavailable rather than clean.
+   */
+  runTypecheckDirect?: (worktree: string, timeoutMs: number) => { via: string; status: number | null; stdout: string; stderr: string; timedOut?: boolean } | null;
+
+  /** beta.115: evidence about why a check script could not execute, for the audit. */
+  diagnoseCheckEnv?: (worktree: string) => Record<string, unknown>;
+
+  /** Read the current HEAD sha of a worktree (for commit_made verification). */
+  worktreeHeadSha?: (worktreePath: string) => Promise<string>;
+
+  /**
+   * rc.5 (#2): reads the TRUE tip of `branch` on the remote (`git ls-remote`),
+   * routed through the requester's credentials like every other provider call.
+   *
+   * This is the only thing in the harness that can establish publication.
+   * Everything #1168 mistook for proof -- a preview-enabled flag, a resolved
+   * callback, an existing PR URL, a posted review comment -- was true while 35
+   * commits sat unpushed on local disk. Resolve `undefined` for "no such
+   * branch"; throw only when the remote could not be READ (that is
+   * `verification_unavailable`, which is refused, not assumed green).
+   *
+   * Optional so the many loop test doubles that never reach a ship keep
+   * working; production wires it unconditionally (see index.ts) and
+   * `publicationVerificationRequired` makes its absence a loud, audited
+   * refusal to claim verified publication rather than a silent downgrade.
+   */
+  remoteBranchSha?: (params: { plan: LeadPlan; branch: string; requester?: string }) => Promise<string | undefined>;
+
+  /** rc.5 (#2): injectable delay for bounded publication revalidation; keeps tests instant. */
+  sleep?: (ms: number) => Promise<void>;
+
+  /**
+   * rc.3: `git status --porcelain` for a worktree, as the evidence that licenses
+   * a no-change exit.
+   *
+   * Every "nothing changed" decision in this file used to be made by comparing
+   * two SHAs, and a SHA comparison is blind to a tree full of uncommitted work.
+   * StitchGuard PR #1168 cycle 4 exited through `cycle_no_change_early_exit`
+   * with modified files sitting on disk. Rejects (rather than reporting a clean
+   * tree) when git cannot be asked, so "we could not look" never reads as
+   * "there is nothing there".
+   */
+  worktreeStatusPorcelain?: (worktreePath: string) => Promise<string[]>;
+
+  /**
+   * beta.67 (Bug B): compute the branch FORK-POINT sha -- the merge-base of the
+   * default base branch and HEAD in the worktree. Captured once at plan_ready
+   * and persisted on the session (sessions.plan_base_sha) so the adversary
+   * review diffs `git diff <plan_base_sha>..HEAD` (branch-only commits) instead
+   * of against main-at-review-time (which accumulates unrelated history and
+   * caused beta.66 smoke #4's false-positive revise). Optional; when absent the
+   * fork-point is not captured and the adversary falls back to the base-branch
+   * name (prior behaviour).
+   */
+  worktreeMergeBase?: (worktreePath: string, baseBranch: string) => Promise<string>;
+
+  /**
+   * beta.67 (Bug B): count commits in `<base>..HEAD` in the worktree, used only
+   * for the cheap loop.adversary_diff_base sanity log (warn when the branch
+   * has suspiciously many commits vs the plan's sub-task count). Optional.
+   */
+  worktreeCommitCount?: (worktreePath: string, base: string) => Promise<number>;
+
+  /**
+   * beta.101: of `shas`, which are NOT reachable from `from`? Powers the
+   * ledger-reachability guard that refuses to review or ship a branch which has
+   * lost commits this run already recorded (see ./ledger-integrity.ts).
+   * Optional; when absent the guard is skipped (fails open).
+   */
+  unreachableCommits?: (worktreePath: string, from: string, shas: string[]) => Promise<string[]>;
+
+  /**
+   * beta.101: list the repo's tracked files in the worktree, for plan-time
+   * detection of paths the lead invented (see ./plan-path-validate.ts).
+   * Optional; when absent the check is skipped.
+   */
+  listRepoFiles?: (worktreePath: string) => Promise<string[]>;
+
+  /**
+   * rc.10 (F1, audits 5602/5628): a git runner carrying the REQUESTER's
+   * credentials, for the checkpoint path.
+   *
+   * rc.9 shipped durable checkpoints running git through the bundle module's
+   * own default runner, which sets no environment. Every worktree this harness
+   * allocates is a `blob:none` partial clone, so `git bundle create` fetches
+   * the objects it lacks from origin -- a network read that needs the same
+   * per-request token every other remote operation is routed. Without it both
+   * checkpoints of session aad3fc57 failed on `could not fetch ... from
+   * promisor remote`, and the run reported durability as unknown while holding
+   * a real commit.
+   *
+   * Resolved through the existing PAT routing, scoped to one checkpoint, and
+   * disposed immediately after. Optional: when it is absent the checkpoint
+   * still runs unauthenticated, which is correct for a local or public repo and
+   * honestly recorded as a failure for a private one.
+   */
+  checkpointGitRunner?: (params: { repo: string; requester: string }) => Promise<{
+    run: (args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>;
+    dispose: () => Promise<void>;
+  }>;
+
+  /**
+   * beta.64 (P0-3/P0-4): `git diff --stat <base>..HEAD` in the worktree, for the
+   * best-effort-verify clean-diff check and the scripted-verifier fallback's
+   * informational diff. Optional; when absent the clean-diff check treats the
+   * diff as unavailable (best-effort verify then declines, conservatively).
+   */
+  gitDiffStat?: (worktreePath: string, base: string) => Promise<string>;
+
+  /**
+   * beta.94 (Feature 1b): files COMMITTED in `<base>..HEAD` in the worktree
+   * (`git log <base>..HEAD --name-only`). Wraps GitAdapter.listCommittedFiles.
+   * Used by the deterministic final-scope check to compare committed files
+   * against the union of declared per-sub-task scopes. Optional; when absent the
+   * scope check is skipped (no finding). Injected in tests.
+   */
+  worktreeCommittedFiles?: (worktreePath: string, base: string) => Promise<string[]>;
+
+  /**
+   * beta.64 (P0-4): run `npx tsc --noEmit` in the worktree for the scripted
+   * verifier fallback. Returns `{ ok, output }` (ok=true means exit 0). Optional;
+   * when absent (or the repo has no tsconfig), the tsc step is skipped and the
+   * fallback verdict rests on the allowlisted repo check scripts alone. Injected
+   * in tests so no real tsc process spawns.
+   */
+  runScriptedTsc?: (worktreePath: string, timeoutMs: number) => Promise<{ ok: boolean; output: string }>;
+
+  /**
+   * beta.81 (Track B / B2): read the COMBINED GitHub CI status for a pushed
+   * commit SHA -- "success" | "failure" | "pending" | "none" (no checks). Wraps
+   * getCombinedStatus (github.ts). The post-push CI wait-state polls this until
+   * it is not `pending` (or ci.wait_timeout_seconds elapses). Optional; when
+   * absent the CI wait is SKIPPED (pre-beta.81 behaviour) and the run ships on
+   * the review verdict alone. Injected in tests with a fake status sequence.
+   */
+  ciCombinedStatus?: (input: { repoFullName: string; sha: string; requester: string }) => Promise<"success" | "failure" | "pending" | "none" | "unknown">;
+
+  /**
+   * beta.119: the structured evidence behind the CI verdict (counts of check
+   * runs seen / running / failed, and whether each API was readable at all).
+   * `pollCiStatus` prefers this over `ciCombinedStatus` because a single bare
+   * verdict cannot express "the check list SHRANK since the last poll", which
+   * is what the b118 false-green needed to be caught. Optional; when absent the
+   * loop falls back to the bare status and skips the high-water-mark rule.
+   */
+  ciSnapshot?: (input: { repoFullName: string; sha: string; requester: string }) => Promise<{
+    state: "success" | "failure" | "pending" | "none" | "unknown";
+    checkTotal: number;
+    checksReadable: boolean;
+    statusReadable: boolean;
+    reason: string;
+    checkNames?: string[];
+    /**
+     * beta.124: non-empty when the read failed for a reason waiting will not
+     * fix (401/403/404), carrying the remedy rather than the status code.
+     * Optional so an older or hand-rolled snapshot source still type-checks;
+     * absent simply means "keep polling", the pre-b124 behaviour.
+     */
+    permanentDenial?: string;
+    /**
+     * beta.125: which endpoint the check counts came from. `workflow_runs`
+     * means the Checks API was denied and the Actions fallback answered
+     * instead -- a real verdict over everything Actions ran, blind to any
+     * third-party GitHub App check run. Absent is treated as `check_runs`.
+     */
+    checksSource?: "check_runs" | "workflow_runs" | "";
+  }>;
+
+  /**
+   * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the
+   * failing check-run logs so they can be surfaced as the revise finding
+   * source. Optional; when absent the failure is surfaced without log detail.
+   */
+  ciFailingLogs?: (input: { repoFullName: string; sha: string; requester: string }) => Promise<string>;
+
+  /**
+   * beta.119: can the token routed to this repo push GitHub Actions workflow
+   * files? `true`/`false` when GitHub reported the token's scopes, `null` when
+   * it did not (fine-grained PATs and App tokens report none, and are capable).
+   * Only a definite `false` stops a run. Optional; absent disables the check.
+   */
+  tokenScopes?: (input: { repoFullName: string; requester: string }) => Promise<boolean | null>;
+
+  /**
+   * beta.81 (Track B / B3): when a repo has NO CI (`ciCombinedStatus === "none"`),
+   * AUTHOR a `.github/workflows/*.yml` running the repo's declared check
+   * scripts (detected from package.json: typecheck/lint/test/build) in the
+   * worktree so CI runs on GitHub. Returns the workflow path written (relative)
+   * or null if nothing to author (no package.json / no runnable scripts).
+   * Carel: no local fallback ever -- build the CI instead. Optional; when
+   * absent B3 is skipped. Injected in tests (no real fs write).
+   */
+  ciAuthorWorkflow?: (input: { worktreePath: string }) => Promise<{ path: string; scripts: string[] } | null>;
+
+  /**
+   * beta.16 fix #3 + beta.17 correctness: release the per-session git
+   * worktree on terminal transitions (`loop.shipped`, `loop.aborted`, hard
+   * failure). Prior to beta.16 the worktree stayed live until the PR
+   * closed/merged (via the pr-watcher).
+   *
+   * beta.17 change: now returns `{ok, path, error?}` and takes an explicit
+   * `worktreePath` (looked up from the sessions row) rather than relying
+   * on `sessionId` reconstruction. Beta.16's `git.release(sessionId, repo)`
+   * silently no-op'd because the allocator uses `pending-<Date.now()>` on-
+   * disk ids, not DB session UUIDs. Callers must pass `worktreePath`.
+   *
+   * Optional for back-compat with tests that stub the orchestrator; when
+   * absent the pr-watcher's release-on-close remains as a safety net.
+   */
+  releaseWorktree?: (params: {
+    sessionId: string;
+    repoFullName: string;
+    worktreePath: string;
+    reason: "shipped" | "aborted" | "failed";
+  }) => Promise<{ ok: boolean; path?: string; error?: string }>;
+
+}
+
+/**
+ * beta.97 (Fix #7): is the adversary finding count CONVERGING across cycles?
+ *
+ * Convergence = the run was making real progress toward a clean pass but ran
+ * out of cycle budget, so an operator should be TOLD it's worth extending
+ * (re-run harness_revise) rather than shown a bare do_not_merge. We require
+ * BOTH: (a) at least two cycles of signal, and (b) a NET downward trend from
+ * the first cycle to the last (last < first). A late bump (e.g. 13 -> 8 -> 12,
+ * where cycle-3 fixes added new review surface) still counts as converging so
+ * long as the run ended below where it started -- that late bump is exactly the
+ * "new code introduced new findings" case where one more cycle plausibly clears
+ * it. A flat or net-rising arc (e.g. 8 -> 9 -> 11) is NOT converging: extending
+ * would likely just churn, so the plain do_not_merge stands.
+ *
+ * Pure + unit-tested. Empty/single-cycle input returns false (no signal).
+ */
+export function isConvergingFindingTrend(counts: number[] | undefined): boolean {
+  if (!counts || counts.length < 2) return false;
+  const first = counts[0]!;
+  const last = counts[counts.length - 1]!;
+  if (first <= 0) return false; // no findings to converge from
+  // Net improvement from start to finish is the core signal.
+  if (last >= first) return false;
+  // Guard against a single lucky dip masquerading as a trend: require the run
+  // minimum to be meaningfully below the start too (it will be, given last<first,
+  // but this makes the intent explicit and robust to future edits).
+  const min = Math.min(...counts);
+  return min < first;
+}
+
+/**
+ * beta.119: is the run converging hard enough to be worth BUYING another cycle?
+ *
+ * Deliberately stricter than `isConvergingFindingTrend`, and measured on a
+ * different quantity. That predicate drives an advisory note, so it is
+ * generous on purpose -- its own doc cites 13 -> 8 -> 12 as converging, on the
+ * grounds that a late bump is "new code introduced new findings". Fine for a
+ * sentence on a PR; not a basis for spending several dollars and ten minutes.
+ *
+ * It also counts the wrong things. TOTAL findings include the `info` notes the
+ * adversary emits to record that a PRIOR finding was fixed, so the number can
+ * rise precisely BECAUSE the run is succeeding. b118's totals went 16 -> 8 -> 9
+ * and that final rise is mostly bookkeeping; its BLOCKING counts went 9 -> 5 ->
+ * 4, monotonically down. Blocking findings are also the only ones that keep the
+ * PR from merging, so they are what another cycle would be buying.
+ *
+ * Requires: something still blocking (otherwise the run ships anyway), a net
+ * improvement over the run, and no regression in the latest cycle -- a run that
+ * just went backwards has not earned another turn.
+ */
+export function isConvergingBlockingTrend(blocking: number[] | undefined): boolean {
+  if (!blocking || blocking.length < 2) return false;
+  const first = blocking[0]!;
+  const last = blocking[blocking.length - 1]!;
+  const prev = blocking[blocking.length - 2]!;
+  if (last <= 0) return false;   // nothing blocking -> the run ships regardless
+  if (last >= first) return false; // no net progress across the run
+  return last <= prev;             // and the most recent cycle did not regress
+}
+
+export class OrchestratorLoop {
+  constructor(private readonly deps: OrchestratorDeps) {}
+
+  private routeLog(role: RoleName, fallbackModel: string, selectedModel?: string): {
+    model: string;
+    backend?: string;
+    provider?: string;
+    effort?: string;
+  } {
+    const route = this.deps.effectiveRouteFor?.(role);
+    return {
+      model:
+        route?.backend === "opencode"
+          ? (route.model ?? selectedModel ?? fallbackModel)
+          : (selectedModel ?? route?.model ?? fallbackModel),
+      backend: route?.backend,
+      provider: route?.provider,
+      effort: route?.effort,
+    };
+  }
+
+  /**
+   * Pure state-transition rule (unit-tested).
+   */
+  static advance(input: {
+    currentStatus: LoopStatus;
+    verdict?: "pass" | "revise" | "block";
+    cyclesRan: number;
+    maxCycles: number;
+    /** beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order. */
+    findingCountsByCycle?: number[];
+    reactions: { shipIt: boolean; abort: boolean; pause: boolean };
+    budgetExhausted: boolean;
+    hardTimeout: boolean;
+    /**
+     * beta.109: findings in this review that are diff-addressable AND at medium
+     * severity or above, per isBlockingFinding. Undefined disables the gate.
+     */
+    blockingFindings?: number;
+    /** beta.109: `loop.ship_when_no_blocking_findings`, default on. */
+    shipWhenNoBlockingFindings?: boolean;
+    /**
+     * beta.119: per-cycle BLOCKING finding counts, in cycle order. Drives the
+     * cycle extension. Deliberately not `findingCountsByCycle`, which includes
+     * the `info` notes the adversary emits to record prior fixes and so can
+     * rise because a run is succeeding.
+     */
+    blockingCountsByCycle?: number[];
+    /** beta.119: extra cycles already granted beyond `maxCycles` this run. */
+    cycleExtensionsGranted?: number;
+    /** beta.119: `loop.max_cycle_extensions`. 0 disables extension entirely. */
+    maxCycleExtensions?: number;
+    /**
+     * beta.119: whether the remaining budget comfortably covers another cycle.
+     * The caller computes it from real per-cycle spend; an extension must never
+     * be the thing that runs a session out of money.
+     */
+    budgetHeadroomOk?: boolean;
+    /**
+     * beta.120 (fix 4): true when too little wall clock remains to run another
+     * cycle AND still push. Stops revising and lands what exists.
+     */
+    shipTimeReserved?: boolean;
+  }): { nextStatus: LoopStatus; reason: string } {
+    if (input.reactions.abort) return { nextStatus: "aborted", reason: "user_abort_reaction" };
+    // beta.129: a ceiling exists to stop us STARTING work we cannot finish. It
+    // must never discard work that IS finished. Session d48ba433 spent 122
+    // minutes, earned `verdict: pass` with zero blocking findings, and was
+    // aborted two milliseconds later because the wall-clock check outranked the
+    // verdict -- $21.55 and six commits thrown away one step short of the PR.
+    // Landing a passing review costs a push and an API call, no model spend, so
+    // neither the clock nor the daily cap is a reason to refuse it.
+    const terminalVerdictInHand =
+      input.currentStatus === "reviewing" && (input.verdict === "pass" || input.reactions.shipIt === true);
+    if (!terminalVerdictInHand) {
+      if (input.budgetExhausted) return { nextStatus: "aborted", reason: "budget_exhausted" };
+      if (input.hardTimeout) return { nextStatus: "aborted", reason: "hard_timeout" };
+    }
+    if (input.reactions.shipIt && input.currentStatus === "reviewing") {
+      return { nextStatus: "done", reason: "user_ship_it_reaction" };
+    }
+    switch (input.currentStatus) {
+      case "crystallising": return { nextStatus: "planning", reason: "crystallise_ok" };
+      case "planning":      return { nextStatus: "executing", reason: "plan_ready" };
+      case "executing":     return { nextStatus: "reviewing", reason: "subtasks_complete" };
+      case "reviewing":
+        if (input.verdict === "pass") return { nextStatus: "done", reason: "adversary_pass" };
+        if (input.verdict === "block") return { nextStatus: "failed", reason: "adversary_block" };
+        // beta.120 (fix 4): out of runway, but not yet out of time. Another
+        // cycle would run into the wall clock and the run would be killed
+        // mid-flight with nothing pushed -- which is exactly how the b119
+        // take-2 smoke ended. Land it instead. This deliberately sits ABOVE the
+        // revise decision and BELOW the verdict checks: a `block` is still a
+        // failure and a `pass` is still a pass.
+        if (input.shipTimeReserved === true) {
+          return { nextStatus: "done", reason: "ship_time_reserved" };
+        }
+        // beta.109: a `revise` carrying nothing blocking has nothing left for
+        // another cycle to do that would change the answer.
+        //
+        // The adversary writes `revise` while ANY finding is open, including
+        // informational ones it emits to record that a PRIOR finding was fixed.
+        // So a run converges towards a floor it can never cross: ProjectThanos
+        // PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten
+        // low, six informational and one low convention finding, none at medium
+        // or above. Each cycle closed a few nits and opened a few more on the
+        // files it had just touched. Two earlier revises on the same PR ended
+        // the same way. That is not convergence failing, it is a loop with no
+        // exit condition for "good enough".
+        //
+        // Medium and above still cycles, so this cannot ship real defects. The
+        // remaining lows are not lost either -- they go on the PR body and
+        // `harness_revise` will pick them up if asked.
+        if (
+          input.verdict === "revise" &&
+          input.shipWhenNoBlockingFindings !== false &&
+          input.blockingFindings === 0
+        ) {
+          return { nextStatus: "done", reason: "shipped_no_blocking_findings" };
+        }
+        // beta.57 (P3): was `>= maxCycles - 1`, which shipped one cycle EARLY
+        // (max_cycles: 3 ran only 2 execute/review cycles -- the check fired at
+        // the END of cycle 2 with cyclesRan=2 >= 3-1). A config that promises N
+        // cycles now runs N.
+        if (input.cyclesRan >= input.maxCycles + (input.cycleExtensionsGranted ?? 0)) {
+          // beta.119: BUY THE CYCLE THE EVIDENCE SAYS IS WORTH BUYING. The b118
+          // OpenClaw smoke went 16 -> 8 -> 9 findings and stopped dead on the
+          // ceiling, having spent $12.90 of a $30 budget. b97 already detects
+          // this exact arc -- it just wrote a note asking the operator to run
+          // `harness_revise` by hand, which is the same cycle the harness could
+          // have run itself while the worktree was still warm. Four blocking
+          // findings, all described by the report as "small and mechanical",
+          // shipped unfixed for want of a fourth cycle nobody had to pay extra
+          // for. Bounded twice over: a hard extension count, and real budget
+          // headroom measured from this run's own per-cycle spend.
+          const canExtend =
+            (input.cycleExtensionsGranted ?? 0) < (input.maxCycleExtensions ?? 0) &&
+            input.budgetHeadroomOk === true &&
+            isConvergingBlockingTrend(input.blockingCountsByCycle);
+          if (canExtend) {
+            return { nextStatus: "executing", reason: "max_cycles_extended_converging" };
+          }
+          // beta.35 fix #3: cycles exhausted with a `revise` (NOT `block`)
+          // verdict. `revise` means "improvable", not "broken" -- and on a
+          // repo with no in-loop preview-deploy the adversary structurally
+          // cannot reach `pass` on a UI change (it will always want runtime
+          // evidence it can't get). Rather than throwing away a correct fix
+          // (the old `max_cycles_reached` -> failed path), SHIP the PR with
+          // an honest "shipped without a clean pass" annotation in the body
+          // (renderPrBody #3). The post-ship merge recommendation is derived
+          // from `reachedCleanPass=false`, so it comes out `do_not_merge`
+          // (beta.34 hard gate): the PR exists, but a HUMAN must approve the
+          // merge (via harness_merge_pr, which will refuse and point to the
+          // GitHub UI, or via the UI directly) -- which is exactly the
+          // "you review, then tell me to merge and verify the deploy" flow.
+          // A `block` verdict never reaches here (returned above): a genuine
+          // blocking defect still hard-fails and ships nothing.
+          //
+          // beta.97 (Fix #7): distinguish CONVERGING from stuck. If the finding
+          // count was trending DOWN across cycles (net drop from first to last,
+          // AND the last cycle is at/below the run minimum-ish), a clean pass
+          // was plausibly one more cycle away -- ship do_not_merge as before,
+          // but with a DISTINCT reason so the terminal headline + PR body can
+          // SURFACE an ask-to-extend ("converging but incomplete -- re-run
+          // harness_revise to continue?") instead of a bare do_not_merge. The
+          // merge gate is unchanged (still do_not_merge); this is purely an
+          // observability signal so the operator can make an informed call.
+          if (isConvergingFindingTrend(input.findingCountsByCycle)) {
+            return { nextStatus: "done", reason: "shipped_max_cycles_revise_converging" };
+          }
+          return { nextStatus: "done", reason: "shipped_max_cycles_revise" };
+        }
+        return { nextStatus: "executing", reason: "adversary_revise" };
+      case "done":
+      case "failed":
+      case "aborted":
+        return { nextStatus: input.currentStatus, reason: "terminal" };
+      // beta.55 (B2): a resting pause. advance() never drives INTO or OUT of
+      // this state (finaliseAwaitingClarification sets it directly; harness_
+      // answer re-drives via loop.run from `planning`), but the switch must be
+      // exhaustive -- staying put is the correct no-op.
+      case "awaiting_clarification":
+        return { nextStatus: input.currentStatus, reason: "awaiting_clarification" };
+    }
+  }
+
+  private setStatus(sessionId: string, status: LoopStatus): void {
+    // beta.63 (Part A): bump the session-level liveness heartbeat on EVERY
+    // state transition. This is the single column the stall watchdog reads to
+    // tell a legit long phase from a wedge. Cheap (one extra column write).
+    const now = Date.now();
+    if (status === "awaiting_clarification" || status === "done" || status === "failed" || status === "aborted") {
+      try {
+        if (status === "awaiting_clarification") pauseActiveDeadline(this.deps.state.db, sessionId, now);
+        else closeActiveDeadline(this.deps.state.db, sessionId, now);
+      } catch (err) {
+        this.deps.logger?.warn?.("[loop] could not close active-time segment", { sessionId, status, err: String(err) });
+      }
+    } else {
+      try {
+        const snapshot = activeDeadlineSnapshot(this.deps.state.db, sessionId, now);
+        if (snapshot.segmentStartedAt === null) {
+          resumeActiveDeadline(
+            this.deps.state.db,
+            sessionId,
+            this.deps.config.loop.session_hard_timeout_seconds,
+            now,
+          );
+        }
+      } catch {
+        /* legacy test doubles/unmigrated fixtures are handled by runInner */
+      }
+    }
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET status = ?, updated_at = ?, last_progress_at = ? WHERE id = ?`)
+      .run(status, now, now, sessionId);
+    // beta.63 (Part B): mirror the transition into the durable interaction log
+    // (external to the worktree) so a stall's frozen phase + last event ts is
+    // recoverable after a worktree release / container restart.
+    this.deps.interactionLog?.log(sessionId, {
+      event: "state_transition",
+      phase: mapPhase(status),
+      status,
+    });
+    // beta.77: harness-native outbound progress/terminal delivery. Fired on
+    // every phase + terminal transition through this single choke point.
+    // Fire-and-forget + guarded so it can never throw out of the sync hot path
+    // (a failed/absent progress post must never disturb the loop).
+    try {
+      this.deps.deliverProgress?.(sessionId, status);
+    } catch {
+      /* best-effort: progress delivery never affects loop control flow */
+    }
+  }
+
+  /**
+   * beta.63 (Part A): mark forward progress WITHOUT a status change (e.g. a
+   * sub-task started/completed, review started, push done). Bumps
+   * last_progress_at so the watchdog sees liveness inside a long phase, and
+   * logs a progress breadcrumb to the interaction log.
+   */
+  private markProgress(sessionId: string, marker: string, phase: InteractionPhase, detail?: Record<string, unknown>): void {
+    const now = Date.now();
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET last_progress_at = ?, updated_at = ? WHERE id = ?`)
+      .run(now, now, sessionId);
+    this.deps.interactionLog?.log(sessionId, { event: "progress", marker, phase, ...(detail ?? {}) });
+  }
+
+  /**
+   * beta.90 (Feature 2): build the stream-slow liveness callback for a worker
+   * dispatch. When the SDK stream opens then goes idle past the threshold, this
+   * (1) emits `loop.worker_stream_slow` for the audit trail and (2) bumps the
+   * session liveness heartbeat (last_progress_at, the beta.63 column the stall
+   * watchdog reads) so harness_progress surfaces "worker stream idle Ns" rather
+   * than the phase looking wedged. Best-effort + throw-guarded: this is pure
+   * observability and must NEVER disturb the worker call.
+   */
+  private makeStreamSlowCallback(
+    sessionId: string,
+    seq: number,
+    cycle: number,
+    // beta.94 (Feature 2): optional idle-no-work wiring. When supplied, the
+    // callback ALSO tracks the b93 seq-12 idle conjunction and (per config)
+    // emits loop.worker_idle_no_work / triggers a narrow abort. `plan` is the
+    // worktree source for the "did this sub-task touch files" probe; onIdleAbort
+    // (when set) is invoked to abort the sub-task via the WorkerTimeoutError
+    // path. Absent = pure beta.90 observability (unchanged).
+    idle?: { plan: LeadPlan; baseSha: string; onIdleAbort?: () => void },
+  ) {
+    // beta.94 (Feature 2): per-dispatch conjunction state. Consecutive
+    // stream-slow ticks that ALL had tokensOut===0. Reset on any tick with
+    // tokensOut>0 (the worker resumed producing tokens -> not idle).
+    let consecutiveSlowZeroTokens = 0;
+    let idleFired = false; // emit loop.worker_idle_no_work at most once per dispatch
+    return (info: { idleMs: number; elapsedMs: number; tokensOut: number; label: string }) => {
+      try {
+        const idleSec = Math.round(info.idleMs / 1000);
+        this.deps.state.audit(
+          "loop.worker_stream_slow",
+          { sessionId, seq, cycle, idleMs: info.idleMs, elapsedMs: info.elapsedMs, tokensOut: info.tokensOut },
+          sessionId,
+        );
+        // Reuse the beta.63 last_progress_at heartbeat mechanism so the stall
+        // watchdog sees liveness inside a long-but-alive worker stream.
+        const now = Date.now();
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET last_progress_at = ?, updated_at = ? WHERE id = ?`)
+          .run(now, now, sessionId);
+        this.deps.interactionLog?.log(sessionId, {
+          event: "progress",
+          marker: `worker stream idle ${idleSec}s`,
+          phase: "worker",
+          seq,
+          cycle,
+          idleMs: info.idleMs,
+        });
+
+        // beta.94 (Feature 2): idle-no-work conjunction. Track CONSECUTIVE
+        // stream-slow ticks with tokensOut===0. When (>= threshold consecutive)
+        // AND (cumulative elapsed > floor), verify the sub-task has produced NO
+        // worktree writes and, if so, emit loop.worker_idle_no_work (log-only by
+        // default) and optionally abort via the existing timeout-class path.
+        if (idle) {
+          if (info.tokensOut === 0) consecutiveSlowZeroTokens += 1;
+          else consecutiveSlowZeroTokens = 0;
+          const threshold = this.deps.config.loop.worker_idle_consecutive_slow ?? 3;
+          const elapsedFloorMs = (this.deps.config.loop.worker_idle_min_elapsed_seconds ?? 900) * 1000;
+          if (
+            !idleFired &&
+            consecutiveSlowZeroTokens >= threshold &&
+            info.tokensOut === 0 &&
+            info.elapsedMs > elapsedFloorMs
+          ) {
+            idleFired = true; // guard re-entry while the async no-writes probe runs
+            // The no-writes probe is async; run it fire-and-forget. If writes DID
+            // occur, re-arm (clear idleFired) so a later genuinely-idle window
+            // can still fire.
+            void this.handleWorkerIdleNoWork({
+              sessionId, seq, cycle,
+              consecutiveSlow: consecutiveSlowZeroTokens,
+              elapsedMs: info.elapsedMs,
+              idle,
+              rearm: () => { idleFired = false; },
+            });
+          }
+        }
+      } catch {
+        /* best-effort: stream-slow surfacing never affects the worker call */
+      }
+    };
+  }
+
+  private makeWorkerActivityCallback(
+    sessionId: string,
+    seq: number,
+    cycle: number,
+  ): (info: { kind: string; at: number }) => void {
+    let lastPersistedAt = 0;
+    return (info) => {
+      if (info.at - lastPersistedAt < 15_000) return;
+      lastPersistedAt = info.at;
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET last_progress_at = ?, updated_at = ? WHERE id = ?`,
+        ).run(info.at, info.at, sessionId);
+        this.deps.state.audit(
+          "loop.worker_activity",
+          { sessionId, seq, cycle, kind: info.kind },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "worker_activity",
+          phase: "worker",
+          seq,
+          cycle,
+          kind: info.kind,
+        });
+      } catch {
+        /* activity telemetry must never disturb the provider turn */
+      }
+    };
+  }
+
+  /**
+   * beta.94 (Feature 2): the idle-no-work conjunction handler. Confirms the
+   * sub-task produced NO worktree writes (committed OR working-tree changes)
+   * since the sub-task base, then emits `loop.worker_idle_no_work`
+   * (LOG-ONLY by default). When loop.worker_idle_abort_enabled is true it ALSO
+   * calls onIdleAbort() to abort the sub-task via the existing
+   * WorkerTimeoutError / {outcome:'timeout'} terminal path (worktree preserved).
+   * Never throws.
+   */
+  private async handleWorkerIdleNoWork(p: {
+    sessionId: string; seq: number; cycle: number; consecutiveSlow: number; elapsedMs: number;
+    idle: { plan: LeadPlan; baseSha: string; onIdleAbort?: () => void };
+    rearm: () => void;
+  }): Promise<void> {
+    const { sessionId, seq, cycle, consecutiveSlow, elapsedMs, idle, rearm } = p;
+    try {
+      const worktree = idle.plan.worktreePath;
+      // "Did this sub-task touch files" signal: committed files in
+      // <subTaskBase>..HEAD plus any uncommitted working-tree changes. If EITHER
+      // is non-empty the worker is producing work (just slowly) -> not idle;
+      // re-arm and bail (no event, no abort).
+      let touched = false;
+      if (worktree) {
+        if (this.deps.worktreeCommittedFiles && idle.baseSha) {
+          const committed = await this.deps.worktreeCommittedFiles(worktree, idle.baseSha).catch(() => [] as string[]);
+          if (committed.length > 0) touched = true;
+        }
+        if (!touched && this.deps.gitDiffStat && idle.baseSha) {
+          const stat = await this.deps.gitDiffStat(worktree, idle.baseSha).catch(() => "");
+          if (stat && stat.trim().length > 0) touched = true;
+        }
+      }
+      if (touched) {
+        // Work exists -> this is a slow-but-alive worker, not the idle-no-work
+        // failure mode. Do NOT emit the event or abort; allow re-arming.
+        rearm();
+        return;
+      }
+
+      // Conjunction confirmed: consecutive zero-token slow ticks past the
+      // elapsed floor with NO worktree writes. This is the b93 seq-12 signature.
+      const abortEnabled = this.deps.config.loop.worker_idle_abort_enabled === true;
+      this.deps.state.audit(
+        "loop.worker_idle_no_work",
+        { sessionId, seq, cycle, consecutiveSlow, elapsedMs, abortEnabled },
+        sessionId,
+      );
+      this.deps.interactionLog?.log(sessionId, {
+        event: "worker_idle_no_work", phase: "worker", seq, cycle, consecutiveSlow, elapsedMs, abortEnabled,
+      });
+      this.deps.logger.warn("[loop] beta.94: worker idle with no work (zero tokens, no writes) past the idle floor", {
+        sessionId, seq, cycle, consecutiveSlow, elapsedMs, abortEnabled,
+      });
+
+      // LOG-ONLY unless the abort flag is set. When set, abort via the SAME
+      // timeout-class path (WorkerTimeoutError) so the worktree is preserved and
+      // the sub-task terminates as {outcome:'timeout'} -- NO new terminal path.
+      if (abortEnabled && idle.onIdleAbort) {
+        this.deps.state.audit("loop.worker_idle_abort", { sessionId, seq, cycle, consecutiveSlow, elapsedMs }, sessionId);
+        idle.onIdleAbort();
+      }
+    } catch {
+      /* best-effort: idle detection never disturbs the worker call by throwing */
+    }
+  }
+
+  /**
+   * rc.9: record every denial of every ATTEMPT.
+   *
+   * The rc.8 audit ran once, before the protocol-retry loop, so only the first
+   * turn's denials were ever written. StitchGuard's second `apply_patch` was
+   * refused identically at 19:35:36 and left no row at all: the durable record
+   * showed one denial where there had been two, which is also why "how many
+   * attempts did this cost" could not be answered from the database.
+   *
+   * `attempt` is part of the payload rather than implied by row order, because
+   * these rows are read by event name across a whole session.
+   */
+  /**
+   * rc.10: append one immutable row per worker turn.
+   *
+   * `sub_tasks` holds one row per (cycle, seq) and each retry overwrites it, so
+   * the ledger's account of a retried sub-task is whatever the last attempt
+   * happened to look like. Task 3 of the smoke test ended showing $0.4262756
+   * and no commit, which is true of its final attempt and false of the
+   * sub-task: audits 5590 and 5620 are two separate turns, and Git holds a
+   * commit from the work in between.
+   *
+   * Append-only and additive. Nothing reads `sub_tasks` differently because of
+   * this table; it answers the questions that row cannot -- what the sub-task
+   * really cost, and which commits it really produced -- and gives a resumed
+   * attempt the provenance it needs to get credit for its own earlier work.
+   *
+   * Never allowed to break a run. A ledger that throws while recording history
+   * would turn a reporting gap into a failed session, which is a bad trade for
+   * a table nothing depends on to make progress.
+   */
+  private recordSubTaskAttempt(params: {
+    sessionId: string;
+    subTaskId: string | null;
+    seq: number;
+    cycle: number;
+    status: string;
+    costUsd?: number;
+    baseSha?: string;
+    commitSha?: string | null;
+    commitShas?: readonly string[];
+    filesTouched?: readonly string[];
+    summary?: string | null;
+    startedAtMs?: number;
+    workerStatus?: string;
+    verificationStatus?: string;
+    verification?: unknown;
+    taskOutcome?: string;
+  }): void {
+    try {
+      const db = this.deps.state.db;
+      const prior = db
+        .prepare(`SELECT COUNT(*) AS n FROM sub_task_attempts WHERE session_id = ? AND cycle = ? AND seq = ?`)
+        .get(params.sessionId, params.cycle, params.seq) as { n: number } | undefined;
+      const attempt = (prior?.n ?? 0) + 1;
+      const shas = params.commitShas ?? (params.commitSha ? [params.commitSha] : []);
+      db.prepare(
+        `INSERT INTO sub_task_attempts
+           (id, session_id, sub_task_id, cycle, seq, attempt, status, cost_usd, base_sha,
+            commit_sha, commit_shas, files_touched, summary, started_at, ended_at,
+            worker_status, verification_status, verification_json, task_outcome)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        `${params.sessionId}:${params.cycle}:${params.seq}:${attempt}`,
+        params.sessionId,
+        params.subTaskId ?? null,
+        params.cycle,
+        params.seq,
+        attempt,
+        params.status,
+        params.costUsd ?? 0,
+        params.baseSha ?? null,
+        params.commitSha ?? null,
+        JSON.stringify([...shas]),
+        JSON.stringify([...(params.filesTouched ?? [])]),
+        (params.summary ?? "").slice(0, 2000) || null,
+        params.startedAtMs ?? null,
+        Date.now(),
+        params.workerStatus ?? params.status,
+        params.verificationStatus ?? null,
+        params.verification === undefined ? null : JSON.stringify(params.verification),
+        params.taskOutcome ?? null,
+      );
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not record sub-task attempt history", {
+        sessionId: params.sessionId,
+        seq: params.seq,
+        err: String(err).slice(0, 300),
+      });
+    }
+  }
+
+  private recordObserveAttemptReport(params: {
+    sessionId: string;
+    subTaskId: string;
+    cycle: number;
+    seq: number;
+    attempt: number;
+    providerCallId?: string | null;
+    finalMessage?: string;
+    validation: ObserveValidation | null;
+  }): void {
+    try {
+      const parsed =
+        params.validation && "result" in params.validation
+          ? params.validation.result
+          : undefined;
+      this.deps.state.db.prepare(
+        `INSERT OR REPLACE INTO observe_attempt_reports
+           (id,session_id,sub_task_id,provider_call_id,cycle,seq,attempt,outcome,
+            raw_report_text,parsed_result_json,validation_json,created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+      ).run(
+        `${params.sessionId}:${params.cycle}:${params.seq}:${params.attempt}`,
+        params.sessionId,
+        params.subTaskId,
+        params.providerCallId ?? null,
+        params.cycle,
+        params.seq,
+        params.attempt,
+        params.validation?.kind ?? "unstructured",
+        params.finalMessage ? redactTokenShapes(params.finalMessage).slice(0, 262144) : null,
+        parsed === undefined ? null : JSON.stringify(parsed),
+        JSON.stringify(params.validation ?? { ok: false, kind: "unstructured", reason: "no observe contract" }),
+        Date.now(),
+      );
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist observe attempt report", {
+        sessionId: params.sessionId,
+        seq: params.seq,
+        attempt: params.attempt,
+        err: String(err).slice(0, 300),
+      });
+    }
+  }
+
+  private beginProviderCall(params: {
+    sessionId: string;
+    subTaskId?: string | null;
+    role: string;
+    cycle?: number;
+    seq?: number;
+    model?: string;
+    route?: string;
+    baseSha?: string;
+  }): { id: string; attempt: number } {
+    const db = this.deps.state.db;
+    if (typeof (db as unknown as { exec?: unknown }).exec !== "function") {
+      // Legacy unit-test doubles are not a StateStore/DatabaseSync and cannot
+      // exercise durable accounting. Production StateStore always has exec().
+      return { id: `untracked-test-double:${randomUUID()}`, attempt: 1 };
+    }
+    const id = randomUUID();
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      const unresolved = db.prepare(
+        `SELECT id,status,role FROM provider_calls
+          WHERE session_id = ? AND status IN ('started','unknown')
+          ORDER BY started_at LIMIT 1`,
+      ).get(params.sessionId) as { id: string; status: string; role: string } | undefined;
+      if (unresolved) {
+        throw new Error(
+          `provider call ${unresolved.id} (${unresolved.role}) remains ${unresolved.status}; reconcile it before dispatch`,
+        );
+      }
+      const row = db.prepare(
+        `SELECT COUNT(*) AS n FROM provider_calls
+          WHERE session_id = ? AND role = ? AND COALESCE(cycle,-1) = COALESCE(?,-1)
+            AND COALESCE(seq,-1) = COALESCE(?,-1)`,
+      ).get(params.sessionId, params.role, params.cycle ?? null, params.seq ?? null) as { n: number } | undefined;
+      const attempt = (row?.n ?? 0) + 1;
+      db.prepare(
+        `INSERT INTO provider_calls
+           (id,session_id,sub_task_id,role,cycle,seq,attempt,model,route,base_sha,status,started_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?, 'started', ?)`,
+      ).run(
+        id,
+        params.sessionId,
+        params.subTaskId ?? null,
+        params.role,
+        params.cycle ?? null,
+        params.seq ?? null,
+        attempt,
+        params.model ?? null,
+        params.route ?? null,
+        params.baseSha ?? null,
+        Date.now(),
+      );
+      db.prepare(
+        `UPDATE sessions SET accounting_state = 'ok',
+                             minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`,
+      ).run(Date.now(), params.sessionId);
+      db.exec("COMMIT");
+      return { id, attempt };
+    } catch (err) {
+      try { db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      try {
+        db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), params.sessionId);
+      } catch { /* preserve original */ }
+      throw new AccountingPersistenceError(`provider dispatch was not recorded: ${String(err)}`);
+    }
+  }
+
+  private finishProviderCall(
+    sessionId: string,
+    id: string,
+    data: {
+      status: "completed" | "failed" | "unknown";
+      costUsd?: number | null;
+      providerResultId?: string | null;
+      result?: unknown;
+      verification?: unknown;
+    },
+  ): void {
+    if (id.startsWith("untracked-test-double:")) return;
+    const db = this.deps.state.db;
+    try {
+      const changed = db.prepare(
+        `UPDATE provider_calls
+            SET status = ?, cost_usd = ?, provider_result_id = ?, result_json = ?,
+                verification_json = ?, ended_at = ?
+          WHERE id = ? AND session_id = ? AND status = 'started'`,
+      ).run(
+        data.status,
+        data.costUsd ?? null,
+        data.providerResultId ?? null,
+        data.result === undefined ? null : JSON.stringify(data.result),
+        data.verification === undefined ? null : JSON.stringify(data.verification),
+        Date.now(),
+        id,
+        sessionId,
+      );
+      if (changed.changes !== 1) throw new Error(`provider call ${id} was not in started state`);
+    } catch (err) {
+      try {
+        db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), sessionId);
+      } catch { /* the original persistence failure remains decisive */ }
+      throw new AccountingPersistenceError(`provider result/cost was not durably recorded: ${String(err)}`);
+    }
+  }
+
+  private finishProviderCallWithSpend(
+    sessionId: string,
+    id: string,
+    requester: string,
+    data: {
+      costUsd: number;
+      providerResultId?: string | null;
+      providerCumulativeCostUsd?: number;
+      providerCostBaselineUsd?: number;
+      providerCostCurrency?: string;
+      result?: unknown;
+      verification?: unknown;
+    },
+  ): void {
+    if (id.startsWith("untracked-test-double:")) return;
+    const db = this.deps.state.db;
+    const now = Date.now();
+    const day = new Date(now).toISOString().slice(0, 10);
+    const month = day.slice(0, 7);
+    const completionFingerprint = createHash("sha256").update(JSON.stringify({
+      costUsd: data.costUsd,
+      providerResultId: data.providerResultId ?? null,
+      providerCumulativeCostUsd: data.providerCumulativeCostUsd ?? null,
+      providerCostBaselineUsd: data.providerCostBaselineUsd ?? null,
+      providerCostCurrency: data.providerCostCurrency ?? null,
+      result: data.result ?? null,
+      verification: data.verification ?? null,
+    })).digest("hex");
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      if (!Number.isFinite(data.costUsd) || data.costUsd < 0) {
+        throw new Error(`provider cost is not a finite non-negative amount: ${String(data.costUsd)}`);
+      }
+      if (
+        data.providerCumulativeCostUsd !== undefined &&
+        (!Number.isFinite(data.providerCumulativeCostUsd) || data.providerCumulativeCostUsd < 0)
+      ) {
+        throw new Error(`provider cumulative cost is invalid: ${String(data.providerCumulativeCostUsd)}`);
+      }
+      const changed = db.prepare(
+        `UPDATE provider_calls
+            SET status = 'completed', cost_usd = ?, provider_result_id = ?, result_json = ?,
+                verification_json = ?, completion_fingerprint = ?, ended_at = ?
+          WHERE id = ? AND session_id = ? AND status = 'started'`,
+      ).run(
+        data.costUsd,
+        data.providerResultId ?? null,
+        data.result === undefined ? null : JSON.stringify(data.result),
+        data.verification === undefined ? null : JSON.stringify(data.verification),
+        completionFingerprint,
+        now,
+        id,
+        sessionId,
+      );
+      if (changed.changes !== 1) {
+        const existing = db.prepare(
+          `SELECT status,completion_fingerprint FROM provider_calls WHERE id = ? AND session_id = ?`,
+        ).get(id, sessionId) as { status: string; completion_fingerprint: string | null } | undefined;
+        if (existing?.status === "completed" && existing.completion_fingerprint === completionFingerprint) {
+          db.exec("COMMIT");
+          return;
+        }
+        throw new Error(`provider call ${id} was not in started state or completion conflicted`);
+      }
+      db.prepare(
+        `UPDATE sessions SET cost_usd = cost_usd + ?, accounting_state = 'ok', updated_at = ? WHERE id = ?`,
+      ).run(data.costUsd, now, sessionId);
+      db.prepare(
+        `INSERT INTO budgets_daily (day, user, spent_usd) VALUES (?, ?, ?)
+         ON CONFLICT (day, user) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd`,
+      ).run(day, requester, data.costUsd);
+      db.prepare(
+        `INSERT INTO budgets_monthly (month, user, spent_usd) VALUES (?, ?, ?)
+         ON CONFLICT (month, user) DO UPDATE SET spent_usd = spent_usd + excluded.spent_usd`,
+      ).run(month, requester, data.costUsd);
+      if (
+        data.providerResultId &&
+        typeof data.providerCumulativeCostUsd === "number" &&
+        Number.isFinite(data.providerCumulativeCostUsd)
+      ) {
+        if (
+          typeof data.providerCostBaselineUsd !== "number" ||
+          !Number.isFinite(data.providerCostBaselineUsd) ||
+          data.providerCostCurrency !== "USD"
+        ) {
+          throw new Error("provider cumulative checkpoint is missing a valid USD baseline");
+        }
+        const checkpoint = db.prepare(
+          `SELECT cumulative_cost_usd,currency,checkpoint_version
+             FROM provider_session_usage
+            WHERE backend = 'opencode' AND provider_session_id = ?`,
+        ).get(data.providerResultId) as {
+          cumulative_cost_usd: number;
+          currency: string;
+          checkpoint_version: number;
+        } | undefined;
+        if (
+          checkpoint &&
+          (checkpoint.currency !== "USD" ||
+            Math.abs(checkpoint.cumulative_cost_usd - data.providerCostBaselineUsd) > 1e-9)
+        ) {
+          throw new Error(
+            `provider cumulative checkpoint moved: stored ${checkpoint.cumulative_cost_usd} ${checkpoint.currency}, ` +
+            `turn baseline ${data.providerCostBaselineUsd} ${data.providerCostCurrency}`,
+          );
+        }
+        db.prepare(
+          `INSERT INTO provider_session_usage
+             (backend,provider_session_id,currency,cumulative_cost_usd,checkpoint_version,last_provider_call_id,updated_at)
+           VALUES ('opencode',?,'USD',?,?,?,?)
+           ON CONFLICT (backend,provider_session_id) DO UPDATE SET
+             currency = excluded.currency,
+             cumulative_cost_usd = excluded.cumulative_cost_usd,
+             checkpoint_version = provider_session_usage.checkpoint_version + 1,
+             last_provider_call_id = excluded.last_provider_call_id,
+             updated_at = excluded.updated_at`,
+        ).run(
+          data.providerResultId,
+          data.providerCumulativeCostUsd,
+          checkpoint?.checkpoint_version ?? 1,
+          id,
+          now,
+        );
+      }
+      this.deps.state.audit(
+        "budget.spend",
+        { user: requester, amountUsd: data.costUsd, sessionId, providerCallId: id },
+        sessionId,
+      );
+      db.exec("COMMIT");
+    } catch (err) {
+      try { db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      try {
+        db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), sessionId);
+      } catch { /* original write remains decisive */ }
+      throw new AccountingPersistenceError(`provider result/cost reconciliation was not atomic: ${String(err)}`);
+    }
+  }
+
+  private async runAccountedWorker(
+    meta: {
+      sessionId: string;
+      subTaskId: string;
+      cycle: number;
+      seq: number;
+      model: string;
+      requester: string;
+      baseSha?: string;
+    },
+    invoke: () => Promise<WorkerResult>,
+  ): Promise<WorkerResult> {
+    const route = this.routeLog("worker", this.deps.config.models.worker, meta.model);
+    const call = this.beginProviderCall({
+      ...meta,
+      model: route.model,
+      role: "worker",
+      route: route.backend,
+    });
+    const startedAt = Date.now();
+    this.deps.interactionLog?.logSdkRequest(meta.sessionId, {
+      role: "worker",
+      ...route,
+      phase: "worker",
+      seq: meta.seq,
+      cycle: meta.cycle,
+      prompt: `[accounting marker only; actual prompt receipt is recorded on worker_end_turn] physical worker invocation ${call.attempt}`,
+      callId: call.id,
+      attempt: call.attempt,
+    });
+    try {
+      const result = await invoke();
+      if (result.usageMeasured === false) {
+        this.finishProviderCall(meta.sessionId, call.id, {
+          status: "unknown",
+          costUsd: null,
+          providerResultId: result.sdkSessionId ?? null,
+          result: {
+            workerStatus: result.status,
+            reason: result.reason ?? null,
+            usageSource: result.usageSource ?? "unavailable",
+          },
+        });
+        try {
+          this.deps.state.db.prepare(
+            `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                                 worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+          ).run(Date.now(), meta.sessionId);
+        } catch { /* provider_calls row remains the durable evidence */ }
+        this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
+          role: "worker",
+          ...route,
+          phase: "worker",
+          seq: meta.seq,
+          cycle: meta.cycle,
+          finishReason: "usage_unmeasured",
+          durationMs: Date.now() - startedAt,
+          sdkSessionId: result.sdkSessionId,
+          callId: call.id,
+          attempt: call.attempt,
+        });
+        throw new AccountingPersistenceError(
+          `provider returned without measurable usage/cost (${result.usageSource ?? "unavailable"})`,
+        );
+      }
+      this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
+        costUsd: result.costUsd,
+        providerResultId: result.sdkSessionId ?? null,
+        providerCumulativeCostUsd: result.providerCumulativeCostUsd,
+        providerCostBaselineUsd: result.providerCostBaselineUsd,
+        providerCostCurrency: result.providerCostCurrency,
+        result: {
+          workerStatus: result.status,
+          reason: result.reason ?? null,
+          commitSha: result.commitSha ?? null,
+          commitShas: result.commitShas ?? [],
+          filesChanged: result.filesChanged ?? [],
+          actualPromptChars: result.actualPromptChars ?? null,
+          actualPromptSha256: result.actualPromptSha256 ?? null,
+        },
+      });
+      result.providerCallId = call.id;
+      this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
+        role: "worker",
+        ...route,
+        phase: "worker",
+        seq: meta.seq,
+        cycle: meta.cycle,
+        finishReason: result.reason ?? result.status,
+        costUsd: result.costUsd,
+        durationMs: Date.now() - startedAt,
+        sdkSessionId: result.sdkSessionId,
+        callId: call.id,
+        attempt: call.attempt,
+      });
+      return result;
+    } catch (err) {
+      if (err instanceof AccountingPersistenceError) throw err;
+      const measuredErrorCost = (err as { costUsd?: unknown } | null)?.costUsd;
+      if (typeof measuredErrorCost === "number" && Number.isFinite(measuredErrorCost) && measuredErrorCost >= 0) {
+        this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
+          costUsd: measuredErrorCost,
+          result: { error: String(err).slice(0, 1000) },
+        });
+        throw err;
+      }
+      this.finishProviderCall(meta.sessionId, call.id, {
+        status: "unknown",
+        costUsd: null,
+        result: { error: String(err).slice(0, 1000) },
+      });
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), meta.sessionId);
+      } catch { /* provider_calls row remains durable evidence */ }
+      this.deps.interactionLog?.logSdkResponse(meta.sessionId, {
+        role: "worker",
+        ...route,
+        phase: "worker",
+        seq: meta.seq,
+        cycle: meta.cycle,
+        finishReason: "error",
+        durationMs: Date.now() - startedAt,
+        callId: call.id,
+        attempt: call.attempt,
+      });
+      throw new AccountingPersistenceError(`provider call ended without measurable cost: ${String(err)}`, err);
+    }
+  }
+
+  private async runAccountedProvider<T>(
+    meta: {
+      sessionId: string;
+      requester: string;
+      role: "lead" | "adversary";
+      cycle?: number;
+      model?: string;
+      route?: string;
+      baseSha?: string;
+    },
+    invoke: () => Promise<T>,
+    describe: (result: T) => {
+      costUsd: number;
+      usageMeasured?: boolean;
+      providerResultId?: string | null;
+      result?: unknown;
+    },
+  ): Promise<T> {
+    const call = this.beginProviderCall(meta);
+    try {
+      const result = await invoke();
+      const measured = describe(result);
+      if (measured.usageMeasured === false || !Number.isFinite(measured.costUsd) || measured.costUsd < 0) {
+        this.finishProviderCall(meta.sessionId, call.id, {
+          status: "unknown",
+          costUsd: null,
+          providerResultId: measured.providerResultId ?? null,
+          result: measured.result,
+        });
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), meta.sessionId);
+        throw new AccountingPersistenceError(`${meta.role} provider returned without a valid measured cost`);
+      }
+      this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, measured);
+      return result;
+    } catch (err) {
+      if (err instanceof AccountingPersistenceError) throw err;
+      const measuredErrorCost = (err as { costUsd?: unknown } | null)?.costUsd;
+      if (typeof measuredErrorCost === "number" && Number.isFinite(measuredErrorCost) && measuredErrorCost >= 0) {
+        this.finishProviderCallWithSpend(meta.sessionId, call.id, meta.requester, {
+          costUsd: measuredErrorCost,
+          result: { error: String(err).slice(0, 1000) },
+        });
+        throw err;
+      }
+      this.finishProviderCall(meta.sessionId, call.id, {
+        status: "unknown",
+        costUsd: null,
+        result: { error: String(err).slice(0, 1000) },
+      });
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), meta.sessionId);
+      } catch { /* provider_calls row remains durable evidence */ }
+      throw new AccountingPersistenceError(`${meta.role} provider completion/cost is unknown: ${String(err)}`, err);
+    }
+  }
+
+  private attachProviderVerification(
+    sessionId: string,
+    cycle: number,
+    seq: number,
+    verification: unknown,
+  ): void {
+    if (typeof (this.deps.state.db as unknown as { exec?: unknown }).exec !== "function") return;
+    try {
+      const changed = this.deps.state.db.prepare(
+        `UPDATE provider_calls SET verification_json = ?
+          WHERE id = (
+            SELECT id FROM provider_calls
+             WHERE session_id = ? AND role = 'worker' AND cycle = ? AND seq = ?
+             ORDER BY attempt DESC LIMIT 1
+          )`,
+      ).run(JSON.stringify(verification), sessionId, cycle, seq);
+      if (changed.changes !== 1) throw new Error("no completed provider call accepted verification");
+      const ok =
+        verification && typeof verification === "object" && "ok" in verification
+          ? Boolean((verification as { ok?: unknown }).ok)
+          : undefined;
+      this.deps.state.db.prepare(
+        `UPDATE sub_task_attempts
+            SET verification_status = ?, verification_json = ?, task_outcome = ?
+          WHERE id = (
+            SELECT id FROM sub_task_attempts
+             WHERE session_id = ? AND cycle = ? AND seq = ?
+             ORDER BY attempt DESC LIMIT 1
+          )`,
+      ).run(
+        ok === undefined ? "recorded" : ok ? "passed" : "failed",
+        JSON.stringify(verification),
+        ok === false ? "failed_verification" : "completed",
+        sessionId,
+        cycle,
+        seq,
+      );
+    } catch (err) {
+      try {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                               worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), sessionId);
+      } catch { /* keep original */ }
+      throw new AccountingPersistenceError(`provider verification was not durably recorded: ${String(err)}`);
+    }
+  }
+
+  /**
+   * rc.10: every commit recorded by EARLIER attempts of this same sub-task.
+   *
+   * Used by verification to give a continuation credit for work a previous
+   * attempt of the same sub-task already committed, rather than demanding a
+   * cosmetic re-edit of a file that is already correct. Scoped to this
+   * (session, cycle, seq) precisely so an unrelated older commit cannot
+   * satisfy a new contract.
+   */
+  private priorAttemptCommits(sessionId: string, cycle: number, seq: number): string[] {
+    try {
+      const rows = this.deps.state.db
+        .prepare(
+          `SELECT commit_shas FROM sub_task_attempts WHERE session_id = ? AND cycle = ? AND seq = ? ORDER BY attempt`,
+        )
+        .all(sessionId, cycle, seq) as Array<{ commit_shas: string | null }>;
+      const out = new Set<string>();
+      for (const r of rows) {
+        try {
+          for (const s of JSON.parse(r.commit_shas ?? "[]") as string[]) {
+            if (typeof s === "string" && s.length > 0) out.add(s);
+          }
+        } catch {
+          /* a malformed row is skipped, never fatal */
+        }
+      }
+      return [...out];
+    } catch {
+      return [];
+    }
+  }
+
+  private auditDeniedToolCalls(params: {
+    sessionId: string;
+    seq: number;
+    cycle: number;
+    attempt: number;
+    denied?: ReadonlyArray<{
+      kind?: string | null;
+      title?: string;
+      reason?: string;
+      denial?: GuardDenial;
+      targetEvidence?: AcpTargetEvidence;
+    }>;
+  }): void {
+    const { sessionId, seq, cycle, attempt, denied } = params;
+    for (const d of denied ?? []) {
+      this.deps.state.audit(
+        "loop.worker_tool_denied",
+        {
+          sessionId,
+          seq,
+          cycle,
+          attempt,
+          kind: d.kind ?? null,
+          title: String(d.title ?? "").slice(0, 300),
+          reason: d.reason ?? "no reason given",
+          // The structured verdict, so this row can be classified without
+          // anyone parsing the sentence above it.
+          denialCode: d.denial?.code ?? null,
+          denialRule: d.denial?.rule ?? null,
+          denialPaths: d.denial?.paths ?? null,
+          denialRecovery: d.denial?.recovery ?? null,
+          targetEvidence: d.targetEvidence
+            ? {
+                schema: d.targetEvidence.schema,
+                complete: d.targetEvidence.complete,
+                authoritativePaths: d.targetEvidence.authoritativePaths,
+                advisoryPaths: d.targetEvidence.advisoryPaths,
+                conflict: d.targetEvidence.conflict ?? null,
+                joinedDisplaySummary: d.targetEvidence.joinedDisplaySummary === true,
+              }
+            : null,
+        },
+        sessionId,
+      );
+    }
+  }
+
+  /**
+   * rc.9: `last_completed_sub_task` now means what it says.
+   *
+   * In the incident DB that column held sub-task 11. Sub-task 11 is
+   * `failed_verification` with `commit_sha: null` -- the documentation edit the
+   * guard blocked. It got there because this method was called from ONE place:
+   * immediately after the worker's result row was written, before verification
+   * had any opinion about whether the work was real. Every turn was "completed"
+   * by the time it reached this UPDATE.
+   *
+   * Renaming a column on a live database to fix a name is a bad trade, so the
+   * honest one is added beside it. `attempted` records the turn; `completed`
+   * additionally advances `last_completed_sub_task`, and is only passed from
+   * the single terminal-success path, after verification has passed.
+   */
+  private checkpoint(
+    sessionId: string,
+    cycle: number,
+    lastSubTask?: string,
+    sdkSessionId?: string,
+    subTaskState: "attempted" | "completed" = "attempted",
+  ): void {
+    const completed = subTaskState === "completed" ? (lastSubTask ?? null) : null;
+    this.deps.state.db
+      .prepare(
+        `UPDATE sessions
+         SET current_cycle = ?,
+             last_attempted_sub_task = COALESCE(?, last_attempted_sub_task),
+             last_completed_sub_task = COALESCE(?, last_completed_sub_task),
+             last_worker_sdk_session = COALESCE(?, last_worker_sdk_session),
+             last_checkpoint_at = ?,
+             last_progress_at = ?,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(cycle, lastSubTask ?? null, completed, sdkSessionId ?? null, Date.now(), Date.now(), Date.now(), sessionId);
+  }
+
+  /**
+   * rc.9: put the commits somewhere that outlives the worktree.
+   *
+   * `checkpoint()` above is a database write. It has never moved a git object.
+   * StitchGuard's nine commits existed in exactly one place -- a worktree on a
+   * tmpfs mount, with the bare cache nested inside the same mount -- and a
+   * restart took all of it while the DB survived to describe what was gone.
+   *
+   * Best-effort by design: a checkpoint that cannot be taken is AUDITED as not
+   * taken and the run continues. What it must never do is record a checkpoint
+   * that was not verified, so the durable flag comes from `createCheckpoint`,
+   * which only sets it after `git bundle verify` passes and the bytes on disk
+   * match their digest.
+   */
+  private async durableCheckpoint(params: {
+    sessionId: string;
+    cycle: number;
+    subTaskId?: string | null;
+    trigger: "sub_task_complete" | "human_gate";
+    worktreePath: string | null | undefined;
+    branch: string | null | undefined;
+    /** rc.10: needed to route the requester's credentials for the promisor fetch. */
+    repo?: string | null;
+    requester?: string | null;
+  }): Promise<void> {
+    const { sessionId, cycle, subTaskId, trigger } = params;
+    const configuredRoot = (this.deps.config.storage?.checkpoint_root ?? "").trim();
+    if (!configuredRoot) return; // disabled; startup already said so, loudly
+    if (!params.worktreePath || !params.branch) return;
+
+    let auth: { run: GitRunner; dispose: () => Promise<void> } | null = null;
+    try {
+      const { createCheckpoint } = await import("../state/checkpoint-bundle.js");
+      const { checkpointRootIsSafe } = await import("../state/storage-health.js");
+      const root = configuredRoot.replace(/^~/, process.env.HOME ?? "");
+      const safe = checkpointRootIsSafe(root, this.deps.config.storage.worktree_root ?? "");
+      if (!safe.ok) {
+        this.deps.state.audit("loop.checkpoint_skipped", { sessionId, cycle, reason: safe.reason }, sessionId);
+        return;
+      }
+
+      /*
+       * rc.10 (F1): authenticate BEFORE bundling.
+       *
+       * A bundle of a partial clone reaches the network. Resolving credentials
+       * is itself allowed to fail -- a vault that will not open must produce an
+       * honest "checkpoint not durable" rather than take the run down -- so the
+       * resolution is audited and the checkpoint proceeds unauthenticated,
+       * which succeeds for a local or public repo and fails legibly otherwise.
+       */
+      const repo = (params.repo ?? "").trim();
+      const requester = (params.requester ?? "").trim();
+      if (this.deps.checkpointGitRunner && repo && requester) {
+        try {
+          auth = await this.deps.checkpointGitRunner({ repo, requester });
+        } catch (err) {
+          this.deps.state.audit(
+            "loop.checkpoint_auth_unavailable",
+            { sessionId, cycle, trigger, repo, error: redactTokenShapes(String(err)) },
+            sessionId,
+          );
+        }
+      }
+
+      const res = await createCheckpoint({
+        sessionId,
+        cycle,
+        subTaskId: subTaskId ?? null,
+        trigger,
+        worktreePath: params.worktreePath,
+        branch: params.branch,
+        checkpointRoot: root,
+        git: auth?.run,
+      });
+      if (res.durable) {
+        this.deps.state.db
+          .prepare(
+            `UPDATE sessions SET last_checkpoint_bundle = ?, last_checkpoint_sha = ?, updated_at = ? WHERE id = ?`,
+          )
+          .run(res.manifestPath, res.manifest.tip, Date.now(), sessionId);
+        this.deps.state.audit(
+          "loop.checkpoint_durable",
+          {
+            sessionId, cycle, subTaskId: subTaskId ?? null, trigger,
+            tip: res.manifest.tip, commits: res.manifest.commitCount,
+            bytes: res.manifest.bundleBytes, manifest: res.manifestPath,
+          },
+          sessionId,
+        );
+      } else {
+        // Explicitly NOT durable -- including the honest metadata-only case,
+        // where there simply were no commits to protect yet. Requirement: a
+        // metadata checkpoint is never countable as recoverable code.
+        this.deps.state.audit(
+          "loop.checkpoint_not_durable",
+          {
+            sessionId, cycle, subTaskId: subTaskId ?? null, trigger,
+            commits: res.manifest.commitCount,
+            reason: res.manifest.error ?? (res.manifest.commitCount === 0 ? "no commits to checkpoint" : "unverified"),
+          },
+          sessionId,
+        );
+      }
+    } catch (err) {
+      this.deps.state.audit(
+        "loop.checkpoint_failed",
+        { sessionId, cycle, trigger, error: redactTokenShapes(String(err)) },
+        sessionId,
+      );
+    } finally {
+      // rc.10: the askpass helper's lifetime ends with the checkpoint, whatever
+      // happened to it.
+      if (auth) await auth.dispose().catch(() => { /* best effort */ });
+    }
+  }
+
+  private addCost(sessionId: string, amount: number): void {
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET cost_usd = cost_usd + ?, updated_at = ? WHERE id = ?`)
+      .run(amount, Date.now(), sessionId);
+  }
+
+  private saveReview(sessionId: string, cycle: number, report: ReviewReport): void {
+    this.deps.state.db
+      .prepare(
+        `INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           verdict = excluded.verdict,
+           findings = excluded.findings,
+           summary = excluded.summary,
+           cost_usd = excluded.cost_usd,
+           sdk_session_id = excluded.sdk_session_id,
+           created_at = excluded.created_at`,
+      )
+      .run(
+        `${sessionId}-r${cycle}`,
+        sessionId,
+        cycle,
+        report.verdict,
+        JSON.stringify(report.findings),
+        report.summary,
+        report.costUsd,
+        report.sdkSessionId ?? null,
+        Date.now(),
+      );
+  }
+
+  /** rc.3: every finding this session has ever established, with its state. */
+  private loadFindingRecords(sessionId: string): FindingRecord[] {
+    try {
+      const rows = this.deps.state.db
+        .prepare(
+          `SELECT fingerprint, state, severity, dimension, source, file, related_files, title, detail,
+                  first_seen_cycle, last_seen_cycle, resolved_cycle, late_discovery_reason
+             FROM findings WHERE session_id = ?`,
+        )
+        .all(sessionId) as Array<Record<string, unknown>>;
+      return rows.map((r) => ({
+        fingerprint: String(r.fingerprint),
+        state: String(r.state) as FindingRecord["state"],
+        severity: String(r.severity),
+        dimension: String(r.dimension),
+        source: (r.source as string | null) ?? null,
+        file: (r.file as string | null) ?? null,
+        relatedFiles: parseJsonArray(r.related_files),
+        title: String(r.title),
+        detail: String(r.detail ?? ""),
+        firstSeenCycle: Number(r.first_seen_cycle),
+        lastSeenCycle: Number(r.last_seen_cycle),
+        resolvedCycle: r.resolved_cycle === null || r.resolved_cycle === undefined ? null : Number(r.resolved_cycle),
+        lateDiscoveryReason: (r.late_discovery_reason as string | null) ?? null,
+      }));
+    } catch {
+      // A store that predates the table, or a read that failed. The reconciler
+      // treats "no history" as cycle-1 conditions, which is the safe reading:
+      // nothing is silently declared resolved.
+      return [];
+    }
+  }
+
+  private saveFindingRecords(sessionId: string, records: FindingRecord[]): void {
+    const now = Date.now();
+    const stmt = this.deps.state.db.prepare(
+      `INSERT INTO findings (session_id, fingerprint, state, severity, dimension, source, file, related_files,
+                             title, detail, first_seen_cycle, last_seen_cycle, resolved_cycle,
+                             late_discovery_reason, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(session_id, fingerprint) DO UPDATE SET
+         state = excluded.state,
+         severity = excluded.severity,
+         related_files = excluded.related_files,
+         last_seen_cycle = excluded.last_seen_cycle,
+         resolved_cycle = excluded.resolved_cycle,
+         late_discovery_reason = COALESCE(excluded.late_discovery_reason, findings.late_discovery_reason),
+         updated_at = excluded.updated_at`,
+    );
+    for (const r of records) {
+      stmt.run(
+        sessionId, r.fingerprint, r.state, r.severity, r.dimension, r.source ?? null, r.file ?? null,
+        JSON.stringify(r.relatedFiles ?? []), r.title, r.detail ?? "",
+        r.firstSeenCycle, r.lastSeenCycle, r.resolvedCycle ?? null, r.lateDiscoveryReason ?? null, now, now,
+      );
+    }
+  }
+
+  /**
+   * rc.3: give this cycle's findings their identities and their history.
+   *
+   * Runs on the effective report, after the deterministic findings have been
+   * folded in, so the convention/scope/typecheck findings get fingerprints and
+   * lifecycle states too. Returns the report with its findings reconciled;
+   * every failure path returns the report untouched, because a review that
+   * cannot be reconciled is still a review.
+   */
+  private reconcileCycleFindings(
+    sessionId: string,
+    cycle: number,
+    report: ReviewReport,
+    changedThisCycle: string[],
+  ): ReviewReport {
+    try {
+      const { kept, duplicates } = dedupeFindings(report.findings ?? []);
+      if (duplicates.length > 0) {
+        this.deps.state.audit(
+          "loop.finding_deduplicated",
+          {
+            sessionId, cycle, before: (report.findings ?? []).length, after: kept.length,
+            duplicates: duplicates.slice(0, 50).map((d) => ({
+              fingerprint: d.fingerprint, duplicateOf: d.duplicateOfFingerprint, reason: d.reason,
+              dimension: d.dimension, file: d.file,
+            })),
+          },
+          sessionId,
+        );
+      }
+      const prior = this.loadFindingRecords(sessionId);
+      const result = reconcileFindings({ cycle, current: kept, prior, changedThisCycle });
+      this.saveFindingRecords(sessionId, result.records);
+      if (result.transitions.length > 0) {
+        this.deps.state.audit(
+          "loop.finding_lifecycle_reconciled",
+          {
+            sessionId, cycle,
+            open: result.records.filter((r) => r.state === "open" || r.state === "late_discovery").length,
+            resolved: result.records.filter((r) => r.state === "resolved").length,
+            stale: result.records.filter((r) => r.state === "stale").length,
+            transitions: result.transitions.slice(0, 50),
+          },
+          sessionId,
+        );
+      }
+      for (const late of result.lateDiscoveries) {
+        this.deps.state.audit("loop.finding_late_discovery", { sessionId, cycle, ...late }, sessionId);
+      }
+      // rc.3: a blocker has to be visible as a blocker, with the action that
+      // clears it. Recorded once per transition into the state, not on every
+      // cycle that re-observes it.
+      for (const t of result.transitions) {
+        if (t.to !== "environment_blocked") continue;
+        const f = result.findings.find((x) => x.fingerprint === t.fingerprint);
+        const blocker = f ? detectVerificationBlocker(f) : null;
+        this.deps.state.audit(
+          "loop.verification_blocker_recorded",
+          {
+            sessionId, cycle, fingerprint: t.fingerprint, title: t.title, file: t.file,
+            kind: blocker?.kind ?? null, subject: blocker?.subject ?? null,
+            humanAction: blocker?.humanAction ?? t.reason,
+            assignedToWorker: false,
+          },
+          sessionId,
+        );
+      }
+      return { ...report, findings: result.findings };
+    } catch (err) {
+      this.deps.logger.warn("[loop] rc.3 finding reconciliation failed (non-fatal); using the raw findings", {
+        sessionId, cycle, err: String(err),
+      });
+      return report;
+    }
+  }
+
+  /**
+   * beta.38: re-entrancy guard. If a loop for this session is already running
+   * in this process (plugin re-register mid-run), do NOT start a second one --
+   * that races the live loop's worktree and kills the run. Return a distinct
+   * `skipped_already_running` outcome so callers (recovery) can log-and-move-on.
+   * The guard is registered/cleared here so EVERY entry path (fresh run and
+   * recovery auto-resume both call `run()`) is covered and can't be forgotten.
+   */
+  async run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
+    if (runningSessions.has(sessionId)) {
+      // beta.40: the guard entry exists -- but is the tracked loop actually
+      // ALIVE, or a zombie? `runningSessions` is module-scoped and survives a
+      // plugin re-register, but the loop it tracks can be torn down WITH the
+      // old runtime on re-register. Staging beta.39 smoke (session 07e4c28a):
+      // the guard fired at 11:05:26, then the original loop went silent for
+      // 110 min -- the guard permanently blocked recovery from reclaiming a
+      // dead loop. So: if the session's last progress (checkpoint / updated_at)
+      // is stale beyond `stuck_loop_seconds`, treat the tracked loop as dead,
+      // force-clear the stale guard entry, and proceed with THIS run. The
+      // threshold is safely larger than a normal long worker SDK call, so a
+      // legitimately-busy loop is never reclaimed.
+      const prog = this.deps.state.db
+        .prepare(`SELECT cycles_ran, cost_usd, last_checkpoint_at, updated_at FROM sessions WHERE id = ?`)
+        .get(sessionId) as
+        | { cycles_ran: number; cost_usd: number; last_checkpoint_at: number | null; updated_at: number | null }
+        | undefined;
+      const lastProgressMs = Math.max(prog?.last_checkpoint_at ?? 0, prog?.updated_at ?? 0);
+      const staleMs = Date.now() - lastProgressMs;
+      const stuckThresholdMs = (this.deps.config.loop.stuck_loop_seconds ?? 2700) * 1000;
+      const isStuck = lastProgressMs > 0 && staleMs > stuckThresholdMs;
+
+      if (!isStuck) {
+        // Live loop (or fresh enough to be presumed live): skip the re-entry.
+        this.deps.state.audit(
+          "loop.run_skipped_already_running",
+          { sessionId, reason: "a loop for this session is already running in this process", staleMs },
+          sessionId,
+        );
+        this.deps.logger.warn("[loop] run() skipped: session loop already running (re-entrant call)", { sessionId, staleMs });
+        // beta.42: arm an ACTIVE stall-watchdog. beta.40's reclaim was passive
+        // (only re-checked on a subsequent run() call); a wedge with no further
+        // re-register was never noticed. Re-check `updated_at` after
+        // stall_watchdog_seconds; if the tracked loop made no progress,
+        // force-deregister its stale handle so recovery/next-run can reclaim it.
+        this.armStallWatchdog(sessionId, lastProgressMs);
+        return {
+          status: "skipped_already_running",
+          sessionId,
+          reason: "loop already running in this process",
+          cycles: prog?.cycles_ran ?? 0,
+          totalCostUsd: prog?.cost_usd ?? 0,
+        };
+      }
+
+      // Zombie loop: reclaim it.
+      this.deps.state.audit(
+        "loop.run_reclaimed_stuck",
+        {
+          sessionId,
+          reason: "tracked loop made no progress past stuck_loop_seconds; force-clearing stale guard and re-driving",
+          staleMs,
+          stuckThresholdMs,
+        },
+        sessionId,
+      );
+      this.deps.logger.warn(
+        "[loop] reclaiming stuck loop (no progress past stuck_loop_seconds); force-clearing guard and restarting",
+        { sessionId, staleMs, stuckThresholdMs },
+      );
+      runningSessions.delete(sessionId);
+    }
+    runningSessions.add(sessionId);
+    this.ownedSessions.add(sessionId);
+    clearStallWatchdog(sessionId); // a live loop is (re)taking ownership
+    try {
+      return await this.runInner(sessionId, brief);
+    } finally {
+      runningSessions.delete(sessionId);
+      this.ownedSessions.delete(sessionId);
+      clearStallWatchdog(sessionId);
+    }
+  }
+
+  /**
+   * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is
+   * currently driving. The module-scoped `runningSessions` registry is shared
+   * across runtimes (it deliberately survives a plugin re-register), so a
+   * teardown that drains on it waits for OTHER runtimes' loops too -- on a
+   * re-register churn the doomed runtime could block up to
+   * teardown_drain_seconds for a session it does not own and whose DB handle
+   * it is not holding. Teardown should drain only on sessions it owns.
+   */
+  private readonly ownedSessions = new Set<string>();
+
+  ownedRunningSessionIds(): string[] {
+    return [...this.ownedSessions];
+  }
+
+  /**
+   * beta.60: instance accessor for the module-level re-entrancy guard set (all
+   * in-process running loops, across runtime generations). Used by
+   * harness_resume force-unstick to REFUSE unsticking a session that still has
+   * a live loop-runner tracked -- so we never yank a genuinely-busy loop out
+   * from under itself. A session that wedged with a dead executor will NOT be
+   * in this set once the stall-watchdog/reclaim cleared its handle (or if the
+   * runtime that ran it was torn down), which is exactly when force is safe.
+   */
+  runningSessionIds(): string[] {
+    return runningSessionIds();
+  }
+
+  /**
+   * beta.42: arm an active stall-watchdog for a session whose re-entry the
+   * guard just skipped. After `loop.stall_watchdog_seconds`, re-read the
+   * session's progress; if it has NOT advanced past `lastProgressMs` AND the
+   * guard entry is still present, the tracked loop is wedged with no external
+   * re-entry to reclaim it -- force-deregister the stale handle (so the next
+   * recovery/run reclaims it) and emit `loop.wedge_detected`. Idempotent: an
+   * existing timer for the session is replaced.
+   */
+  private armStallWatchdog(sessionId: string, lastProgressMs: number): void {
+    const seconds = this.deps.config.loop.stall_watchdog_seconds ?? 90;
+    if (!(seconds > 0)) return;
+    clearStallWatchdog(sessionId);
+    const timer = setTimeout(() => {
+      stallWatchdogs.delete(sessionId);
+      try {
+        if (!runningSessions.has(sessionId)) return; // loop finished/reclaimed already
+        const prog = this.deps.state.db
+          .prepare(`SELECT last_checkpoint_at, updated_at FROM sessions WHERE id = ?`)
+          .get(sessionId) as { last_checkpoint_at: number | null; updated_at: number | null } | undefined;
+        const nowProgress = Math.max(prog?.last_checkpoint_at ?? 0, prog?.updated_at ?? 0);
+        if (nowProgress > lastProgressMs) return; // progressed -- healthy, no action
+        // No forward progress since the skip: the tracked loop is wedged and
+        // nothing re-entered to reclaim it. Force-deregister so recovery/next
+        // run can take over.
+        runningSessions.delete(sessionId);
+        this.deps.state.audit(
+          "loop.wedge_detected",
+          {
+            sessionId,
+            reason: "no forward progress after run_skipped_already_running; stale guard handle force-deregistered",
+            stallWatchdogSeconds: seconds,
+            lastProgressMs,
+          },
+          sessionId,
+        );
+        this.deps.logger.warn("[loop] wedge detected: stale guard handle force-deregistered by stall-watchdog", {
+          sessionId,
+          stallWatchdogSeconds: seconds,
+        });
+      } catch (err) {
+        this.deps.logger.warn("[loop] stall-watchdog check failed", { sessionId, err: String(err) });
+      }
+    }, seconds * 1000);
+    // Don't keep the process alive solely for this timer.
+    if (typeof timer.unref === "function") timer.unref();
+    stallWatchdogs.set(sessionId, timer);
+  }
+
+  private async runInner(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome> {
+    const row = this.deps.state.db
+      .prepare(`SELECT id, requester, cost_usd, budget_usd, cycles_ran, status, branch, repo FROM sessions WHERE id = ?`)
+      .get(sessionId) as
+      | { id: string; requester: string; cost_usd: number; budget_usd: number; cycles_ran: number; status: LoopStatus; branch: string | null; repo: string | null }
+      | undefined;
+    if (!row) throw new Error(`session ${sessionId} not found`);
+    if (["done", "failed", "aborted"].includes(row.status)) {
+      throw new Error(`session ${sessionId} is already terminal (${row.status})`);
+    }
+
+    const startedAt = Date.now();
+    // beta.123: a per-session ceiling, when the operator set one at the
+    // confirmation gate, otherwise the configured default. Clamped to the
+    // config value's order of magnitude at the top end by the parser, so this
+    // cannot be used to disable the wall clock outright.
+    let sessionTimeoutSeconds = (() => {
+      const raw = this.deps.state.db
+        .prepare(`SELECT hard_timeout_seconds AS s FROM sessions WHERE id = ?`)
+        .get(sessionId) as { s: number | null } | undefined;
+      const s = raw?.s;
+      return typeof s === "number" && Number.isFinite(s) && s > 0
+        ? s
+        : this.deps.config.loop.session_hard_timeout_seconds;
+    })();
+    // rc.11: this is the REMAINING active-time allowance, not a fresh timeout
+    // bought by every loop.run invocation. A prior open segment is charged
+    // through this restart; explicit human-pause time was already closed out.
+    const activeDeadline = resumeActiveDeadline(
+      this.deps.state.db,
+      sessionId,
+      sessionTimeoutSeconds,
+      startedAt,
+    );
+    sessionTimeoutSeconds = Math.max(1, Math.round(activeDeadline.limitMs / 1000));
+    // beta.129: mutable, because an operator can still buy more of it.
+    let hardDeadlineMs = startedAt + activeDeadline.remainingMs;
+    const rebaseHardDeadlineFromPersistedClock = () => {
+      const snapshot = activeDeadlineSnapshot(this.deps.state.db, sessionId);
+      hardDeadlineMs = Date.now() + snapshot.remainingMs;
+    };
+    if (sessionTimeoutSeconds !== this.deps.config.loop.session_hard_timeout_seconds) {
+      this.deps.state.audit(
+        "loop.session_timeout_override",
+        { sessionId, seconds: sessionTimeoutSeconds, configured: this.deps.config.loop.session_hard_timeout_seconds },
+        sessionId,
+      );
+    }
+    this.deps.state.audit("loop.start", { sessionId, brief }, sessionId);
+
+    // beta.101: plan paths the repo tree says are fictional (see the
+    // plan_paths_suspect block below). Consulted at dispatch so each worker is
+    // warned only about the paths in its OWN sub-task.
+    let planPathSuspects: SuspectPlanPath[] = [];
+    // rc.10 (F3): planned writes the denylist will refuse, found before spend.
+    let planPolicyConflicts: PlanPolicyConflict[] = [];
+    // 1. Planning
+    this.setStatus(sessionId, "planning");
+    await this.deps.reportProgress?.(sessionId, "planning");
+    let plan: LeadPlan;
+    // beta.135: an accepted contract mismatch is a continuation of the plan
+    // that produced the accepted commit, not a request for a new plan. Load it
+    // before emitting a lead request so the trail cannot claim a model call
+    // happened when it did not.
+    let acceptedContinuation: ReturnType<OrchestratorLoop["loadAcceptedContinuation"]> | null = null;
+    if (brief.resumeExistingPlan) {
+      try {
+        acceptedContinuation = this.loadAcceptedContinuation(sessionId);
+      } catch (err) {
+        this.deps.state.audit(
+          "loop.plan_resume_failed",
+          { sessionId, error: String(err) },
+          sessionId,
+        );
+        return await this.finaliseFailedPreserveWorktree(
+          sessionId,
+          `plan_resume_failed: ${String(err)}`,
+          row.cycles_ran,
+          row.cost_usd,
+        );
+      }
+    }
+    // beta.63 (Part B): log the lead SDK call boundaries (request/response) into
+    // the durable interaction log. A request with no matching response is the
+    // exact hang signature the b60 stall left behind.
+    const leadStart = Date.now();
+    if (!acceptedContinuation) {
+      this.deps.interactionLog?.logSdkRequest(sessionId, {
+        role: "lead", ...this.routeLog("lead", this.deps.config.models.lead), phase: "plan",
+        prompt: `title: ${brief.title}\nmotivation: ${brief.motivation}\nacceptanceCriteria:\n${(brief.acceptanceCriteria ?? []).join("\n")}`,
+      });
+    }
+    // beta.127 (#157): planning happens before the cycle ledger opens, so the
+    // lead's spend is parked here and folded into `totalCost` at its
+    // declaration.
+    //
+    // beta.132: this used to claim it "stays 0 on a resumed run that skips
+    // planning, so a resume cannot bill the same plan twice". At the time that
+    // was wrong -- every resume re-planned from scratch and billed a second
+    // lead call in full, which is what b132's recovery guard and dead-listener
+    // ship exist to stop happening unasked.
+    //
+    // rc.2: it is true again, and for the original reason. Any clarification
+    // answered against a stored plan resumes that plan (`resumeExistingPlan`),
+    // so `runLead` is not called and this genuinely stays 0. A re-plan is now
+    // the exception -- a session that had no plan yet.
+    let leadPlanningCostUsd = 0;
+    const scoutBudget =
+      !acceptedContinuation && this.deps.config.loop.lead_repo_scout_enabled !== false
+        ? Math.max(0, this.deps.config.loop.lead_scout_timeout_seconds ?? 420)
+        : 0;
+    try {
+      // beta.43: bound the lead-planner SDK call by lead_timeout_seconds. The
+      // lead await was UNBOUNDED (beta.42 only bounded the worker). A hung
+      // planner froze the run with no timeout -- and a healthy long plan was
+      // indistinguishable from a wedge, which is exactly what caused the
+      // beta.42 smoke misdiagnosis.
+      // beta.106: the lead budget must COVER the scout, not be consumed by it.
+      //
+      // b104 added the scout turn inside runLeadPlanner without touching this
+      // bound, so one budget had to fit two turns. With the shipped defaults
+      // (lead 900s, scout 600s) that leaves 300s for planning, and planning
+      // alone measured 441s and 182s on b103 -- the arithmetic never closed. The
+      // b105 smoke (session b08502aa) died at exactly 900s after the scout
+      // start, with the lead mid-plan, and the failure was reported against the
+      // WORKER timeout because the error text was generic (see WorkerTimeoutError).
+      //
+      // Adding the scout's own ceiling keeps `lead_timeout_seconds` meaning what
+      // its name and docs say -- the time the PLANNER gets -- however the scout
+      // knob is set.
+      plan = acceptedContinuation?.plan ?? await this.runAccountedProvider(
+        {
+          sessionId,
+          requester: row.requester,
+          role: "lead",
+          cycle: 0,
+          model: this.routeLog("lead", this.deps.config.models.lead).model,
+          route: this.routeLog("lead", this.deps.config.models.lead).backend,
+        },
+        () => withTimeout(this.deps.runLead(brief, {
+          requester: row.requester,
+          sessionId,
+          // beta.122 (CRITICAL): a re-plan may not RENAME the session's branch.
+          //
+          // b108 made the branch name session-unique by appending a suffix
+          // derived from the session id, and its own comment says the point is
+          // to be "reproducible across every re-plan". It is not: only the
+          // SUFFIX is pinned, while the stem is whatever the lead model
+          // invented on that call. On the b121 smoke the first plan produced
+          // `harness/feat-grc-continuity-resilience-1ef99186` and the re-plan
+          // after a clarification produced `harness/feat/grc-...` -- dash
+          // versus slash, same session. The b101 preservation machinery then
+          // looked for a branch under the NEW name, did not find it, and the
+          // allocator reset the worktree to origin/main, orphaning two commits.
+          //
+          // Once a branch is recorded for the session it is the branch, full
+          // stop. `pinnedBranch` already does exactly this for a revise.
+          pinnedSessionBranch: (row.branch ?? "").trim() || undefined,
+          // beta.122: and if the name somehow still misses, the allocator gets
+          // the ledger tip so it can re-attach instead of resetting over work.
+          recoverBranchFromSha: this.lastLedgerCommitSha(sessionId),
+          // beta.105: make the checkout path durable. `preserveLocalBranch` is
+          // a REQUEST that falls through silently when no local branch of that
+          // name exists, so the flag being set proves nothing about what ran.
+          onBranchDecision: (d) => {
+            try {
+              this.deps.state.audit("loop.branch_allocation", { sessionId, ...d }, sessionId);
+            } catch { /* an audit write must never fail an allocation */ }
+          },
+        }),
+          this.deps.config.loop.lead_timeout_seconds + scoutBudget,
+          "lead_timeout_seconds",
+        ),
+        (leadPlan) => ({
+          costUsd: leadPlan.actualCostUsd ?? 0,
+          usageMeasured: leadPlan.usageMeasured,
+          result: {
+            subTasks: leadPlan.subTasks.length,
+            riskLevel: leadPlan.riskLevel,
+            branch: leadPlan.branch,
+          },
+        }),
+      );
+      if (!acceptedContinuation) {
+        this.deps.interactionLog?.logSdkResponse(sessionId, {
+          role: "lead", ...this.routeLog("lead", this.deps.config.models.lead), phase: "plan",
+          finishReason: "end_turn", durationMs: Date.now() - leadStart,
+          outputChars: JSON.stringify(plan).length, toolCalls: [],
+          // beta.127 (#157): the second half of the same omission. Every worker
+          // and adversary `sdk_response` in the interaction log carries a cost;
+          // the lead's carried `costUsd: null`, which reads as "this call was
+          // free" rather than "nobody passed the number through". The b126 smoke
+          // was diagnosed off this log, and the lead's 311 seconds on Opus
+          // appeared as null next to a worker's 0.5299.
+          costUsd: plan.actualCostUsd ?? 0,
+        });
+      }
+      // beta.94 (Feature 1a): elide the idle-prone trailing PURE-OBSERVE scope
+      // "final verification" sub-task (the b93 seq-12 stall). It has nothing to
+      // write, so a worker can go idle on it indefinitely while adding zero
+      // signal (every prior mutate sub-task already passed strict per-file
+      // contract verification, and runFinalVerifyChecks runs the repo convention
+      // scripts + the beta.94 deterministic scope check below). Gated on
+      // loop.deterministic_final_scope_check (default true); audited so the
+      // elision is visible in the trail. Best-effort; never fatal.
+      if (this.deps.config.loop.deterministic_final_scope_check !== false) {
+        try {
+          const elided = elideFinalScopeSubTask(plan);
+          if (elided) {
+            this.deps.state.audit(
+              "loop.final_verify_subtask_elided",
+              { sessionId, seq: elided.seq, title: elided.title },
+              sessionId,
+            );
+            this.deps.logger.info("[loop] beta.94: elided trailing pure-observe scope-verification sub-task (idle-prone, zero signal)", {
+              sessionId, seq: elided.seq, title: elided.title,
+            });
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] beta.94 final-scope sub-task elision failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
+      this.deps.state.db
+        .prepare(
+          `UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ?,
+                               storage_state = 'ok', storage_reason = NULL, storage_checked_at = ?
+            WHERE id = ?`,
+        )
+        .run(JSON.stringify(plan), plan.repo, plan.branch, plan.worktreePath, Date.now(), sessionId);
+      // beta.127 (#157): CREDIT THE PLANNER'S SPEND TO THE SESSION.
+      //
+      // Every other role's cost was added to `totalCost` -- worker, worker
+      // retry, adversary -- and the lead's never was. Not rounded, not
+      // approximated: absent. On the b126 smoke the lead ran 311 seconds on
+      // Opus across two attempts and the session's ledger attributed $0.00 to
+      // it, so the reported $18.78 was a lower bound by however much the most
+      // expensive model in the run had cost.
+      //
+      // This is not only a reporting problem. `totalCost` is what the budget
+      // ceiling is checked against and what `advance()` reads when deciding
+      // whether another cycle is affordable, so planning spend was invisible
+      // to every one of those decisions -- and a run that died IN planning
+      // reported $0.00 having burned real tokens.
+      // The stored plan's `actualCostUsd` is historical. Charging it again on
+      // an accepted continuation would bill the same lead/scout turn twice.
+      leadPlanningCostUsd = acceptedContinuation ? 0 : (plan.actualCostUsd ?? 0);
+      // beta.128 (#157, second half): PERSIST it. b127 folded the lead into the
+      // in-memory `totalCost` -- which fixed the affordability arithmetic -- and
+      // stopped there, so `sessions.cost_usd` still counted only workers and
+      // reviews. Every report that reads the row (the smoke script, `harness
+      // status`, the monthly rollup) therefore billed Opus at zero. Recorded
+      // against the requester's ledger too, the same way a worker's spend is.
+      if (acceptedContinuation) {
+        this.deps.state.audit(
+          "loop.plan_resumed_after_contract_accept",
+          {
+            sessionId,
+            subTasks: plan.subTasks.length,
+            completedSeqs: [...acceptedContinuation.completedSeqs],
+            leadCostUsd: 0,
+          },
+          sessionId,
+        );
+      } else {
+        this.deps.state.audit(
+          "loop.plan_ready",
+          {
+            sessionId, subTasks: plan.subTasks.length, risk: plan.riskLevel,
+            leadCostUsd: Number(leadPlanningCostUsd.toFixed(4)),
+            scoutCostUsd: Number((plan.scout?.costUsd ?? 0).toFixed(4)),
+          },
+          sessionId,
+        );
+      }
+      // beta.104: record whether the lead actually SAW the repo before it
+      // planned. Emitted on both outcomes -- a smoke report must be able to
+      // attribute a plan full of fictional paths to a scout that never ran,
+      // which is precisely what b102 could not do for the dispatch hint.
+      if (!acceptedContinuation && plan.scout) {
+        this.deps.state.audit(
+          "loop.lead_scout",
+          {
+            sessionId,
+            ran: plan.scout.ran,
+            reportChars: plan.scout.reportChars,
+            durationMs: plan.scout.durationMs,
+            costUsd: plan.scout.costUsd,
+            skippedReason: plan.scout.skippedReason,
+            error: plan.scout.error,
+            // beta.106: a partial report is usable but means the budget is
+            // mis-set for this repo, and that must be visible in the trail.
+            timedOut: plan.scout.timedOut === true,
+            scoutBudgetSeconds: scoutBudget,
+            // beta.107: b106's `reportChars: 20049` WAS a truncation, and the
+            // smoke report read it as a report that happened to be that long.
+            // Say it outright rather than leaving it to arithmetic on a
+            // constant nobody has to hand.
+            truncated: plan.scout.truncated === true,
+            reportCharsRaw: plan.scout.reportCharsRaw,
+          },
+          sessionId,
+        );
+      }
+      // beta.67 (Bug B): capture the branch FORK-POINT sha ONCE now that the
+      // worktree exists. The worktree was branched from origin/<default base>
+      // (git-worktree allocateInner), so `git merge-base <base> HEAD` is the
+      // stable commit the branch forked from. Persist it so the adversary
+      // review diffs `git diff <plan_base_sha>..HEAD` -- ONLY the branch's own
+      // commits -- instead of against main-at-review-time, which accumulates
+      // unrelated prior-PR/prior-smoke history (beta.66 smoke #4 hallucinated
+      // "5 unrelated commits" and false-positive-revised a 1-commit branch).
+      // Only capture on the FIRST plan (not a re-plan that already has one) and
+      // only when the worktree probe is wired. Never fatal.
+      if (this.deps.worktreeMergeBase) {
+        try {
+          const existing = this.deps.state.db
+            .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+            .get(sessionId) as { plan_base_sha: string | null } | undefined;
+          if (!existing?.plan_base_sha) {
+            const forkPoint = await this.deps.worktreeMergeBase(plan.worktreePath, this.deps.config.repos.default_base_branch).catch(() => "");
+            if (forkPoint) {
+              this.deps.state.db.prepare(`UPDATE sessions SET plan_base_sha = ? WHERE id = ?`).run(forkPoint, sessionId);
+              this.deps.state.audit("loop.plan_base_sha_captured", { sessionId, planBaseSha: forkPoint, baseBranch: this.deps.config.repos.default_base_branch }, sessionId);
+            } else {
+              this.deps.logger.warn("[loop] could not resolve plan_base_sha fork-point; adversary will fall back to base-branch diff", { sessionId });
+            }
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] plan_base_sha capture failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
+      // rc.3: and for a REVISE, capture the second fixed point -- the PR head
+      // as it stood before this revision touched anything.
+      //
+      // Here is the only moment it can be read. The worktree has just been
+      // checked out on the pinned branch at its existing tip and no worker has
+      // run, so HEAD is exactly the feature as it was handed over. One commit
+      // later the value is gone, and every scope judgement after that would
+      // have to be made against the whole feature -- which is what put ~46
+      // untouched StitchGuard files on the out-of-scope list.
+      //
+      // Ordinary runs skip this entirely: with no revision to bound, the
+      // fork point is already the right and only base. `original_pr_base_sha`
+      // records the fork point under its revise-side name so a reader does not
+      // have to know that `plan_base_sha` means two things.
+      if (brief.reviseOfSessionId && this.deps.worktreeHeadSha) {
+        try {
+          const existing = this.deps.state.db
+            .prepare(`SELECT plan_base_sha, revision_start_sha FROM sessions WHERE id = ?`)
+            .get(sessionId) as { plan_base_sha: string | null; revision_start_sha: string | null } | undefined;
+          if (!existing?.revision_start_sha) {
+            const head = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+            if (head) {
+              this.deps.state.db
+                .prepare(`UPDATE sessions SET revision_start_sha = ?, original_pr_base_sha = COALESCE(original_pr_base_sha, ?) WHERE id = ?`)
+                .run(head, existing?.plan_base_sha ?? null, sessionId);
+              this.deps.state.audit(
+                "loop.revise_baseline_captured",
+                {
+                  sessionId,
+                  reviseOfSessionId: brief.reviseOfSessionId,
+                  originalPrBaseSha: existing?.plan_base_sha ?? null,
+                  revisionStartSha: head,
+                  branch: plan.branch,
+                },
+                sessionId,
+              );
+            } else {
+              this.deps.logger.warn(
+                "[loop] could not read the revision-start HEAD; scope enforcement will fall back to the whole feature diff",
+                { sessionId },
+              );
+            }
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] revise baseline capture failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
+      // beta.105: LEDGER REACHABILITY AT RESUME. The worktree has just been
+      // (re-)allocated, which is the exact operation that loses commits.
+      //
+      // b103 smoke (session b8ece861): a clarification resume re-planned, the
+      // allocation took the reset path instead of preserving the local branch,
+      // and eight of this run's ten recorded commits stopped being ancestors of
+      // the tip. The b101 guard would have caught it instantly, but it only ran
+      // before adversary review -- and this run stalled at a second
+      // clarification and was aborted, so it never reached review. The loss was
+      // found four hours later by hand.
+      //
+      // A fresh run has an empty ledger and returns immediately, so this costs
+      // one no-op call on the common path and catches the b100 class at the
+      // moment it happens on the path that has now produced it twice.
+      if (
+        this.deps.config.loop.resume_ledger_guard_enabled !== false &&
+        this.deps.config.loop.ledger_reachability_guard_enabled !== false
+      ) {
+        const check = await this.checkLedgerReachability(sessionId, plan.worktreePath, 1, "resume");
+        if (check.failed) {
+          this.deps.logger.error("[loop] re-allocated worktree has lost commits this session already made; refusing to continue on a truncated branch", {
+            sessionId, headSha: check.headSha, unreachable: check.unreachable,
+          });
+          return await this.finaliseFailed(
+            sessionId,
+            `ledger_commits_unreachable_at_resume: ${check.detail}`,
+            1,
+            0,
+          );
+        }
+      }
+      // beta.63 (convention-awareness Fix 1): now that the repo is checked out
+      // at plan.worktreePath, ingest its declared convention files into the
+      // brief so the worker + adversary SDK prompts (no OpenClaw context
+      // injection) explicitly carry them. Only on cycle-1 build; idempotent
+      // (re-ingest overwrites). Never fatal.
+      if (this.deps.config.brief?.ingest_repo_conventions !== false && !brief.repoConventions) {
+        try {
+          const conventions = ingestRepoConventions(plan.worktreePath, this.deps.config.brief?.convention_char_budget ?? 10000);
+          brief.repoConventions = conventions;
+          this.deps.state.audit("loop.repo_conventions_ingested", { sessionId, count: conventions.length, sources: conventions.map((c) => c.source) }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "repo_conventions_ingested", phase: "plan", count: conventions.length, sources: conventions.map((c) => c.source) });
+        } catch (err) {
+          this.deps.logger.warn("[loop] repo convention ingest failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
+      // beta.101: flag plan paths that name a file in a directory the repo does
+      // not have. The b100 smoke's entire failure cascade -- a failed verify, a
+      // clarification round-trip, a re-plan and a wasted review turn -- traces
+      // back to the lead inventing `src/components/layout/grc-nav.tsx` when
+      // `src/components/layout/` does not exist. The worker found the real
+      // sidebar and edited it correctly; only the CONTRACT was fictional.
+      // Advisory by design (see plan-path-validate.ts): new modules legitimately
+      // create new directories, so this informs the worker, never blocks.
+      if (this.deps.config.loop.plan_path_validation_enabled !== false && this.deps.listRepoFiles) {
+        try {
+          const repoFiles = await this.deps.listRepoFiles(plan.worktreePath);
+          const planPaths = plan.subTasks.flatMap((s) => s.filesLikelyTouched ?? []);
+          const suspects = findSuspectPlanPaths(planPaths, repoFiles);
+          if (suspects.length > 0) {
+            planPathSuspects = suspects;
+            this.deps.state.audit(
+              "loop.plan_paths_suspect",
+              { sessionId, count: suspects.length, suspects: suspects.map((s) => ({ path: s.path, missingDir: s.missingDir })), repoFileCount: repoFiles.length },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "plan_paths_suspect", phase: "plan", count: suspects.length, paths: suspects.map((s) => s.path),
+            });
+            this.deps.logger.warn("[loop] plan names path(s) in directories that do not exist; workers will be told to treat them as guesses", {
+              sessionId, suspects: suspects.map((s) => `${s.path} (no ${s.missingDir}/)`),
+            });
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] plan path validation failed (non-fatal)", { sessionId, err: String(err) });
+        }
+      }
+      /*
+       * rc.10 (F3, audits 5598/5619): compare the plan against the safety
+       * policy NOW, while it is still free to do so.
+       *
+       * Sub-task 3 required `.env.example`, the denylist contains `.env.*`, and
+       * nothing put those two facts together until a worker had been dispatched
+       * and billed -- twice, the second time after an operator correction that
+       * changed the test path and left the policy untouched. Both were knowable
+       * here, before the plan was accepted.
+       *
+       * Recorded, not enforced. `filesLikelyTouched` is the lead's guess, so
+       * this is evidence that a sub-task is heading for a wall and not proof
+       * that it must hit one. The dispatch gate below acts on it per sub-task;
+       * this row is what makes the conflict visible from the first minute of
+       * the run rather than from the first denial.
+       */
+      if (this.deps.config.loop.plan_policy_conflict_check_enabled !== false) {
+        const conflicts = findPlanPolicyConflicts(
+          plan.subTasks,
+          this.deps.config.safety?.path_denylist ?? [],
+          this.deps.config.safety?.path_denylist_exceptions ?? [],
+        );
+        if (conflicts.length > 0) {
+          planPolicyConflicts = conflicts;
+          this.deps.state.audit(
+            "loop.plan_policy_conflict",
+            { sessionId, count: conflicts.length, conflicts: conflicts.map((c) => ({ seq: c.seq, path: c.path, rule: c.rule })) },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, {
+            event: "plan_policy_conflict", phase: "plan", count: conflicts.length,
+            paths: conflicts.map((c) => c.path),
+          });
+          this.deps.logger.warn("[loop] rc.10: the plan requires a write the safety denylist will refuse", {
+            sessionId, conflicts: conflicts.map((c) => `${c.path} (rule ${c.rule}, seq ${c.seq})`),
+          });
+        }
+      }
+      const observeContractErrors = loadBearingObserveContractErrors(plan);
+      if (observeContractErrors.length > 0) {
+        this.deps.state.audit(
+          "loop.observe_contract_plan_rejected",
+          { sessionId, errors: observeContractErrors },
+          sessionId,
+        );
+        throw new Error(observeContractErrors.join("; "));
+      }
+    } catch (err) {
+      if (err instanceof AccountingPersistenceError) {
+        this.deps.state.audit(
+          "loop.plan_accounting_incomplete",
+          { sessionId, error: err.message },
+          sessionId,
+        );
+        return {
+          status: "failed",
+          sessionId,
+          reason: `accounting_incomplete: ${err.message}`,
+          cycles: 0,
+          totalCostUsd: row.cost_usd,
+        };
+      }
+      if (err instanceof WorkerTimeoutError) {
+        this.deps.state.audit("loop.lead_timeout", { sessionId, lead_timeout_seconds: this.deps.config.loop.lead_timeout_seconds }, sessionId);
+      }
+      // beta.126: record WHY, not just "error".
+      //
+      // The b125 planning failure left one line in the interaction log:
+      // `finishReason: "error", durationMs: 375276`. No output size, no
+      // truncation verdict, no cost. Working out that the plan had been cut
+      // off at an invisible ceiling took the manifest, the schema, DEFAULTS,
+      // two config greps and the container logs. All of it was knowable here.
+      const e = err as { truncated?: boolean; rawText?: string; costUsd?: number };
+      this.deps.interactionLog?.logSdkResponse(sessionId, {
+        role: "lead", ...this.routeLog("lead", this.deps.config.models.lead), phase: "plan",
+        finishReason: err instanceof WorkerTimeoutError
+          ? "timeout"
+          : e?.truncated === true ? "truncated" : "error",
+        durationMs: Date.now() - leadStart,
+        outputChars: e?.rawText?.length,
+        costUsd: e?.costUsd,
+        finalMessageTail: e?.rawText ? e.rawText.slice(-200) : undefined,
+      });
+      if (e?.truncated === true) {
+        this.deps.state.audit(
+          "loop.plan_truncated",
+          {
+            sessionId,
+            outputChars: e.rawText?.length ?? 0,
+            maxOutputTokens: this.deps.config.models.max_output_tokens ?? null,
+            ...this.routeLog("lead", this.deps.config.models.lead),
+            note:
+              "the plan opened a JSON container and never closed it, so it was cut off. Compare outputChars " +
+              "against the ceiling: if it is at the ceiling the plan is too large for one reply (the compaction " +
+              "retry handles that); if it is well under, something ended the stream early and the ceiling is a " +
+              "red herring. b125 lost an hour to not having this number.",
+          },
+          sessionId,
+        );
+      }
+      // beta.128 (#157, second half): a plan that FAILED still cost money.
+      // Session f75f7db6 spent ten minutes across two Opus calls and finalised
+      // at $0.00 -- the number an operator uses to decide whether a re-run is
+      // affordable, reported as free. runLeadPlanner attaches everything it
+      // spent to the error, including the scout, so bank it before finalising.
+      const failedPlanCostUsd = e?.costUsd ?? 0;
+      if (failedPlanCostUsd > 0) {
+        this.deps.state.audit(
+          "loop.plan_failed_cost",
+          { sessionId, costUsd: Number(failedPlanCostUsd.toFixed(4)) },
+          sessionId,
+        );
+      }
+      this.deps.interactionLog?.log(sessionId, { event: "plan_failed", phase: "plan", error: String(err) });
+      this.deps.state.audit("loop.plan_failed", { sessionId, err: String(err) }, sessionId);
+      return await this.finaliseFailed(sessionId, `plan_failed: ${String(err)}`, 0, row.cost_usd + failedPlanCostUsd);
+    }
+
+    // beta.119: ASK THE QUESTION BEFORE SPENDING THE MONEY. The CI-optimisation
+    // run planned a one-line `.github/workflows/ci.yml` edit, executed it,
+    // reviewed it, and learned only at the push that the token cannot write
+    // workflow files at all. The plan named the file and GitHub reports token
+    // scopes on any request header, so this was answerable before the first
+    // worker started. Only a token that PROVABLY lacks the scope stops the run:
+    // fine-grained PATs and App tokens report no scope header and are waved
+    // through, since "cannot tell" must never read as "cannot do".
+    if (this.deps.tokenScopes && this.deps.config.loop.workflow_scope_precheck !== false) {
+      const workflowFiles = planTouchesWorkflows(plan.subTasks);
+      if (workflowFiles.length > 0) {
+        const verdict = await this.deps
+          .tokenScopes({ repoFullName: plan.repo, requester: row.requester })
+          .catch(() => null);
+        this.deps.state.audit(
+          "loop.workflow_scope_precheck",
+          { sessionId, files: workflowFiles, scopesKnown: verdict !== null, canPush: verdict },
+          sessionId,
+        );
+        if (verdict === false) {
+          this.deps.logger.error(
+            "[loop] the plan edits GitHub Actions workflows but the routed token lacks the `workflow` scope; stopping before any sub-task runs",
+            { sessionId, files: workflowFiles },
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "workflow_scope_missing", phase: "plan", files: workflowFiles });
+          return await this.finaliseFailed(
+            sessionId,
+            `workflow_scope_missing: ${describeMissingWorkflowScope(workflowFiles)}`,
+            0,
+            row.cost_usd,
+          );
+        }
+      }
+    }
+
+    if (
+      planPolicyConflicts.length > 0 &&
+      this.deps.config.loop.clarification_escalation_enabled !== false
+    ) {
+      const firstSeq = Math.min(...planPolicyConflicts.map((conflict) => conflict.seq));
+      const task = plan.subTasks.find((candidate) => candidate.seq === firstSeq);
+      const conflicts = planPolicyConflicts.filter((conflict) => conflict.seq === firstSeq);
+      this.deps.state.audit(
+        "loop.plan_policy_conflict_pre_dispatch",
+        {
+          sessionId,
+          seq: firstSeq,
+          conflicts: conflicts.map((conflict) => ({ path: conflict.path, rule: conflict.rule })),
+          dispatchedWorkers: 0,
+        },
+        sessionId,
+      );
+      return await this.finaliseAwaitingClarification(
+        sessionId,
+        describePlanPolicyConflicts(conflicts),
+        firstSeq,
+        0,
+        row.cost_usd + leadPlanningCostUsd,
+        {
+          title: task?.title ?? `sub-task ${firstSeq}`,
+          intent: task?.intent ?? "",
+          task: task ? structuredClone(task) : undefined,
+          policyConflicts: conflicts.map((conflict) => ({ path: conflict.path, rule: conflict.rule })),
+        },
+      );
+    }
+
+    let cycle = 0;
+    // beta.127 (#157): + the planner. Every other role was already counted
+    // here; the lead was the one that never arrived, so the ceiling this is
+    // checked against and the affordability test in `advance()` were both
+    // reading a number that excluded the most expensive model in the run.
+    let totalCost = row.cost_usd + leadPlanningCostUsd;
+    let lastReview: ReviewReport | undefined;
+    // beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order, so
+    // the max-cycles terminal path can distinguish CONVERGING (findings
+    // trending down -> a clean pass is plausibly one more cycle away, so SURFACE
+    // an ask-to-extend) from DIVERGING/stuck (findings flat or rising -> the
+    // plain do_not_merge ship is correct). Root: the b96 smoke shipped #893
+    // do_not_merge on a 13 -> 8 -> 12 arc; 13 -> 8 was real convergence the
+    // operator was never told about.
+    const findingCountsByCycle: number[] = [];
+    // beta.119: the findings themselves, per cycle, so a finding that SURVIVES
+    // a revise cycle can be recognised. The b118 upload/kind finding was raised
+    // in all three cycles and fixed in none, and nothing in the loop could tell
+    // that apart from three unrelated findings that happened to look similar.
+    const findingsByCycle: MapFinding[][] = [];
+    // Findings still open at the end, that were raised in consecutive cycles
+    // and never resolved -- surfaced on the PR rather than silently re-raised.
+    let unresolvedAcrossCycles: UnresolvableFinding[] = [];
+    // beta.119: extra cycles granted past `max_cycles` because the finding
+    // trend was converging and the budget covered them.
+    let cycleExtensionsGranted = 0;
+    // beta.129: wall-clock accounting for the grant decisions. `maxCycleMs` is
+    // the longest cycle seen so far; the guards use it rather than the mean
+    // because the cost of underestimating is losing the whole run, while the
+    // cost of overestimating is shipping a cycle earlier than strictly needed.
+    let cycleStartedAtMs = 0;
+    let maxCycleMs = 0;
+    // beta.129: cycles unlocked by an operator buying more wall clock. Kept
+    // apart from `cycleExtensionsGranted` and `ciRepairCyclesGranted` for the
+    // same reason those are kept apart from each other -- three different
+    // reasons to run one more cycle, three different ceilings, and a report
+    // that can say which one paid for what.
+    let timeExtensionCyclesGranted = 0;
+    // Once the operator has said no (or said nothing), stop interrupting them.
+    let timeExtensionRefused = false;
+    // beta.119: BLOCKING findings per cycle -- what the extension decision is
+    // actually made on. See isConvergingBlockingTrend.
+    const blockingCountsByCycle: number[] = [];
+    // beta.97 (Fix #7): the reason the loop left the review cycle for a terminal
+    // "done", so the ship path can surface the converging ask-to-extend note.
+    let terminalDoneReason = "";
+    // beta.7 fix #2: running record of actual sub-task costs, used to project
+    // the cost of upcoming sub-tasks for pre-execution budget gating.
+    const subTaskCosts: number[] = [];
+    // beta.78 (Feature 2): the SESSION budget is now a SOFT limit -- crossing
+    // it WARNS (once) and the run continues. The true HARD stop is the
+    // per-user daily_max_usd. This flag de-dupes the one-time soft warning so
+    // we don't spam a warning on every sub-task once over the session budget.
+    let sessionBudgetWarned = false;
+
+    // rc.6: the approved figure, divided before anything spends it. See
+    // budget-policy.ts for why the undivided field could not serve both
+    // implementation and repair. Reassigned, not const, because a granted
+    // budget extension raises the approved figure and everything derived from
+    // it must move with it.
+    let budgetPolicy = resolveBudgetPolicy({
+      authorizedMaximumUsd: row.budget_usd,
+      repairReserveRatio: this.deps.config.loop.repair_reserve_ratio,
+    });
+    // rc.6: an answered budget question carries the same authority as the
+    // `:moneybag:` reaction, so it has to be honoured everywhere that reaction
+    // is. OR'd into every `reactions.budgetBump` read rather than faked into
+    // the snapshot, so the audit trail can still tell a reaction from an answer.
+    let budgetOverrideGranted = false;
+    // Once the operator has declined (or let the window close), stop asking.
+    let budgetExtensionRefused = false;
+    // rc.6: total spend at the moment the first repair cycle was granted, which
+    // is what makes repair's own spend measurable. Repair is funded from the
+    // reserve and must never be charged for what implementation spent, so the
+    // gate reads `totalCost - repairSpendBaselineUsd` and never `totalCost`.
+    let repairSpendBaselineUsd = 0;
+
+    // beta.76 (Option 1 -- contract re-derivation): the set of REAL file paths
+    // the run's workers have actually touched/committed so far. This is GROUND
+    // TRUTH for the repo's real directory conventions (discovered by the
+    // observe probe + every mutate that lands a file), and is used to correct a
+    // downstream sub-task's STALE, lead-guessed contract path BEFORE it is
+    // verified -- killing the path-drift class at the source instead of adding
+    // one more tolerant match rule. Accumulated across sub-tasks within the run.
+    const discoveredRealPaths = new Set<string>();
+
+    // beta.134 (observe-handoff): the FINDINGS of each completed observe
+    // sub-task, keyed by seq, so the sub-tasks that depend on a probe are
+    // dispatched holding what the probe actually reported.
+    //
+    // `discoveredRealPaths` above already keeps the paths a probe TOUCHED,
+    // which is the machine-checkable residue of an investigation. This keeps
+    // the investigation itself -- which module owns what, which convention the
+    // repo really follows, which of the lead's assumptions turned out wrong --
+    // and that is the part a downstream worker's intent keeps referring to.
+    // Until now it was audited and discarded. See observe-handoff.ts.
+    //
+    // Run-level (outside the cycle loop) on purpose: a revise cycle that skips
+    // re-running a clean observe probe (`loop.observe_reprobe_skipped`) must
+    // still be able to hand cycle 1's report to cycle 2's implementers.
+    const observeReports = this.hydrateObserveReports(sessionId, plan);
+
+    // 2. Execute/review cycles, then the ship gate, then possibly back again.
+    //
+    // beta.127: the cycle loop is wrapped in a ship-attempt loop. Before b127
+    // the sequence ran once and in one direction -- cycles, then push, then PR,
+    // then CI -- so CI's verdict arrived after the last opportunity to act on
+    // it had passed. A red build became a sentence in the merge recommendation.
+    //
+    // Now a red build at the gate can send the run back through a cycle with
+    // the failures as blocking findings. The `for` exists purely to make that
+    // edge expressible; when CI is green, or repair is disabled or exhausted,
+    // it breaks after one pass and the flow is exactly what b126 did.
+    let prUrl: string;
+    let ciOverride: { recommendation: "needs_human_review"; reason: string } | null = null;
+    let ciNeverRegisteredCaveat: string | null = null;
+    let ciRepairCyclesGranted = 0;
+    let lastCiFindings: ReviewFinding[] = [];
+    // rc.5 (#2): the ONLY record that a specific commit reached the remote.
+    // Deliberately holds a SHA rather than a boolean, so a HEAD that moves
+    // after publication (the CI-workflow authoring below commits) stops being
+    // covered instead of silently inheriting the old commit's proof. Declared
+    // out here with `prUrl` because a preview push in one ship attempt can
+    // legitimately serve a later attempt -- but only for the same SHA.
+    let publication: PublicationEvidence | null = null;
+    // rc.5 (#2): the SHA the CI verdict below actually describes. Recorded
+    // separately from the published SHA so "CI was green" can never be read as
+    // being about a commit CI never saw.
+    let ciPolledSha = "";
+    const requiredBehaviorChecks = plan.subTasks.flatMap((task) =>
+      (task.requiredBehaviorChecks ?? []).filter((check) => check.required !== false),
+    );
+    let behaviorVerificationPassed = requiredBehaviorChecks.length === 0;
+    let behaviorVerificationFailure: string | null = null;
+    // Measured across every ship attempt, so the timing reflects what the run
+    // actually spent getting to a shippable state.
+    const shipStart = Date.now();
+    // beta.130: and this one is the ship phase itself. Re-stamped on each
+    // attempt, so a repair cycle's ship is timed as its own push rather than
+    // as everything since the run began.
+    let shipPhaseStart = shipStart;
+    shipAttempts: for (;;) {
+    let authoredWorkflowThisCycle = false;
+    //
+    // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
+    // whole reason b119's extension does anything at all. `advance()` decided
+    // to extend, this body incremented the counter and audited
+    // `loop.max_cycles_extended` -- and then the old bound (`cycle <
+    // max_cycles`) ended the loop anyway, because the grant happened on the
+    // very cycle that exhausted the ceiling. The extension was authorised and
+    // discarded on every run since b119; the b123 OpenClaw smoke granted one
+    // at cycle 3 with $21 unspent and shipped three cycles anyway. Still
+    // bounded: `canExtend` refuses past `max_cycle_extensions`, so this can
+    // only ever run that many extra cycles.
+    // beta.127: `ciRepairCyclesGranted` joins the bound for the same reason
+    // b124 had to add `cycleExtensionsGranted` -- a grant the bound does not
+    // know about is not a grant. Getting this wrong is silent: the counter goes
+    // up, the audit event fires, and nothing runs.
+    while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted + timeExtensionCyclesGranted) {
+      cycle += 1;
+      // beta.129: how long cycles actually take on THIS run, so the wall-clock
+      // guards can ask "does another cycle fit?" instead of "is there a little
+      // time left?". Measured, not configured -- a cycle's cost depends on the
+      // repo, the plan size and how much CI polling it drags behind it.
+      cycleStartedAtMs = Date.now();
+      this.deps.state.db.prepare(`UPDATE sessions SET cycles_ran = ? WHERE id = ?`).run(cycle, sessionId);
+      this.checkpoint(sessionId, cycle);
+
+      // 2a. Executing sub-tasks in dependency order, with bounded concurrency.
+      this.setStatus(sessionId, "executing");
+      await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+      const executeStart = Date.now();
+      // beta.108: branch tip before this cycle's workers run, so a cycle that
+      // changed nothing can be recognised as such. See the early-exit below.
+      const cycleBaseSha = this.deps.worktreeHeadSha
+        ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "")
+        : "";
+      // A recovery can prove a prior review finding resolved without moving
+      // HEAD (for example, contract auto-resolution discovers that an earlier
+      // commit already satisfies the path). Such a cycle deserves a fresh
+      // review; it is not the "worker made no progress" case.
+      let cycleResolvedContractWithoutCommit = false;
+
+      // beta.92: DETERMINISTIC finding -> sub-task mapping REPLACES the deleted
+      // LLM revise-spec turn (beta.67). The revise-spec turn kept exceeding its
+      // lane-cap timeout (b73 signature) across THREE smokes (b89/b90/b91) and
+      // falling back to a raw 10-finding dump handed to every sub-task, which
+      // starved F1 scoping and induced worker confabulation. We now map each
+      // diff-addressable finding (spec|quality|security, `.file` required) onto
+      // the sub-task(s) that own its file via the SAME strict resolveContractPath
+      // machinery b87/b88 use, broadcast meta (fit|runtime) findings to all, and
+      // attach any mapping-miss to all (never dropped). No LLM turn => no
+      // timeout => no raw-dump => no confab. `reviseSpecApplied` now means
+      // "deterministic per-sub-task targeting is available"; downstream
+      // consumers (per-sub-task contract relaxation, observe-reprobe skip, raw-
+      // hint suppression) read the SAME flag, now driven by deterministic data.
+      let reviseSpecApplied = false;
+      let reviseMapping: ReviseMappingResult | undefined;
+      const reviseAssignmentBySeq = new Map<number, SubTaskAssignment>();
+      if (
+        cycle > 1 &&
+        lastReview?.findings &&
+        this.deps.config.loop.deterministic_revise_mapping !== false
+      ) {
+        const mapSubTasks: MapSubTask[] = plan.subTasks.map((s) => ({
+          seq: s.seq,
+          filesLikelyTouched: s.filesLikelyTouched,
+          contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
+          // beta.120 (fix 2): without this the router cannot tell a path a
+          // previous cycle GRANTED from one the plan OWNS, and the fan-out
+          // compounds. See MapSubTask.coFixGrantedFiles.
+          coFixGrantedFiles: s.coFixGrantedFiles,
+        }));
+        // beta.119: which of this review's findings the PREVIOUS cycle also
+        // raised. A stuck finding is re-widened even where it is already
+        // targeted -- being targeted is exactly what failed for it last time.
+        const stuck = detectStuckFindings(
+          findingsByCycle.slice(0, -1),
+          lastReview.findings as MapFinding[],
+        );
+        const stuckKeys = new Set(stuck.map((s) => s.key));
+        for (const s of stuck) {
+          this.deps.state.audit(
+            "loop.finding_stuck",
+            {
+              sessionId, cycle, occurrences: s.occurrences, title: s.finding.title,
+              file: (s.finding.file ?? "").trim() || null, severity: s.finding.severity,
+              coFixFiles: coFixFiles(s.finding),
+            },
+            sessionId,
+          );
+        }
+        // Built once and shared by both passes below. The rc.3 re-map used to
+        // carry its own copy of these, which meant the adoption cap was stated
+        // twice and only one of the statements was load-bearing.
+        const mappingOpts = {
+          adoptOrphans: this.deps.config.loop.revise_adopt_orphan_findings !== false,
+          maxAdoptionsPerCycle: this.deps.config.loop.revise_max_adoptions_per_cycle ?? 3,
+          routeCoFixOwners: this.deps.config.loop.revise_route_co_fix_owners !== false,
+          stuckKeys,
+        };
+        reviseMapping = mapFindingsToSubTasks(
+          mapSubTasks,
+          lastReview.findings as MapFinding[],
+          (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }),
+          mappingOpts,
+        );
+        // rc.3: a finding whose file no sub-task declared gets its OWN sub-task
+        // with those files granted, instead of being shown to everyone as
+        // context nobody is allowed to act on. Re-map afterwards so the new
+        // sub-tasks actually receive the findings that created them.
+        const repairSeqs = this.addFindingRepairSubTasks(sessionId, cycle, plan, reviseMapping);
+        if (repairSeqs.length > 0) {
+          reviseMapping = mapFindingsToSubTasks(
+            plan.subTasks.map((s) => ({
+              seq: s.seq,
+              filesLikelyTouched: s.filesLikelyTouched,
+              contextPaths: (s.workerContext?.codeExcerpts ?? []).map((e) => e.path),
+              coFixGrantedFiles: s.coFixGrantedFiles,
+            })),
+            lastReview.findings as MapFinding[],
+            (owned, candidate) => resolveContractPath(owned, candidate, { strictContract: true }),
+            mappingOpts,
+          );
+        }
+        for (const a of reviseMapping.assignments) reviseAssignmentBySeq.set(a.seq, a);
+        reviseSpecApplied = reviseMapping.anyTargeted;
+        this.deps.state.audit(
+          "loop.revise_mapping",
+          {
+            sessionId, cycle,
+            subTasks: plan.subTasks.length,
+            targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
+            metaBroadcast: reviseMapping.metaBroadcast.length,
+            mappingMisses: reviseMapping.mappingMisses.length,
+          },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "revise_mapping", phase: "plan", cycle,
+          targetedSubTasks: reviseMapping.assignments.filter((a) => a.targeted.length > 0).length,
+        });
+        // Charter guardrail: a filed diff-addressable finding that matched NO
+        // sub-task is a MAPPING MISS -- it is attached to every sub-task as
+        // context (never dropped, never run-all), and surfaced so we can see it.
+        const adoptedBySeq = new Map(
+          reviseMapping.orphanAdoptions.map((a) => [a.finding, a] as const),
+        );
+        const refusedFor = new Map(
+          reviseMapping.orphanRefusals.map((r) => [r.finding, r] as const),
+        );
+        for (const miss of reviseMapping.mappingMisses) {
+          const adopted = adoptedBySeq.get(miss);
+          const refused = refusedFor.get(miss);
+          this.deps.state.audit(
+            "loop.finding_mapping_miss",
+            {
+              sessionId, cycle, dimension: miss.dimension, severity: miss.severity,
+              file: (miss.file ?? "").trim() || null, title: miss.title,
+              // beta.107: a miss that found an owner is a different animal from
+              // one that stayed unactionable. b106 could not tell them apart,
+              // because before b107 there was only the one kind.
+              adoptedBySeq: adopted?.seq ?? null,
+              adoptionReason: adopted?.reason ?? null,
+              // beta.118: and "nobody could claim it" is different again from
+              // "several could, equally". Only the latter is worth a router fix.
+              refusedReason: refused?.reason ?? null,
+              refusedSeqs: refused?.seqs ?? null,
+            },
+            sessionId,
+          );
+        }
+        for (const ad of reviseMapping.orphanAdoptions) {
+          this.deps.state.audit(
+            "loop.orphan_finding_adopted",
+            { sessionId, cycle, seq: ad.seq, file: ad.file, reason: ad.reason, score: ad.score, title: ad.finding.title },
+            sessionId,
+          );
+        }
+        if (reviseMapping.orphanAdoptions.length > 0) {
+          // Put the adopted file into the sub-task's SCOPE as well. b91 scoping
+          // (which runs just below) keeps a sub-task only when its
+          // `filesLikelyTouched` intersects a finding file, so without this the
+          // adopting sub-task can still be skipped -- and the one worker asked
+          // to fix the finding never runs. `filesLikelyTouched` is a scope hint,
+          // not a contract, and b103's path writeback already rewrites it.
+          for (const ad of reviseMapping.orphanAdoptions) {
+            const st = plan.subTasks.find((s) => s.seq === ad.seq);
+            if (!st) continue;
+            st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
+            if (!st.filesLikelyTouched.includes(ad.file)) st.filesLikelyTouched.push(ad.file);
+          }
+          this.deps.logger.info(
+            "[loop] beta.107: orphan finding(s) adopted by the nearest sub-task -- now targeted, not just broadcast",
+            { sessionId, cycle, adopted: reviseMapping.orphanAdoptions.length },
+          );
+        }
+        if (reviseMapping.mappingMisses.length > 0) {
+          this.deps.logger.info(
+            "[loop] revise-mapping: filed finding(s) matched no sub-task -> broadcast to all as context (never dropped)",
+            { sessionId, cycle, misses: reviseMapping.mappingMisses.length },
+          );
+        }
+        // beta.119: a fix that spans sub-tasks now brings in every sub-task it
+        // needs. Put the co-fix paths into their scope too, for the same reason
+        // orphan adoption does above: b91 scoping keeps a sub-task only when
+        // its files intersect a finding file, so without this the extra owners
+        // are recruited and then immediately skipped.
+        for (const cf of reviseMapping.coFixRoutings) {
+          this.deps.state.audit(
+            "loop.finding_co_fix_routed",
+            {
+              sessionId, cycle, file: cf.file, matchedFiles: cf.matchedFiles,
+              seqs: cf.seqs, primarySeq: cf.primarySeq, assisting: cf.seqs.filter((s) => s !== cf.primarySeq),
+              title: cf.finding.title,
+              stuck: stuckKeys.has(findingKey(cf.finding)),
+            },
+            sessionId,
+          );
+          for (const seq of cf.seqs) {
+            const st = plan.subTasks.find((s) => s.seq === seq);
+            if (!st) continue;
+            // beta.120 (fix 2): grant edit scope WITHOUT granting ownership.
+            //
+            // b119 pushed these paths into `filesLikelyTouched`, which is both
+            // the scope gate AND the ownership map the next cycle's router
+            // reads -- and `plan` outlives the cycle. So each routing decision
+            // widened the input to the following one: cycle 2 fanned out to a
+            // mean of 1.9 sub-tasks, cycle 3 to 5.0, peaking at 9 owners for a
+            // two-file fix. Recording the grant separately keeps the worker
+            // able to edit the file while leaving ownership as the plan
+            // declared it.
+            st.coFixGrantedFiles = [...(st.coFixGrantedFiles ?? [])];
+            st.filesLikelyTouched = [...(st.filesLikelyTouched ?? [])];
+            for (const p of cf.matchedFiles) {
+              if (!st.filesLikelyTouched.includes(p)) st.filesLikelyTouched.push(p);
+              if (!st.coFixGrantedFiles.includes(p)) st.coFixGrantedFiles.push(p);
+            }
+          }
+        }
+        if (reviseMapping.coFixRoutings.length > 0) {
+          this.deps.logger.info(
+            "[loop] beta.119: finding(s) whose fix spans sub-tasks routed to every owner the fix needs",
+            { sessionId, cycle, routed: reviseMapping.coFixRoutings.length },
+          );
+        }
+        // Reviewer-required files are approved scope, not scope creep. Keep
+        // this authorization separate from ownership and persist it so a
+        // resume applies the same final-scope decision as this live run.
+        const approvedRevisionScope = new Set(plan.approvedRevisionScopeFiles ?? []);
+        for (const assignment of reviseMapping.assignments) {
+          if (assignment.targeted.length === 0 && (assignment.assisting?.length ?? 0) === 0) continue;
+          for (const file of assignment.targetedFiles) {
+            if (file) approvedRevisionScope.add(file);
+          }
+        }
+        const nextApprovedRevisionScope = [...approvedRevisionScope].sort();
+        if (
+          JSON.stringify(nextApprovedRevisionScope) !==
+          JSON.stringify([...(plan.approvedRevisionScopeFiles ?? [])].sort())
+        ) {
+          plan.approvedRevisionScopeFiles = nextApprovedRevisionScope;
+          this.deps.state.db
+            .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                         minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`)
+            .run(JSON.stringify(plan), Date.now(), sessionId);
+          this.deps.state.audit(
+            "loop.revision_scope_approved",
+            { sessionId, cycle, files: nextApprovedRevisionScope },
+            sessionId,
+          );
+        }
+        // A stuck finding that co-fix routing could NOT widen is one nobody in
+        // this plan can resolve. Record it for the PR body instead of letting
+        // it be re-raised identically until the cycle ceiling.
+        const widened = new Set(reviseMapping.coFixRoutings.map((c) => findingKey(c.finding)));
+        unresolvedAcrossCycles = stuck
+          .filter((s) => !widened.has(s.key))
+          .map((s) => ({
+            key: s.key,
+            title: s.finding.title ?? "(untitled)",
+            file: (s.finding.file ?? "").trim(),
+            severity: s.finding.severity ?? "low",
+            occurrences: s.occurrences,
+            coFixFiles: coFixFiles(s.finding),
+          }));
+        for (const u of unresolvedAcrossCycles) {
+          this.deps.state.audit("loop.finding_unresolvable_across_cycles", { sessionId, cycle, ...u }, sessionId);
+        }
+      }
+
+      const ordered = topoSortSubTasks(plan.subTasks);
+
+      // beta.91 (Fix 1): revise-cycle scoping. On cycle > 1, skip sub-tasks whose
+      // file scope does not intersect any finding -- they are already-correct
+      // from a prior cycle (the DR/BCP smoke re-ran 8 of 12 no-change sub-tasks).
+      // Conservative: any unfiled finding => run everything; never skip a dep of
+      // a kept sub-task. Feature-gated (default on). Cycle 1 is never scoped.
+      const reviseScopeSkip = new Set<number>();
+      if (cycle > 1 && this.deps.config.loop.revise_scoping_enabled !== false && lastReview?.findings) {
+        const scope = computeReviseScope(plan.subTasks, lastReview.findings, cycle);
+        if (scope.scoped) {
+          for (const s of scope.skipSeqs) reviseScopeSkip.add(s);
+          this.deps.state.audit(
+            "loop.revise_scoped",
+            { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length, skipSeqs: scope.skipSeqs, findingFiles: scope.findingFiles },
+            sessionId,
+          );
+          this.deps.logger.info(
+            "[loop] revise-scoping: skipping sub-tasks not targeted by any finding (already correct from a prior cycle)",
+            { sessionId, cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length },
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "revise_scoped", phase: "plan", cycle, run: scope.runSeqs.length, skipped: scope.skipSeqs.length });
+        } else {
+          // beta.91 NIT-6: count unfiled findings so we can measure over time
+          // whether the adversary `.file`-required fix is populating file paths
+          // (an unscopable cycle with a high unfiled count = the prompt fix not
+          // landing; a low count = genuinely file-less meta findings).
+          const unfiledFindingCount = (lastReview.findings ?? []).filter((f) => !((f.file ?? "") as string).trim()).length;
+          this.deps.state.audit(
+            "loop.revise_scope_skipped",
+            { sessionId, cycle, reason: scope.reason, findingCount: (lastReview.findings ?? []).length, unfiledFindingCount },
+            sessionId,
+          );
+        }
+      }
+
+      // beta.135: on the first cycle after an accepted clarification, the
+      // existing plan's already-completed rows are dependencies already
+      // satisfied, not work to dispatch again. Later revise cycles start cold
+      // as before so finding-targeted work can run normally.
+      const done = new Set<number>(
+        cycle === 1 && acceptedContinuation
+          ? acceptedContinuation.completedSeqs
+          : [],
+      );
+      // rc.3: `preservedReason` carries the human-readable reason out of a
+      // terminal path that already handled its own transition, so the outcome
+      // reported to the caller says what actually happened.
+      const failed = { seq: -1, err: null as unknown, preservedReason: "" };
+
+      /**
+       * beta.123: RETRACT a failure a recovery path has just healed.
+       *
+       * `failed` is the cycle-scoped accumulator the terminal decision reads at
+       * the end of the cycle. Every write to it before b123 was a SET; nothing
+       * ever cleared it. So the two paths that exist precisely to heal a
+       * verification failure without bothering a human -- the b105 basename
+       * rescue and the b111 auto-resolve -- both marked their sub-task
+       * `completed`, called `done.add`, returned... and left `failed.err`
+       * standing. The cycle then ended and the run terminated with
+       * `subtask_N_failed_verification` for a sub-task the harness had already
+       * decided was fine.
+       *
+       * That is the b122 smoke kill (session 215c1bf3, cycle-2 seq-10: a pure
+       * `git mv` the adversary had explicitly asked for), and it is why both
+       * rescues have never once let a run finish since they shipped. It was
+       * read at the time as a 30ms race between the resolve event and the
+       * terminal decision. It is not a race -- there is no timing in it. The
+       * flag is simply never unset.
+       *
+   * Retraction is keyed to the SEQ THAT RECORDED THE FAILURE, so a rescue can
+   * only ever clear its own sub-task's failure. Sub-tasks run one at a time,
+   * so the slot's owner is unambiguous; the key is kept because a blanket
+   * clear would be wrong the moment anything else writes to this accumulator,
+   * and because it states which failure is being retracted.
+   */
+      const retractFailure = (seq: number, why: string) => {
+        if (failed.seq !== seq || failed.err === null) return;
+        const retracted = failed.err;
+        failed.seq = -1;
+        failed.err = null;
+        this.deps.state.audit(
+          "loop.subtask_failure_retracted",
+          { sessionId, seq, cycle, why, retracted: String(retracted).slice(0, 300) },
+          sessionId,
+        );
+        this.deps.logger.info("[loop] sub-task failure retracted by a recovery path; the run continues", {
+          sessionId, seq, why,
+        });
+      };
+
+      // beta.55 (B2): when set, the loop pauses in `awaiting_clarification`
+      // instead of hard-failing. Carries the ONE question to surface + the
+      // paused seq. Checked BEFORE finaliseFailed so the worktree is preserved.
+      const clarify = {
+        question: null as string | null,
+        seq: -1,
+        subtask: null as {
+          title: string;
+          intent: string;
+          expectedPaths?: string[];
+          actualPaths?: string[];
+          expectedOriginalPaths?: string[];
+          task?: LeadPlanSubTask;
+          policyConflicts?: Array<{ path: string; rule: string }>;
+          observeBlockedReport?: {
+            blockers: string[];
+            findingIds: string[];
+            providerCallId?: string | null;
+          };
+        } | null,
+      };
+
+      const runOneInner = async (st: LeadPlanSubTask, workerWorktree: string): Promise<void> => {
+        // beta.91 (Fix 1): revise-scoping skip. This sub-task's files don't
+        // intersect any finding -> its prior-cycle commit is already correct and
+        // part of the branch. Mark completed_no_change without a worker turn.
+        if (reviseScopeSkip.has(st.seq)) {
+          this.deps.state.db
+            .prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+            .run("revise-scoped: not targeted by any review finding (unchanged from prior cycle)", Date.now(), sessionId, cycle, st.seq);
+          this.deps.state.audit("loop.subtask_revise_scoped_skip", { sessionId, cycle, seq: st.seq }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_scoped_skip", phase: "worker", seq: st.seq, cycle });
+          done.add(st.seq);
+          return;
+        }
+        // beta.53 (P1b): the env-wait retry, which rc.2 generalised into a
+        // bounded protocol retry. Counts RETRIES, not attempts, so the
+        // comparison against `worker_protocol_max_attempts` (a TOTAL, first
+        // attempt included) subtracts one.
+        let protocolRetries = 0;
+        // beta.56 (P0-1): on a revise cycle, the worker MUST see the previous
+        // review's findings or it will simply replay cycle 1's work.
+        // beta.92: the deterministic mapping now produces a PER-SUB-TASK scoped
+        // hint (only THIS sub-task's targeted findings + cross-cutting broadcast
+        // guidance) -- never the full untargeted 10-finding dump that overwhelmed
+        // workers and induced confabs (b91). Fall back to the beta.56 whole-
+        // review raw hint only if mapping was unavailable/disabled.
+        const reviseAssignment = reviseAssignmentBySeq.get(st.seq);
+        const baseReviseHint =
+          cycle > 1 && lastReview
+            ? reviseAssignment
+              ? buildScopedReviseHint(lastReview.verdict, lastReview.summary, reviseAssignment)
+              : buildReviseDispatchHint(lastReview)
+            : undefined;
+        // beta.101: warn this worker about ITS OWN fictional plan paths only,
+        // so the note stays short and unambiguous rather than a plan-wide dump.
+        const mine = new Set((st.filesLikelyTouched ?? []).map((p) => p.trim().replace(/^\.\//, "")));
+        const mySuspects = planPathSuspects.filter((s) => mine.has(s.path));
+        const hintWithSuspects = mySuspects.length
+          ? `${baseReviseHint ? `${baseReviseHint}\n\n` : ""}${describeSuspectPlanPaths(mySuspects)}`
+          : baseReviseHint;
+        // rc.2: the operator's answer, handed to the sub-task that asked for it
+        // and to no other. Consumed once -- the answer stays in the session row
+        // for the audit trail, but a later cycle re-running this seq is doing
+        // different work and must not be told it is resuming.
+        const isResumedSeq = cycle === 1 && acceptedContinuation?.resumeSeq === st.seq && Boolean(acceptedContinuation?.resumeAnswer);
+        const reviseHint = isResumedSeq
+          ? `${hintWithSuspects ? `${hintWithSuspects}\n\n` : ""}${buildClarificationResumeHint({
+              question: acceptedContinuation?.resumeQuestion,
+              answer: acceptedContinuation!.resumeAnswer!,
+            })}`
+          : hintWithSuspects;
+        if (isResumedSeq) {
+          this.deps.state.audit(
+            "loop.subtask_resumed_with_answer",
+            {
+              sessionId, seq: st.seq, cycle,
+              question: (acceptedContinuation?.resumeQuestion ?? "").slice(0, 500),
+              answer: (acceptedContinuation?.resumeAnswer ?? "").slice(0, 500),
+            },
+            sessionId,
+          );
+        }
+        // beta.103: attaching a hint emitted NO audit event, so "did the worker
+        // actually get told?" was unanswerable after the fact. The b102 smoke
+        // report concluded the b101 plan-path warning was observability-only
+        // and never reached a worker -- an unsound inference, but one the audit
+        // trail gave no way to refute. Record the attachment itself.
+        if (reviseHint) {
+          this.deps.state.audit(
+            "loop.dispatch_hint_attached",
+            {
+              sessionId, seq: st.seq, cycle,
+              chars: reviseHint.length,
+              sources: [
+                ...(baseReviseHint ? ["revise"] : []),
+                ...(mySuspects.length ? ["plan_path_suspect"] : []),
+              ],
+              suspectPaths: mySuspects.map((s) => s.path),
+            },
+            sessionId,
+          );
+        }
+        // beta.70 (F5): skip observe-only RE-PROBE on a revise cycle. In
+        // PR #870 the cycle-2 plan re-listed seq-1 as taskMode:'observe'
+        // ("already completed and requires no changes; do not modify any
+        // files") yet the loop re-ran it -- 58s + $0.29 to re-emit the same
+        // probe report. On a revise cycle (cycle > 1), when THIS observe
+        // sub-task already completed cleanly in a PRIOR cycle, mark it done and
+        // skip the SDK call. Guard is conservative on THREE axes:
+        //   (1) observe-only (never a mutate);
+        //   (2) the prior-cycle row for this seq is a completed/no-change observe;
+        //   (3) reviseSpecApplied -- the Fable revise-spec turn ran and
+        //       re-listed this observe as an unchanged probe. We ONLY skip in
+        //       that case, because without a revise-spec the observe sub-task is
+        //       carrying the raw revise hint and IS meant to re-run (an observe
+        //       step can apply a fix and the beta.56 hint targets it). This
+        //       matches PR #870 exactly (it had a revise-spec) without breaking
+        //       the raw-findings fallback path.
+        // Config-gated (default on).
+        if (
+          cycle > 1 &&
+          st.taskMode === "observe" &&
+          reviseSpecApplied &&
+          this.deps.config.loop.skip_observe_reprobe_on_revise !== false
+        ) {
+          const prior = this.priorObserveCompleted(sessionId, cycle, st.seq);
+          if (prior) {
+            this.deps.state.audit(
+              "loop.observe_reprobe_skipped",
+              { sessionId, cycle, seq: st.seq, priorCycle: prior.cycle, priorStatus: prior.status },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, { event: "observe_reprobe_skipped", phase: "worker", seq: st.seq, cycle });
+            done.add(st.seq);
+            return;
+          }
+        }
+        const reactions = await this.deps.readReactions(sessionId);
+        if (reactions.abort) { failed.err = "user_abort_reaction"; failed.seq = st.seq; return; }
+        if (Date.now() > hardDeadlineMs) { failed.err = "hard_timeout"; failed.seq = st.seq; return; }
+        // beta.78 (Feature 2): the SESSION budget is now SOFT. Crossing it
+        // WARNS once and the run CONTINUES (was a hard abort). The true HARD
+        // stop is the per-user daily_max_usd, checked below. This matches
+        // Carel's spec: "When hitting the budget limit, the harness should
+        // warn, but not stop, unless it crosses the max daily for the user."
+        if (totalCost > row.budget_usd && !sessionBudgetWarned) {
+          sessionBudgetWarned = true;
+          this.deps.state.audit(
+            "loop.session_budget_warn",
+            { sessionId, seq: st.seq, totalCost, sessionBudget: row.budget_usd },
+            sessionId,
+          );
+          // Surface a daily-aware Slack warning (Feature 1 + 2 fused).
+          this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
+        }
+        // beta.78 (Feature 2): HARD daily stop. Aborts when the user's total
+        // spend TODAY (persistent budgets_daily ledger + the next sub-task's
+        // estimate + the beta.61 review/push reserve) would cross daily_max.
+        // budgets_daily already includes this session's recorded spend, so we
+        // must NOT add totalCost again (avoid double-count). budgetBump lets a
+        // user blow past caps deliberately (:moneybag: reaction).
+        {
+          const subEst = this.estimateSubTaskCost(st, subTaskCosts);
+          const dailyMax = this.dailyMaxUsd();
+          if (!reactions.budgetBump && !budgetOverrideGranted && dailyMax > 0) {
+            const dailySoFar = this.safeDailySpend(row.requester);
+            // beta.61 reserve: keep headroom for the pending adversary review +
+            // push so a daily-cap abort doesn't strand committed work one
+            // review short of a PR. Reserve is a fraction of the SESSION budget
+            // (covers the same review/push tail as before).
+            const reserveRatio = this.deps.config.loop.budget_reserve_ratio ?? 0.15;
+            const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
+            const dailyProjected = dailySoFar + subEst;
+            if (dailyProjected + reserve > dailyMax) {
+              // rc.6: this used to abort the run outright, mid-plan, with
+              // committed work in the worktree and nobody told until afterwards.
+              // The daily cap is an operator limit and the operator is exactly
+              // who can lift it, so ask before killing the run. An unanswered
+              // question aborts exactly as it did before.
+              let funded = false;
+              if (!budgetExtensionRefused) {
+                const grantedUsd = await this.askForBudgetExtension({
+                  sessionId,
+                  cycle,
+                  trigger: "sub_task",
+                  spentUsd: totalCost,
+                  policy: budgetPolicy,
+                  shortfallUsd: dailyProjected + reserve - dailyMax,
+                  observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+                  dailyCapUsd: dailyMax,
+                  subTaskTitle: st.title,
+                  resumeStatus: "executing",
+                });
+                rebaseHardDeadlineFromPersistedClock();
+                if (grantedUsd > 0) {
+                  budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+                  budgetOverrideGranted = true;
+                  row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+                  funded = true;
+                } else {
+                  budgetExtensionRefused = true;
+                }
+              }
+              if (!funded) {
+                this.deps.state.audit(
+                  "loop.daily_max_abort",
+                  { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax, askedForBudget: budgetExtensionRefused },
+                  sessionId,
+                );
+                this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                failed.err = "daily_max_exhausted"; failed.seq = st.seq; return;
+              }
+            }
+          }
+        }
+
+        const subTaskId = `${sessionId}-c${cycle}-s${st.seq}`;
+        // beta.19 fix: populate `started_at` on insert. The schema has
+        // had this column since inception but nothing wrote to it, so
+        // every sub_task row had `started_at IS NULL`. Now set it to the
+        // same instant as `created_at` — for restart / recovery paths
+        // (INSERT OR REPLACE) this deliberately overwrites any earlier
+        // start time, which matches the previous cycle semantics (a
+        // re-executed sub-task started NOW, not when it was first
+        // scheduled).
+        {
+          const now = Date.now();
+          const plannedModel = selectWorkerModel(st, this.deps.config.models);
+          const ledgerModel = this.deps.describeWorkerModel?.(plannedModel) ?? plannedModel;
+          this.deps.state.db.prepare(
+            `INSERT OR REPLACE INTO sub_tasks (id, session_id, cycle, seq, description, worker_model, status, cost_usd, started_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'running', 0, ?, ?, ?)`,
+          ).run(subTaskId, sessionId, cycle, st.seq, st.title, ledgerModel, now, now, now);
+        }
+        // beta.63 (Part A): mark forward progress at sub-task START so a long
+        // executing phase (many sub-tasks) reads as live to the watchdog.
+        this.markProgress(sessionId, "subtask_start", "worker", { seq: st.seq, cycle, title: String(st.title).slice(0, 120) });
+
+        // Capture the worktree HEAD BEFORE the worker runs, so commit_made
+        // verification (HEAD != base) is meaningful.
+        const subTaskBaseSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(workerWorktree).catch(() => "") : "";
+        // beta.85: the BRANCH fork-point (plan_base_sha, persisted at plan time)
+        // -- the base for "committed anywhere in this branch" used by the
+        // revise-relaxed acceptance. Falls back to subTaskBaseSha when unset.
+        const planBaseShaForVerify = ((): string => {
+          try {
+            const r = this.deps.state.db
+              .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+              .get(sessionId) as { plan_base_sha: string | null } | undefined;
+            return r?.plan_base_sha || subTaskBaseSha;
+          } catch {
+            return subTaskBaseSha;
+          }
+        })();
+        // rc.10: the commits earlier attempts of this same sub-task produced.
+        // Read once per turn, before the worker runs, so this attempt's own
+        // commits are not in it -- the point is what came BEFORE.
+        const priorCommitsForVerify = this.priorAttemptCommits(sessionId, cycle, st.seq);
+        // beta.57 (P1): capture the sub-task start time so file_written can
+        // reject a file that merely pre-existed (mtime/diff freshness check).
+        // Previously hard-coded to 0, which disabled the freshness check and
+        // let a stale file vacuously satisfy the contract.
+        const subTaskStartedAtMs = Date.now();
+
+        /*
+         * rc.10 (F3): do not buy a turn that safety policy will refuse.
+         *
+         * Sub-task 3 of session aad3fc57 required `.env.example` against a
+         * denylist containing `.env.*`. It was dispatched anyway, denied
+         * (audit 5598), escalated as a path mismatch, corrected by an operator
+         * in a way that did not touch policy, dispatched AGAIN, and denied
+         * identically (audit 5619). The second dispatch cost $0.4262756 to
+         * re-learn a fact the harness held before the first one.
+         *
+         * Scoped to the one sub-task: the rest of the plan is unaffected and
+         * still runs. `isResumedSeq` is the release -- once an operator has
+         * answered for this seq, their decision governs and we do not re-ask,
+         * which is what stops this becoming a loop when the answer is "do it
+         * another way" rather than a config change. If the answer WAS a config
+         * change the conflict is simply gone by now, because the check reads
+         * live config.
+         */
+        const myPolicyConflicts = planPolicyConflicts.filter((c) => c.seq === st.seq);
+        if (
+          myPolicyConflicts.length > 0 &&
+          !isResumedSeq &&
+          !clarify.question &&
+          this.deps.config.loop.clarification_escalation_enabled !== false
+        ) {
+          const summary =
+            `blocked by safety policy before dispatch: ` +
+            myPolicyConflicts.map((c) => `\`${c.path}\` (rule \`${c.rule}\`)`).join(", ") +
+            `; no worker was run, so nothing was spent on it`;
+          this.deps.state.db
+            .prepare(`UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`)
+            .run(summary, Date.now(), subTaskId);
+          this.deps.state.audit(
+            "loop.plan_policy_conflict_gate",
+            {
+              sessionId, seq: st.seq, subTaskId, cycle,
+              conflicts: myPolicyConflicts.map((c) => ({ path: c.path, rule: c.rule })),
+              dispatched: false,
+            },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, {
+            event: "plan_policy_conflict_gate", phase: "worker", seq: st.seq, cycle,
+            paths: myPolicyConflicts.map((c) => c.path),
+          });
+          this.deps.logger.warn("[loop] rc.10: refusing to dispatch a sub-task whose required write the denylist blocks", {
+            sessionId, seq: st.seq, conflicts: myPolicyConflicts.map((c) => `${c.path} (${c.rule})`),
+          });
+          clarify.question = describePlanPolicyConflicts(myPolicyConflicts);
+          clarify.seq = st.seq;
+          clarify.subtask = {
+            title: st.title,
+            intent: st.intent,
+            task: structuredClone(st),
+            policyConflicts: myPolicyConflicts.map((c) => ({ path: c.path, rule: c.rule })),
+          };
+          failed.err = `subtask_${st.seq}_blocked_by_policy: ${summary}`;
+          failed.seq = st.seq;
+          return;
+        }
+
+        let result: WorkerResult;
+        // beta.63 (Part B): worker SDK call boundary logging. seq + cycle carried
+        // so a stall's sdk_request-without-sdk_response points at the exact
+        // sub-task that hung.
+        const workerStart = Date.now();
+        const selectedWorkerModel = selectWorkerModel(st, this.deps.config.models);
+        this.deps.interactionLog?.logSdkRequest(sessionId, {
+          role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+          prompt: `subtask ${st.seq}: ${st.title}\nintent: ${st.intent ?? ""}\n${reviseHint ?? ""}`,
+        });
+        // beta.64 (P0-2): the worker call is now wrapped so a first_token_timeout
+        // (returned by the inner watchdog) OR a worker timeout (thrown by the
+        // outer withTimeout) is RETRIED ONCE on a fresh SDK session before we
+        // flip the run terminal. beta.63's watchdogs were blind to a hang INSIDE
+        // a single worker turn; beta.63 smoke #2's verify sub-task streamed zero
+        // tokens and sat the full 1800s. runWorkerCallWithRetry emits the P0-1
+        // sdk_stream_opened/sdk_first_token events + owns the retry.
+        // beta.134 (observe-handoff): overlay the reports of the probes this
+        // sub-task depends on. A COPY, never `st` itself: `st` is a live node
+        // of `plan`, which is serialised back into `sessions.lead_plan_json`,
+        // and a several-thousand-char report is a run artefact that has no
+        // business growing the stored plan on every cycle.
+        const dispatchSt = this.withObserveReports(sessionId, st, cycle, observeReports);
+        const call = await this.runWorkerCallWithRetry({
+          workerWorktree,
+          sessionId, st: dispatchSt, cycle, brief, plan, requester: row.requester,
+          dispatchHint: reviseHint, workerStart, subTaskId,
+        });
+        if (call.outcome === "timeout") {
+          // beta.64 (P0-2): retry (if any) is exhausted and the worker still
+          // timed out with no usable result. For an observe-mode VERIFY sub-task
+          // we do NOT hard-fail: attempt P0-4 (scripted verifier fallback), then
+          // P0-3 (best-effort verify => graceful reviewable PR). Only if BOTH
+          // decline do we fall through to terminal.
+          const isVerifySubTask = st.taskMode === "observe";
+          if (isVerifySubTask) {
+            const scripted = await this.tryScriptedVerifyFallback(sessionId, plan, st, cycle, subTaskBaseSha);
+            if (scripted === "pass") {
+              this.deps.state.db.prepare(
+                `UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`,
+              ).run(`scripted verifier fallback PASS (LLM verify sub-task timed out)`, Date.now(), subTaskId);
+              done.add(st.seq);
+              return;
+            }
+            if (scripted !== "fail") {
+              // scripted fallback disabled or unrunnable -> try best-effort verify.
+              const outcome = await this.tryBestEffortVerify(sessionId, plan, brief, st, cycle, totalCost, row.requester, subTaskBaseSha);
+              // rc.3: `preserved` means the terminal transition is done but
+              // nothing was pushed -- it must not report as shipped.
+              if (outcome === "shipped") { failed.err = "__best_effort_shipped__"; failed.seq = st.seq; return; }
+              if (outcome !== false) {
+                failed.err = "__best_effort_preserved__";
+                failed.preservedReason = outcome.preserved;
+                failed.seq = st.seq;
+                return;
+              }
+            }
+          }
+          this.deps.state.db.prepare(
+            `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE id = ?`,
+          ).run(call.summary, Date.now(), subTaskId);
+          failed.err = call.failErr;
+          failed.seq = st.seq;
+          return;
+        }
+        result = call.result;
+
+        totalCost += result.costUsd;
+        if (result.costUsd > 0) subTaskCosts.push(result.costUsd);
+        this.deps.state.db.prepare(
+          `UPDATE sub_tasks
+           SET status = 'verifying', cost_usd = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = NULL, updated_at = ?
+           WHERE id = ?`,
+        ).run(
+          result.costUsd,
+          JSON.stringify(result.filesChanged),
+          result.commitSha ?? null,
+          result.sdkSessionId ?? null,
+          result.reason ?? null,
+          Date.now(),
+          subTaskId,
+        );
+        this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId);
+
+        // rc.3: say what git actually did this turn. The five states are decided
+        // in reconcileWorkerCommit from HEAD-before, HEAD-after and porcelain;
+        // this is where they become searchable history.
+        {
+          const recon = result.commitReconciliation;
+          if (recon) {
+            const common = { sessionId, seq: st.seq, cycle, state: recon.state };
+            if (recon.workerCommitSha) {
+              this.deps.state.audit(
+                "loop.worker_existing_commit_detected",
+                { ...common, workerCommitSha: recon.workerCommitSha, headBefore: recon.headBefore },
+                sessionId,
+              );
+            }
+            if (recon.dirtyBefore.length > 0) {
+              this.deps.state.audit(
+                "loop.worker_dirty_worktree_detected",
+                { ...common, dirtyFiles: recon.dirtyBefore.slice(0, 100), dirtyCount: recon.dirtyBefore.length },
+                sessionId,
+              );
+            }
+            if (recon.harnessCommitSha) {
+              this.deps.state.audit(
+                "loop.worker_safe_commit_created",
+                { ...common, harnessCommitSha: recon.harnessCommitSha, files: recon.dirtyBefore.length },
+                sessionId,
+              );
+            }
+            if (recon.state === "uncommitted_changes" || recon.state === "git_error") {
+              this.deps.state.audit(
+                "loop.worker_commit_failure_reconciled",
+                {
+                  ...common,
+                  headBefore: recon.headBefore,
+                  headAfter: recon.headAfter,
+                  dirtyFiles: recon.dirtyFiles.slice(0, 100),
+                  dirtyCount: recon.dirtyFiles.length,
+                  error: (recon.error ?? "").slice(0, 2000),
+                },
+                sessionId,
+              );
+            }
+          }
+        }
+
+        // v2 smoke: a refused tool call is a first-class audit event.
+        //
+        // It rides beside `worker_end_turn` rather than inside it because the
+        // interesting query is "what did the guard block in this session", and
+        // that should not require parsing a turn summary. A run whose worker
+        // produced nothing is answerable now: either rows are here and the
+        // guard stopped it, or they are not and the model simply did not act.
+        this.auditDeniedToolCalls({ sessionId, seq: st.seq, cycle, attempt: 1, denied: result.deniedToolCalls });
+
+        // beta.48 (C1): always emit the worker's final message as a
+        // breadcrumb, on EVERY sub-task (not just failures). This eliminates
+        // the "opaque worker turn" blind spot (session dca2f3b5) where a
+        // zero-side-effect end_turn was indistinguishable from a crash in the
+        // harness log. Truncated; empty string when the worker produced only
+        // tool calls and no concluding text.
+        {
+          const fm = (result.finalMessage ?? "").trim();
+          this.deps.state.audit(
+            "loop.worker_end_turn",
+            {
+              sessionId,
+              seq: st.seq,
+              cycle,
+              status: result.status,
+              commitSha: result.commitSha ?? null,
+              // beta.103: every commit tip this turn produced. `commitSha` is a
+              // single value and `sub_tasks.commit_sha` a single column, so a
+              // turn where the worker committed its own work AND the harness
+              // committed the remainder recorded only the harness commit -- the
+              // worker's own commit entered no ledger at all and so could never
+              // be reachability-checked. This array is what the guard reads.
+              commitShas: result.commitShas ?? (result.commitSha ? [result.commitSha] : []),
+              filesTouched: result.filesChanged,
+              hasFinalMessage: fm.length > 0,
+              finalMessage: fm.slice(0, 4000),
+              unguardedReads: result.unguardedReads ?? 0,
+              allowedToolCalls: result.allowedToolCalls ?? null,
+              actualPromptChars: result.actualPromptChars ?? null,
+              actualPromptSha256: result.actualPromptSha256 ?? null,
+            },
+            sessionId,
+          );
+          // beta.85: PER-SUB-TASK native progress. Pre-beta.85, native
+          // deliverProgress fired ONLY from setStatus = phase transitions
+          // (planning/executing/reviewing/done), so a long `executing` phase
+          // with N sequential sub-tasks went SILENT between phase changes
+          // (session 696226e4: 16 min, 4 sub-tasks, zero in-thread updates --
+          // exactly what makes a team think it's hung). buildProgressSnapshot's
+          // headline is already sub-task-granular ("Executing sub-task N/M --
+          // title"), so firing deliverProgress on each worker_end_turn emits a
+          // per-sub-task headline directly from the harness, with NO dependency
+          // on the poll relay / a wake cron (both of which broke on 696226e4).
+          // Best-effort + throw-guarded (same contract as the setStatus fire);
+          // a no-op for agent-orchestrated runs (no real Slack binding).
+          try {
+            this.deps.deliverProgress?.(sessionId, "executing");
+          } catch { /* best-effort: a progress post must never fail the run */ }
+
+          // rc.10: the same turn, in a row that the next attempt cannot
+          // overwrite. This is the one point every worker turn passes through
+          // regardless of how it ended, which is what makes it the honest place
+          // to append. It sits AFTER the progress post deliberately: beta.85
+          // requires deliverProgress to follow the worker_end_turn audit
+          // closely, and history is the one thing here with no deadline.
+          this.recordSubTaskAttempt({
+            sessionId,
+            subTaskId,
+            seq: st.seq,
+            cycle,
+            status: result.status,
+            costUsd: result.costUsd,
+            baseSha: subTaskBaseSha,
+            commitSha: result.commitSha ?? null,
+            commitShas: result.commitShas ?? (result.commitSha ? [result.commitSha] : []),
+            filesTouched: result.filesChanged,
+            summary: fm.slice(0, 2000),
+            startedAtMs: subTaskStartedAtMs,
+          });
+        }
+
+        // If the worker itself failed/timed out, halt now.
+        if (result.status !== "completed") {
+          failed.err = `subtask_${st.seq}_${result.status}: ${result.reason ?? "no reason"}`;
+          failed.seq = st.seq;
+          return;
+        }
+
+        // beta.76 (Option 1): record the REAL paths this sub-task touched into
+        // the run-level ground-truth set. These correct downstream (and this
+        // sub-task's own) stale contract paths via rederiveContractPath. Both
+        // committed and uncommitted-but-written files count as evidence of the
+        // repo's real layout.
+        for (const f of [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]) {
+          if (typeof f === "string" && f.trim()) discoveredRealPaths.add(f.trim());
+        }
+
+        // ---- beta.8 fix #1: HARNESS-SIDE verification ----
+        // Regardless of the worker's `end_turn: completed`, the harness
+        // independently verifies any observable side-effect the sub-task
+        // CLAIMS (inferred from its own language, not from the model). This
+        // is what catches a confabulated "I pushed / I opened a PR": we hit
+        // git / the provider API ourselves. Runs even for `completed`.
+        // beta.67 (Bug C): compute the EFFECTIVE task-mode for THIS pass. On a
+        // revise cycle (cycle > 1) a plan-time `mutate` sub-task that correctly
+        // makes NO change (the worker made no commit) is a legal no-op -- the
+        // beta.66 loop.subtask_revise_no_change handler already recognises this
+        // AFTER a verify failure, but the verifier still built the contract off
+        // the plan-time `mutate` and hard-failed commit_made/file_committed
+        // because HEAD didn't move. Demote the mode up-front so those kinds are
+        // never included in the contract this pass -> the no-op verifies as a
+        // PASS instead of a false-fail. A real cycle-1 mutate (or a revise pass
+        // that DID commit) keeps effectiveTaskMode === taskMode, so it still
+        // requires commit_made.
+        //
+        // rc.3: and only when the tree is CLEAN. A `mutate` sub-task whose
+        // edits are sitting uncommitted has not "correctly made no change" --
+        // demoting it to `observe` here would pass the contract over the top of
+        // work that is about to be thrown away.
+        const workerDirty = workerLeftUncommittedWork(result);
+        const effectiveTaskMode =
+          cycle > 1 && st.taskMode === "mutate" && !result.commitSha && !workerDirty
+            ? "observe"
+            : st.taskMode;
+        if (workerDirty && cycle > 1 && st.taskMode === "mutate" && !result.commitSha) {
+          this.deps.state.audit(
+            "loop.cycle_no_change_rejected_dirty",
+            {
+              sessionId,
+              seq: st.seq,
+              cycle,
+              gate: "contract_selection",
+              dirtyFiles: (result.commitReconciliation?.dirtyFiles ?? result.uncommittedFiles ?? []).slice(0, 100),
+            },
+            sessionId,
+          );
+        }
+        if (effectiveTaskMode !== st.taskMode) {
+          this.deps.state.audit(
+            "loop.subtask_revise_no_change",
+            { sessionId, seq: st.seq, cycle, taskMode: st.taskMode ?? "unspecified", effectiveTaskMode: "observe", trigger: "contract_selection" },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "subtask_revise_no_change", phase: "worker", seq: st.seq, cycle, effectiveTaskMode: "observe" });
+        }
+        const rawContract = inferVerifyContract(st, effectiveTaskMode);
+        // beta.76 (Option 1): RE-DERIVE each path-bearing contract kind against
+        // the real paths this run has already touched, so a stale lead-guessed
+        // directory prefix (e.g. `tests/api/grc` when the repo really uses
+        // `src/__tests__/api/grc`) is corrected BEFORE verification -- the
+        // structural cure for the drift class. No-op when no evidence-backed
+        // remap applies (returns the path unchanged), so this never makes
+        // verification stricter. Skips file_in_pr (repo-wide, not scoped).
+        const rederiveEnabled = this.deps.config.loop.contract_rederive_enabled !== false;
+        /*
+         * rc.10 (audit 5591): give re-derivation the repository's own file list.
+         *
+         * Without it the only ground truth re-derivation has is the handful of
+         * paths THIS RUN touched, so a contract naming a file that has existed
+         * in the repo for a year looks exactly like a contract naming a file
+         * that never existed. That is how a real test path was rewritten to a
+         * phantom one: the sub-task meant to touch it had been denied, so the
+         * declared path was absent from the touched set and read as stale.
+         *
+         * Best-effort by design. When the listing fails the guard simply does
+         * not fire and the rc.10 kind rule still stands on its own.
+         */
+        const repoInventory: string[] =
+          rederiveEnabled && this.deps.listRepoFiles
+            ? await this.deps.listRepoFiles(workerWorktree).catch(() => [] as string[])
+            : [];
+        // beta.103: every evidence-backed correction made below is also folded
+        // back into st.filesLikelyTouched after the contract is built, so a
+        // later revise cycle scopes against the real path instead of the
+        // lead's fiction. See plan-path-writeback.ts for the b102 failure.
+        const pathCorrections: PathCorrection[] = [];
+        const contract: SubTaskVerify[] = rawContract.map((v) => {
+          if (!rederiveEnabled) return v;
+          if (!("path" in v) || !v.path || v.kind === "file_in_pr") return v;
+        const rd = rederiveContractPath(v.path, [...discoveredRealPaths], { repoFiles: repoInventory });
+        if (rd.suggestion) {
+          // rc.9: a correction the evidence hinted at but the rules declined.
+          // Recorded with its provenance and confidence so it is available to a
+          // human, and NOT added to pathCorrections -- the contract and the
+          // plan keep the path the brief asked for.
+          this.deps.state.audit(
+            "loop.contract_path_correction_suggested",
+            {
+              sessionId, seq: st.seq, cycle, kind: v.kind,
+              keeping: v.path,
+              candidate: rd.suggestion.path,
+              via: rd.suggestion.via,
+              confidence: rd.suggestion.confidence,
+              reason: rd.suggestion.reason,
+            },
+            sessionId,
+          );
+          this.deps.logger.warn(
+            "[loop] rc.9: declined to re-derive a contract path across artifact kinds; keeping the declared path",
+            { sessionId, seq: st.seq, keeping: v.path, candidate: rd.suggestion.path },
+          );
+        }
+        if (!rd.remapped) return v;
+          pathCorrections.push({ from: v.path, to: rd.path });
+          this.deps.state.audit(
+            "loop.contract_path_rederived",
+            { sessionId, seq: st.seq, cycle, kind: v.kind, from: v.path, to: rd.path, via: rd.via },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, {
+            event: "contract_path_rederived", phase: "worker", seq: st.seq, cycle,
+            kind: v.kind, from: v.path, to: rd.path,
+          });
+          return { ...v, path: rd.path };
+        });
+        // beta.100: BOUNDED TEST-CONTRACT RECONCILIATION. The b76 prefix-remap
+        // above only fires when the stale and real directories share a trailing
+        // chain, so it cannot correct a test path that drifted on BOTH the
+        // directory and the basename (b99 seq 3: contract
+        // `.../continuity-exercises/route.test.ts` vs committed
+        // `src/__tests__/api/grc/continuity-exercises-api.test.ts` -- no shared
+        // dir suffix, so no remap was learned and a correct commit died on the
+        // strict file_committed check). Reconcile that shape here, against THIS
+        // sub-task's own touched files, under a 1:1 no-ambiguity constraint.
+        // Scope matters: we pass the PER-SUB-TASK set, never discoveredRealPaths
+        // (run-wide), which is what makes a lone unclaimed test file provably
+        // this sub-task's. See contract-rederive.ts for the full argument.
+        if (this.deps.config.loop.contract_test_path_reconcile !== false) {
+          const subTaskTouched = [...(result.filesChanged ?? []), ...(result.uncommittedFiles ?? [])]
+            .map((f) => (typeof f === "string" ? f.trim() : ""))
+            .filter(Boolean);
+          const pathEntryIdx: number[] = [];
+          const pathEntryPaths: string[] = [];
+          for (let i = 0; i < contract.length; i++) {
+            const v = contract[i]!;
+            if ((v.kind === "file_written" || v.kind === "file_committed") && v.path) {
+              pathEntryIdx.push(i);
+              pathEntryPaths.push(v.path);
+            }
+          }
+          for (const rc of reconcileTestContractPaths(pathEntryPaths, subTaskTouched)) {
+            const at = pathEntryPaths.indexOf(rc.from);
+            if (at === -1) continue;
+            const i = pathEntryIdx[at]!;
+            const entry = contract[i]!;
+            if (entry.kind !== "file_written" && entry.kind !== "file_committed") continue;
+            contract[i] = { ...entry, path: rc.to };
+            pathCorrections.push({ from: rc.from, to: rc.to });
+            this.deps.state.audit(
+              "loop.contract_test_path_reconciled",
+              { sessionId, seq: st.seq, cycle, kind: entry.kind, from: rc.from, to: rc.to, subTaskTouched },
+              sessionId,
+            );
+            this.deps.logger.info("[loop] reconciled a drifted TEST contract path onto the file this sub-task committed", {
+              sessionId, seq: st.seq, cycle, from: rc.from, to: rc.to,
+            });
+            this.deps.interactionLog?.log(sessionId, {
+              event: "contract_test_path_reconciled", phase: "worker", seq: st.seq, cycle,
+              from: rc.from, to: rc.to,
+            });
+          }
+        }
+        // beta.103: fold the proven corrections back into the PLAN. Until now a
+        // remap only ever reached the local `contract` array, so
+        // `st.filesLikelyTouched` kept the lead's fictional path for the rest
+        // of the run -- and computeReviseScope / mapFindingsToSubTasks both key
+        // off filesLikelyTouched. In the b102 smoke that made cycle 3 skip the
+        // one sub-task that owned both of its own outstanding findings. The
+        // corrections are evidence-backed (learned from paths this run really
+        // touched, 1:1 for the test reconcile), and applyPathCorrections only
+        // ever REWRITES an entry the plan already declared -- it never appends
+        // -- so a sub-task's scope can be corrected but never widened.
+        if (this.deps.config.loop.plan_path_writeback_enabled !== false && pathCorrections.length > 0) {
+          const wb = applyPathCorrections(st.filesLikelyTouched, pathCorrections);
+          if (wb.applied.length > 0) {
+            const before = [...(st.filesLikelyTouched ?? [])];
+            st.filesLikelyTouched = wb.files;
+            this.deps.state.audit(
+              "loop.plan_path_written_back",
+              { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "plan_path_written_back", phase: "worker", seq: st.seq, cycle,
+              applied: wb.applied.map((c) => `${c.from} -> ${c.to}`),
+            });
+            this.deps.logger.info("[loop] corrected the plan's declared paths from verified evidence; revise scoping will use the real paths", {
+              sessionId, seq: st.seq, cycle, corrections: describePathCorrections(wb.applied),
+            });
+          }
+        }
+        // beta.85: REVISE-CYCLE-AWARE CONTRACT RELAXATION -- the fix for the
+        // revise verifier false-positive (session 696226e4 cyc2 seq7, and the
+        // inverse-but-same-signature 1c744d70). On a revise cycle (cycle > 1)
+        // the sub-task's contract still carries its CYCLE-1 shape (e.g. BOTH
+        // route.ts AND download/route.ts), but a revise only needs to change
+        // the file(s) the review actually FLAGGED. A contract file the current
+        // review did NOT target was already shipped correctly in a prior cycle;
+        // the worker correctly leaves it untouched (buildReviseDispatchHint even
+        // TELLS it to: "if none apply, make NO changes"). Demanding a fresh
+        // mtime/diff this sub-task then false-fails correct work. So: for a
+        // NOT-TARGETED file_written/file_committed entry we set reviseRelaxed,
+        // which makes verify.ts accept "present + committed anywhere in the
+        // branch range" instead of a fresh write. A TARGETED file keeps the
+        // strict fresh requirement -> 1c744d70 (worker skipped a TARGETED file)
+        // still FAILS; 696226e4 (worker left a NOT-targeted correct file) PASSES.
+        // Targeted set = files named by this cycle's review findings (file/line),
+        // structurally matched against the contract path.
+        if (cycle > 1 && lastReview?.findings?.length) {
+          // beta.87 (Staging deep-dive [1]+[2]): build the TARGETED file set --
+          // the files THIS revise sub-task is expected to change. A contract
+          // file that is targeted keeps the STRICT fresh-write requirement; a
+          // not-targeted file (already correct from a prior cycle) is relaxed.
+          //
+          // [2] PER-SUB-TASK SCOPE: when the revise-spec turn refreshed the
+          // plan (reviseSpecApplied), this sub-task's OWN workerContext names
+          // the files it should touch (filesLikelyTouched + codeExcerpts[].path)
+          // -- use THAT, not the review-wide findings, so seq-4 doesn't inherit
+          // strict mode from a finding about seq-7's file. Fall back to the
+          // review-wide findings' `.file` only when there's no per-sub-task
+          // signal (raw-findings path).
+          // beta.92: prefer the DETERMINISTIC mapping's per-sub-task targeted
+          // file set (the files THIS sub-task's findings actually name). Fall
+          // back to filesLikelyTouched + codeExcerpts (per-sub-task signal), then
+          // to the review-wide finding files (raw path) only if mapping is off.
+          const mappedTargetedFiles = (reviseAssignment?.targetedFiles ?? [])
+            .map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean);
+          const perSubTaskFiles = mappedTargetedFiles.length > 0
+            ? mappedTargetedFiles
+            : reviseSpecApplied
+              ? [
+                  ...(st.filesLikelyTouched ?? []),
+                  ...((st.workerContext?.codeExcerpts ?? []).map((e) => e.path)),
+                ].map((f) => (typeof f === "string" ? f.trim() : "")).filter(Boolean)
+              : [];
+          const reviewFindingFiles = lastReview.findings
+            .map((f) => (typeof f.file === "string" ? f.file.trim() : ""))
+            .filter(Boolean);
+          const targetedFiles = perSubTaskFiles.length > 0 ? perSubTaskFiles : reviewFindingFiles;
+          // beta.89 [F3] (Staging 3rd deep-dive): name WHICH target source drove
+          // this sub-task's strict/relaxed decision. The revise-spec path uses
+          // deterministic full-path workerContext (clean targeting); the raw-
+          // findings fallback uses LLM `finding.file` (partial-path shorthand ->
+          // likely `targets_unresolved` -> strict-everywhere -> a possible
+          // false-fail of correct work). This one audit lets a post-mortem tell
+          // from a single query which path a cycle-2 sub-task ran under, so the
+          // one remaining semantic asymmetry is diagnosable instead of silent.
+          this.deps.state.audit(
+            "loop.revise_target_source",
+            {
+              sessionId, seq: st.seq, cycle,
+              source: perSubTaskFiles.length > 0 ? "revise_spec_worker_context" : "raw_findings",
+              reviseSpecApplied,
+              targetCount: targetedFiles.length,
+            },
+            sessionId,
+          );
+          // beta.88 [E1] (Staging 2nd deep-dive): a NON-EMPTY targeted set that
+          // structurally resolves to ZERO contract paths is functionally
+          // IDENTICAL to an empty set -- e.g. the adversary wrote a PARTIAL
+          // path (`download/route.ts`) that is shorter than the full contract
+          // path, so no structural rule matches (suffix needs the real/committed
+          // side to be the LONGER one). Without this guard `isTargeted` returns
+          // false for EVERY entry -> everything relaxes -> the same false-pass
+          // the beta.86 empty-targets fix closed, re-entered through a different
+          // LLM output shape. So: only enter the relaxation path when at least
+          // one target actually resolves to a contract path in THIS sub-task;
+          // otherwise fall through to the strict-no-targets branch (keep
+          // everything strict, a revise can't relax on unresolvable targets).
+          const anyTargetResolvable =
+            targetedFiles.length > 0 &&
+            contract.some(
+              (v) =>
+                (v.kind === "file_written" || v.kind === "file_committed") &&
+                !!v.path &&
+                !!resolveContractPath(targetedFiles, v.path, { strictContract: true }),
+            );
+          if (anyTargetResolvable) {
+            // [1] STRUCTURAL targeting only. A finding/spec path targets a
+            // contract path ONLY via a real directory-context match
+            // (exact/route-group/suffix/basename-dir), resolved through
+            // resolveContractPath's strictContract mode. This kills the
+            // beta.86 bidirectional bare-basename fuzzy match: an adversary
+            // `file:"route.ts"` (bare) no longer force-strictens EVERY
+            // `route.ts` sibling (which re-created the 696226e4 false-fail).
+            // A bare-basename target that structurally resolves to >1 contract
+            // file is genuinely ambiguous -> it targets NONE specifically
+            // (resolveContractPath's strict mode returns no structural match
+            // for a bare basename vs a dir'd path), so those siblings relax
+            // rather than false-fail.
+            const isTargeted = (p: string): boolean =>
+              !!resolveContractPath(targetedFiles, p, { strictContract: true });
+            for (let i = 0; i < contract.length; i++) {
+              const v = contract[i]!;
+              if ((v.kind === "file_written" || v.kind === "file_committed") && v.path && !isTargeted(v.path)) {
+                contract[i] = { ...v, reviseRelaxed: true };
+                this.deps.state.audit(
+                  "loop.revise_contract_relaxed",
+                  { sessionId, seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles },
+                  sessionId,
+                );
+                this.deps.interactionLog?.log(sessionId, {
+                  event: "revise_contract_relaxed", phase: "worker", seq: st.seq, cycle, kind: v.kind, path: v.path, targetedFiles,
+                });
+              }
+            }
+          } else if (targetedFiles.length > 0) {
+            // [E1] Non-empty targets that resolve to NOTHING -> keep strict.
+            // Distinct audit so a partial-path adversary shorthand is visible.
+            this.deps.state.audit(
+              "loop.revise_contract_targets_unresolved",
+              { sessionId, seq: st.seq, cycle, targetedFiles, contractPaths: contract.filter((v) => "path" in v && v.path).map((v) => (v as { path: string }).path) },
+              sessionId,
+            );
+          } else {
+            // Findings exist but none names a file -> keep strict, record why.
+            this.deps.state.audit(
+              "loop.revise_contract_strict_no_targets",
+              { sessionId, seq: st.seq, cycle, findingCount: lastReview.findings.length },
+              sessionId,
+            );
+          }
+        }
+        // beta.92 (charter #3): LOG-ONLY worker self-contradiction detector. The
+        // b91 seq-6 confab: the worker's final message admitted it "did not
+        // touch" a contract-REQUIRED file (b84 caught it at verify; we can bark
+        // earlier). REQUIRED = file_written/file_committed contract entries that
+        // are NOT reviseRelaxed (a relaxed file is legitimately left alone). No
+        // behaviour change in b92 -- emit the audit, verification still decides.
+        if (this.deps.config.loop.worker_confab_detect !== false) {
+          try {
+            const requiredPaths = contract
+              .filter(
+                (v) =>
+                  (v.kind === "file_written" || v.kind === "file_committed") &&
+                  !!(v as { path?: string }).path &&
+                  !(v as { reviseRelaxed?: boolean }).reviseRelaxed,
+              )
+              .map((v) => (v as { path: string }).path);
+            const confab = detectWorkerConfab(result.finalMessage, requiredPaths, result.filesChanged ?? []);
+            if (confab.suspected) {
+              this.deps.state.audit(
+                "loop.worker_confab_suspected",
+                { sessionId, seq: st.seq, cycle, offenders: confab.offenders, phrase: confab.phrase, requiredPaths },
+                sessionId,
+              );
+              this.deps.logger.warn(
+                "[loop] worker self-contradiction suspected: finalMessage claims a contract-required file was left untouched (LOG-ONLY; verification still decides)",
+                { sessionId, seq: st.seq, cycle, offenders: confab.offenders },
+              );
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_confab_suspected", phase: "worker", seq: st.seq, cycle, offenders: confab.offenders,
+              });
+            }
+          } catch (err) {
+            // Detector must never fail a run -- it's observability only.
+            this.deps.logger.warn("[loop] worker_confab_detect threw (ignored)", { sessionId, seq: st.seq, err: String(err) });
+          }
+        }
+        if (contract.length > 0 && this.deps.buildVerifyProbes) {
+          const probes = this.deps.buildVerifyProbes({
+            plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+          });
+          const branchHint = contract.reduce<string>(
+            (acc, v) => (v.kind === "branch_pushed" && v.branch ? v.branch : acc),
+            plan.branch,
+          );
+          let verification: VerifyOutcome;
+          try {
+            verification = await verifySubTaskOutput(
+              contract,
+              {
+                defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      // rc.10: what earlier attempts of THIS sub-task committed,
+                      // so a continuation is not asked to re-edit a file it has
+                      // already written correctly. See verify.ts.
+                      priorAttemptCommits: priorCommitsForVerify,
+                // beta.95: revise-cycle TARGETED-file plan-base window.
+                cycle,
+                reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                ...this.generatorVerifyCtx(plan.worktreePath, contract),
+              },
+              probes,
+            );
+          } catch (err) {
+            // A probe error is a verification FAILURE, not a pass. Never let
+            // an exception silently green-light a confabulated success.
+            verification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+          }
+          this.attachProviderVerification(sessionId, cycle, st.seq, verification);
+
+          this.deps.state.audit(
+            "loop.subtask_verification",
+            { sessionId, seq: st.seq, ok: verification.ok, contract, summary: verification.summary, results: verification.results },
+            sessionId,
+          );
+          // beta.63 (Part B): mirror the verify probe into the durable log so a
+          // stall trail shows which probes ran + passed before it froze.
+          this.deps.interactionLog?.log(sessionId, {
+            event: "verify_probe", phase: "worker", seq: st.seq, cycle,
+            ok: verification.ok, contract, summary: verification.summary,
+          });
+
+          // beta.16 fix #2: also emit the observe-mode breadcrumb when
+          // taskMode is 'observe' and verification passed. Keeps the audit
+          // stream self-describing on observe sub-tasks (previously silent
+          // because verify:[] means no checks fire, and inference filters
+          // out mutation-scope kinds).
+          if (verification.ok && (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate"))) {
+            this.emitObserveCompleted(sessionId, st, result, contract);
+          }
+
+          if (!verification.ok) {
+            // ---- beta.53 (P1b): retry-with-context on an env-wait hallucination ----
+            // Staging beta.52 #858 seq-5: the worker WROTE the aria-label edit
+            // (1145 bytes on disk) but never committed, then ended its turn with
+            // "npm ci is still running. The Monitor will notify me when eslint is
+            // installed. Waiting for that event." -- awaiting a mid-turn event
+            // that does not exist. Rather than terminate the whole run on a
+            // recoverable, well-understood hallucination, re-invoke the sub-task
+            // ONCE with corrective context. Because P2 now captures
+            // `uncommittedFiles`, we can branch the hint: for a PARTIAL-work turn
+            // (wrote-but-didn't-commit) the fix is nearly free -- "you already
+            // wrote X, just commit it"; for a ZERO-work turn -- "there is no such
+            // event, do the work now, skip env verification if the tool is
+            // missing". If the retry ALSO hallucinates (or otherwise fails
+            // verification) we fall through to the normal terminal handling.
+            // rc.2: the retry is now a bounded LOOP, and it knows why it is
+            // retrying. b53 gave every zero-change turn the same generic hint
+            // ("you produced zero changes, do the work"). Session 40f71a12 had
+            // a worker whose command had been DENIED with the remedy spelled
+            // out; the generic hint told it nothing it did not know, it hit the
+            // same denial, and the run then asked the operator a question whose
+            // answer was already in the denial text.
+            const protocolRetryEnabled = this.deps.config.loop.worker_protocol_retry_enabled !== false;
+            const maxProtocolAttempts = Math.min(5, Math.max(1, this.deps.config.loop.worker_protocol_max_attempts ?? 3));
+            for (;;) {
+              const failedNow = verification.results.filter((x) => !x.passed);
+              // beta.57 (P1): the retry trigger is now the OBSERVABLE STATE
+              // INVARIANT, not the worker's phrasing. beta.52->53->54 each widened
+              // a prose regex after a new wording escaped it; the state we
+              // actually care about is directly checkable: a mutate-shaped
+              // sub-task ended its turn with NO commit and ONLY local no-change
+              // kinds failing. On cycle 1 that is never a legal outcome, so the
+              // one-shot corrective retry fires unconditionally. On revise cycles
+              // (cycle > 1) a no-commit turn IS often legal (the beta.35 no-op
+              // downgrade below), so there the regex remains as the tiebreaker
+              // between "legal nothing-to-do" and "confabulated wait".
+              const phrasingMatched = matchesAsyncCoordConfabulation(result.finalMessage ?? "");
+              // rc.2: what the turn actually was. Consults `deniedToolCalls`,
+              // which the ACP adapter has always populated and nothing ever read.
+              const outcome = classifyWorkerOutcome({
+                finalMessage: result.finalMessage,
+                commitSha: result.commitSha,
+                deniedToolCalls: result.deniedToolCalls,
+                taskContext: st,
+              });
+              const zeroChangeShape =
+                !result.commitSha &&
+                failedNow.length > 0 &&
+                failedNow.every((x) => ENV_WAIT_RETRYABLE_KINDS.has(x.kind));
+              // The two outcomes the harness can fix by itself. Everything else
+              // keeps the behaviour it had: b53 still retries an unexplained
+              // zero-change turn once on cycle 1, and b55 still escalates it.
+              // Widening this to every no-op would quietly convert "the worker
+              // said something we could not verify" from a resumable pause into
+              // a hard failure, which is not the defect being fixed.
+              const harnessCorrectable =
+                outcome.kind === "recoverable_tool_denial" || outcome.kind === "progress_only";
+              // A refusal or a human-decidable blocker is never retried: trying
+              // again cannot supply a credential or overrule a considered
+              // decision, and burning two more billed turns to prove it is waste.
+              // rc.9: `policy_denial` joins these. A deterministic denial cannot
+              // be cleared by trying again -- the incident spent a second billed
+              // turn re-submitting the same patch to the same rule -- and it is
+              // emphatically not a refusal.
+              const humanDecidableNow =
+                outcome.kind === "refusal" ||
+                outcome.kind === "genuine_blocker" ||
+                outcome.kind === "policy_denial";
+              // b53 allowed exactly one retry. Keep that for the cases it was
+              // written for; spend the larger budget only where rc.2 has
+              // something new to say on each attempt.
+              const retryBudget = harnessCorrectable ? maxProtocolAttempts - 1 : 1;
+              // Emitted per worker TURN, not once per sub-task: each pass of this
+              // loop is a separate billed turn, and a denial on attempt three is
+              // a different fact from a denial on attempt one.
+              if (outcome.kind === "recoverable_tool_denial" && zeroChangeShape) {
+                this.deps.state.audit(
+                  "loop.worker_recoverable_tool_denial",
+                  {
+                    sessionId, seq: st.seq, subTaskId, cycle,
+                    category: outcome.recoverable!.category,
+                    deniedCommand: (outcome.recoverable!.title ?? "").slice(0, 300),
+                    reason: outcome.recoverable!.reason.slice(0, 500),
+                    hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                    hasCommit: Boolean(result.commitSha),
+                    failedKinds: failedNow.map((x) => x.kind),
+                    retryCount: protocolRetries,
+                  },
+                  sessionId,
+                );
+              }
+              if (outcome.kind === "progress_only" && zeroChangeShape) {
+                this.deps.state.audit(
+                  "loop.worker_noop_end_turn",
+                  {
+                    sessionId, seq: st.seq, subTaskId, cycle,
+                    finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                    hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                    hasCommit: Boolean(result.commitSha),
+                    failedKinds: failedNow.map((x) => x.kind),
+                    retryCount: protocolRetries,
+                  },
+                  sessionId,
+                );
+              }
+              const envWaitOnly =
+                protocolRetryEnabled &&
+                protocolRetries < retryBudget &&
+                this.deps.config.loop.env_wait_retry_enabled !== false &&
+                zeroChangeShape &&
+                !humanDecidableNow &&
+                // b57's rule, unchanged: on a revise cycle a no-commit turn is
+                // often legal, so there the async-wait phrasing is still the
+                // tiebreaker -- UNLESS the turn is one rc.2 can correct, which
+                // rests on a denial record or an unfinished sentence rather than
+                // on an interpretation of prose.
+                (cycle === 1 || phrasingMatched || harnessCorrectable);
+              if (envWaitOnly) {
+                protocolRetries += 1;
+                const wrote = result.uncommittedFiles ?? [];
+                const hint = buildProtocolRetryHint({
+                  outcome,
+                  contractSummary: describeContractForRetry(contract),
+                  uncommittedFiles: wrote,
+                  attempt: protocolRetries + 1,
+                  maxAttempts: maxProtocolAttempts,
+                });
+                this.deps.interactionLog?.log(sessionId, { event: "env_wait_retry", phase: "worker", seq: st.seq, cycle, partialWork: wrote.length > 0 });
+                this.deps.interactionLog?.log(sessionId, {
+                  event: "worker_protocol_retry", phase: "worker", seq: st.seq, cycle,
+                  reasonFirstLine: `${outcome.kind}${outcome.recoverable ? `: ${outcome.recoverable.category}` : ""}`,
+                });
+                this.deps.state.audit(
+                  "loop.worker_env_wait_retry",
+                  {
+                    sessionId, seq: st.seq, cycle,
+                    partialWork: wrote.length > 0,
+                    uncommittedFiles: wrote,
+                    // beta.57: the regex is now telemetry, not the gate.
+                    phrasingMatched,
+                    priorFinalMessage: (result.finalMessage ?? "").slice(0, 500),
+                  },
+                  sessionId,
+                );
+                this.deps.state.audit(
+                  "loop.worker_protocol_retry",
+                  {
+                    sessionId, seq: st.seq, subTaskId, cycle,
+                    outcome: outcome.kind,
+                    category: outcome.recoverable?.category ?? null,
+                    deniedCommand: (outcome.recoverable?.title ?? "").slice(0, 300),
+                    reason: (outcome.recoverable?.reason ?? "").slice(0, 500),
+                    retryCount: protocolRetries,
+                    maxAttempts: maxProtocolAttempts,
+                    hasFiles: (result.filesChanged ?? []).length > 0 || wrote.length > 0,
+                    hasCommit: Boolean(result.commitSha),
+                    failedKinds: failedNow.map((x) => x.kind),
+                  },
+                  sessionId,
+                );
+                this.deps.logger.warn("[loop] zero-change completion failed Git verification; retrying in the same worker session", {
+                  sessionId, seq: st.seq, partialWork: wrote.length > 0, outcome: outcome.kind, retry: protocolRetries,
+                });
+                const protocolRetryStartedAt = Date.now();
+                try {
+                  // beta.90 (Feature 2): stream-slow liveness on the retry too.
+                  const onRetryStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle);
+                  const retry = await withTimeout(
+                    this.runAccountedWorker(
+                      {
+                        sessionId,
+                        subTaskId,
+                        cycle,
+                        seq: st.seq,
+                        model: selectWorkerModel(st, this.deps.config.models),
+                        requester: row.requester,
+                        baseSha: subTaskBaseSha,
+                      },
+                      () => this.deps.runWorker({
+                        brief,
+                        // Keep the dispatch overlay: the previous retry silently
+                        // dropped priorObserveReports and forced the model to
+                        // rediscover facts the first attempt had been given.
+                        subTask: dispatchSt,
+                        plan,
+                        worktreePath: workerWorktree,
+                        requester: row.requester,
+                        // Resume so the model sees its own tool history and false
+                        // completion claim. A fresh session can simply repeat it.
+                        resumeSessionId: result.sdkSessionId,
+                        // Compose the revise context (if any) with the corrective hint.
+                        dispatchHint: reviseHint ? `${reviseHint}\n\n${hint}` : hint,
+                        // beta.91 (Fix 3): mechanical sub-tasks -> cheaper model.
+                        modelOverride: selectWorkerModel(st, this.deps.config.models),
+                        onStreamSlow: onRetryStreamSlow,
+                        onActivity: this.makeWorkerActivityCallback(sessionId, st.seq, cycle),
+                      }),
+                    ),
+                    this.deps.config.loop.worker_timeout_seconds,
+                  );
+                  totalCost += retry.costUsd;
+                  if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
+                  let retryVerification: VerifyOutcome;
+                  try {
+                    const retryProbes = this.deps.buildVerifyProbes!({
+                      plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                    });
+                    retryVerification = await verifySubTaskOutput(
+                      contract,
+                      {
+                        defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                        // beta.95: the retry path dropped branchBaseSha -- a
+                        // reviseRelaxed/targeted file on a revise-cycle retry lost
+                        // its plan-base window. Thread both through here too.
+                        baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      // rc.10: what earlier attempts of THIS sub-task committed,
+                      // so a continuation is not asked to re-edit a file it has
+                      // already written correctly. See verify.ts.
+                      priorAttemptCommits: priorCommitsForVerify,
+                        cycle,
+                        reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                        acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                        ...this.generatorVerifyCtx(workerWorktree, contract),
+                      },
+                      retryProbes,
+                    );
+                  } catch (err) {
+                    retryVerification = { ok: false, results: [], summary: `probe error: ${String(err)}` };
+                  }
+                  this.recordSubTaskAttempt({
+                    sessionId,
+                    subTaskId,
+                    seq: st.seq,
+                    cycle,
+                    status: retryVerification.ok ? "completed_verified" : "failed_verification",
+                    costUsd: retry.costUsd,
+                    baseSha: subTaskBaseSha,
+                    commitSha: retry.commitSha ?? null,
+                    commitShas: retry.commitShas ?? (retry.commitSha ? [retry.commitSha] : []),
+                    filesTouched: retry.filesChanged,
+                    summary: `${retry.reason ?? retry.status}; ${retryVerification.summary}`,
+                    startedAtMs: protocolRetryStartedAt,
+                    workerStatus: retry.status,
+                    verificationStatus: retryVerification.ok ? "passed" : "failed",
+                    verification: retryVerification,
+                    taskOutcome: retryVerification.ok ? "completed" : "retrying",
+                  });
+                  this.deps.state.db.prepare(
+                    `UPDATE sub_tasks
+                        SET cost_usd = cost_usd + ?, sdk_session_id = ?, summary = ?, updated_at = ?
+                      WHERE id = ?`,
+                  ).run(
+                    retry.costUsd,
+                    retry.sdkSessionId ?? null,
+                    `${retry.reason ?? retry.status}; ${retryVerification.summary}`.slice(0, 2000),
+                    Date.now(),
+                    subTaskId,
+                  );
+                  this.attachProviderVerification(sessionId, cycle, st.seq, retryVerification);
+                  this.deps.state.audit(
+                    "loop.subtask_verification",
+                    { sessionId, seq: st.seq, ok: retryVerification.ok, contract, summary: retryVerification.summary, results: retryVerification.results, retry: true },
+                    sessionId,
+                  );
+                  if (retryVerification.ok) {
+                    this.deps.state.db.prepare(
+                      `UPDATE sub_tasks SET status = ?, cost_usd = cost_usd + ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+                    ).run(
+                      retry.status,
+                      retry.costUsd,
+                      JSON.stringify(retry.filesChanged),
+                      retry.commitSha ?? null,
+                      retry.sdkSessionId ?? null,
+                      `env-wait retry succeeded: ${retryVerification.summary}`,
+                      Date.now(), Date.now(), subTaskId,
+                    );
+                    // rc.9: verification passed, so this is a real completion.
+                    this.checkpoint(sessionId, cycle, subTaskId, retry.sdkSessionId, "completed");
+                    await this.durableCheckpoint({
+                      sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                      worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                      repo: row.repo, requester: row.requester,
+                    });
+                    this.deps.logger.info("[loop] env-wait retry SUCCEEDED", { sessionId, seq: st.seq });
+                    done.add(st.seq);
+                    return;
+                  }
+                  // The retry also failed. Adopt its result so the next pass of
+                  // this loop -- and the terminal report, if this was the last
+                  // one -- describes the most recent attempt rather than the
+                  // first.
+                  this.deps.logger.warn("[loop] protocol retry FAILED verification", {
+                    sessionId, seq: st.seq, summary: retryVerification.summary, retry: protocolRetries,
+                  });
+                  // rc.9: this turn's denials are a separate fact from the
+                  // previous turn's. Before this, only attempt 1 was recorded.
+                  this.auditDeniedToolCalls({
+                    sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
+                  });
+                  result = retry;
+                  verification = retryVerification;
+                  continue;
+                } catch (err) {
+                  if (err instanceof AccountingPersistenceError) {
+                    failed.err = `accounting_incomplete: ${err.message}`;
+                    failed.seq = st.seq;
+                    return;
+                  }
+                  this.deps.logger.warn("[loop] protocol retry threw; terminating", { sessionId, seq: st.seq, err: String(err) });
+                  // keep the last result/verification; fall through to terminal.
+                }
+              }
+              // rc.2: nothing more to try. If retries were spent and the shape is
+              // still a correctable one, this is exhaustion -- an internal
+              // failure with everything needed to debug it, NOT a question. b53
+              // had no such state: a second failure fell straight into the
+              // refusal path, which asked the operator to adjudicate a command
+              // syntax error.
+              const lastOutcome = classifyWorkerOutcome({
+                finalMessage: result.finalMessage,
+                commitSha: result.commitSha,
+                deniedToolCalls: result.deniedToolCalls,
+                taskContext: st,
+              });
+              if (
+                protocolRetries > 0 &&
+                zeroChangeShape &&
+                (lastOutcome.kind === "recoverable_tool_denial" || lastOutcome.kind === "progress_only")
+              ) {
+                this.deps.interactionLog?.log(sessionId, {
+                  event: "worker_retry_exhausted", phase: "worker", seq: st.seq, cycle,
+                  reasonFirstLine: `${lastOutcome.kind} after ${protocolRetries} retries`,
+                });
+                this.deps.state.audit(
+                  "loop.worker_retry_exhausted",
+                  {
+                    sessionId, seq: st.seq, subTaskId, cycle,
+                    outcome: lastOutcome.kind,
+                    category: lastOutcome.recoverable?.category ?? null,
+                    deniedCommand: (lastOutcome.recoverable?.title ?? "").slice(0, 300),
+                    reason: (lastOutcome.recoverable?.reason ?? "").slice(0, 500),
+                    retryCount: protocolRetries,
+                    maxAttempts: maxProtocolAttempts,
+                    hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                    hasCommit: Boolean(result.commitSha),
+                    failedKinds: failedNow.map((x) => x.kind),
+                    failedChecks: failedNow.map((x) => ({ kind: x.kind, detail: (x.detail ?? "").slice(0, 300) })),
+                    contract: describeContractForRetry(contract),
+                    finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                    finalOutcome: "failed_verification",
+                  },
+                  sessionId,
+                );
+                this.deps.logger.warn("[loop] worker protocol retries exhausted; failing the sub-task without a human question", {
+                  sessionId, seq: st.seq, retryCount: protocolRetries, outcome: lastOutcome.kind,
+                });
+              }
+              break;
+            }
+            // ---- beta.35 fix #1 + #2: legal no-op on a REVISE cycle ----
+            // On a revise cycle (cycle > 1) the plan's mutate sub-task is
+            // re-run against a base = the worker's current HEAD (the commit it
+            // already produced on cycle 1). If the worker correctly concludes
+            // there is nothing to change (the code already satisfies the
+            // criteria; the adversary's revise findings were about runtime
+            // evidence / PR-description text / accepted nits), it ends with
+            // `end_turn` and NO new commit. The old code then failed the
+            // `commit_made` contract (HEAD == base) and killed the whole
+            // session -- even though the fix was already correct.
+            //
+            // A revise cycle that makes no change is a VALID outcome. So: if
+            // this is a revise cycle, the worker completed cleanly, and the
+            // ONLY failing checks are the "no new commit / no new file change"
+            // kinds (i.e. the effective task-mode is 'observe' for this pass,
+            // #2), downgrade the sub-task to `completed_no_change` and let the
+            // loop proceed to ship. Any OTHER kind of failure (a real
+            // confabulation: claimed a push/PR that didn't happen, wrote a
+            // file that isn't there) still hard-fails -- we do NOT weaken the
+            // trust-but-verify guarantee.
+            const NO_CHANGE_KINDS = new Set(["commit_made", "file_committed", "file_written"]);
+            const failedResults = verification.results.filter((x) => !x.passed);
+            const onlyNoChangeFailures =
+              failedResults.length > 0 &&
+              failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
+            // rc.3: "no commit" is only a legal no-op when there is also
+            // nothing on disk waiting to be committed. Downgrading a dirty tree
+            // to `completed_no_change` is how PR #1168 cycle 4 shipped a
+            // no-change verdict over live modifications.
+            const workerMadeNoCommit = !result.commitSha && !workerLeftUncommittedWork(result);
+            if (cycle > 1 && onlyNoChangeFailures && !result.commitSha && !workerMadeNoCommit) {
+              this.deps.state.audit(
+                "loop.cycle_no_change_rejected_dirty",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  gate: "verification_downgrade",
+                  dirtyFiles: (result.commitReconciliation?.dirtyFiles ?? result.uncommittedFiles ?? []).slice(0, 100),
+                },
+                sessionId,
+              );
+            }
+            if (cycle > 1 && onlyNoChangeFailures && workerMadeNoCommit) {
+              this.deps.state.db.prepare(
+                `UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`,
+              ).run(
+                `revise no-op: worker made no change (${verification.summary}); code already satisfies criteria`,
+                Date.now(),
+                subTaskId,
+              );
+              this.deps.state.audit(
+                "loop.subtask_revise_no_change",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  taskMode: st.taskMode ?? "unspecified",
+                  effectiveTaskMode: "observe",
+                  baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)",
+                  failedKinds: failedResults.map((x) => x.kind),
+                  summary: verification.summary,
+                },
+                sessionId,
+              );
+              this.deps.logger.info("[loop] revise cycle no-op accepted (worker had nothing to change)", {
+                sessionId, seq: st.seq, cycle,
+              });
+              done.add(st.seq);
+              return;
+            }
+            // Emit per-kind failure events so failures are greppable and
+            // operators can debug from audit alone.
+            // beta.9: new specific events + backward-compat old event names
+            // both fire so consumers watching old names keep working.
+            for (const r of verification.results.filter((x) => !x.passed)) {
+              // beta.15: include base_ref on commit/file_committed audit events
+              // for debugging clarity. The commit_made check compares HEAD vs
+              // the worker-session-start SHA (`subTaskBaseSha`), not the
+              // branch base. Making this explicit in the audit payload lets
+              // operators tell the difference between "worker didn't commit"
+              // and "no new commits since sub-task started, which is correct
+              // for observation-only sub-tasks".
+              const baseRef = (r.kind === "commit_made" || r.kind === "file_committed")
+                ? { baseRef: subTaskBaseSha ? subTaskBaseSha.slice(0, 12) : "(unknown)", baseSemantics: "worker-session-start" }
+                : {};
+              const payload = { sessionId, seq: st.seq, detail: r.detail, ...baseRef };
+              switch (r.kind) {
+                case "branch_pushed":
+                  // beta.10: fire ONLY the backward-compat name here. The
+                  // beta.9+ contract inference already emits
+                  // `remote_branch_exists` alongside `branch_pushed` for push
+                  // sub-tasks, and that kind fires `remote_branch_verify_failed`
+                  // on its own case. Firing both here caused duplicate
+                  // `remote_branch_verify_failed` events on the beta.10
+                  // smoke test (one from `branch_pushed` -> HTTP 404, one
+                  // from `remote_branch_exists` -> ls-remote empty).
+                  this.deps.state.audit("loop.push_verify_failed", payload, sessionId);
+                  break;
+                case "remote_branch_exists":
+                  this.deps.state.audit("loop.remote_branch_verify_failed", payload, sessionId);
+                  break;
+                case "commit_sha_matches":
+                  this.deps.state.audit("loop.commit_sha_verify_failed", payload, sessionId);
+                  break;
+                case "pr_opened":
+                  this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
+                  break;
+                case "pr_state":
+                  // backward compat: also fire old pr_verify_failed
+                  this.deps.state.audit("loop.pr_verify_failed", payload, sessionId);
+                  this.deps.state.audit("loop.pr_state_verify_failed", payload, sessionId);
+                  break;
+                case "file_written":
+                  // backward compat name
+                  this.deps.state.audit("loop.file_verify_failed", payload, sessionId);
+                  // new specific name
+                  this.deps.state.audit("loop.file_written_verify_failed", payload, sessionId);
+                  break;
+                case "file_committed":
+                  this.deps.state.audit("loop.file_committed_verify_failed", payload, sessionId);
+                  break;
+                case "file_pushed":
+                  this.deps.state.audit("loop.file_pushed_verify_failed", payload, sessionId);
+                  break;
+                case "file_in_pr":
+                  this.deps.state.audit("loop.file_in_pr_verify_failed", payload, sessionId);
+                  break;
+                case "commit_made":
+                  // backward compat name
+                  this.deps.state.audit("loop.commit_verify_failed", payload, sessionId);
+                  break;
+                default:
+                  // fallback for any future kinds
+                  this.deps.state.audit("loop.verify_failed", { ...payload, kind: r.kind }, sessionId);
+              }
+            }
+            // ---- beta.48 (C1 + C2): reasoned-refusal observability ----
+            // Session dca2f3b5 (beta.47 revise of #858) exposed a blind spot:
+            // a worker can end its turn with `end_turn` + ZERO filesystem
+            // side-effects because it made a REASONED REFUSAL (e.g. "the
+            // sub-task's premise is factually false, renaming would regress
+            // the repo"). The harness saw "0/N checks passed, worker did
+            // nothing" and terminated, throwing away the worker's structured
+            // explanation. The refusal was CORRECT but invisible. Detect the
+            // shape (every failing check is a no-change kind AND the worker
+            // made no commit AND it left a non-empty final message) and
+            // surface that message so operators/downstream see WHY, instead
+            // of an opaque empty turn. NOTE: this does NOT change the pass/
+            // fail decision (the sub-task still fails verification) -- it only
+            // makes the reason observable. We deliberately do NOT auto-accept
+            // the refusal: a worker refusing on a false premise is a signal
+            // that an UPSTREAM artefact (adversary finding / brief) was wrong,
+            // which a human or a future replan loop should resolve.
+            //
+            // rc.2: the predicate below used to be `refusalText.length > 0` --
+            // "the worker said something". Session 40f71a12 is what that costs:
+            // "Now let me check the workbook headers quickly..." became a
+            // refusal, and the operator was asked to adjudicate an unfinished
+            // sentence. A refusal is now a CLAIM the worker made (it declined,
+            // or it named something only a human can supply), not the mere
+            // presence of prose.
+            const NO_CHANGE_ONLY = failedResults.length > 0 && failedResults.every((x) => NO_CHANGE_KINDS.has(x.kind));
+            const refusalText = (result.finalMessage ?? "").trim();
+            const terminalOutcome: WorkerOutcome = classifyWorkerOutcome({
+              finalMessage: result.finalMessage,
+              commitSha: result.commitSha,
+              deniedToolCalls: result.deniedToolCalls,
+              taskContext: st,
+            });
+            // Subtractive on purpose: the old predicate, minus exactly the two
+            // outcomes the harness corrects itself. An unexplained no-op still
+            // pauses for a human the way b55 intended -- the only turns removed
+            // from that path are the ones where a human has nothing to add.
+            const harnessCorrectedIt =
+              terminalOutcome.kind === "recoverable_tool_denial" || terminalOutcome.kind === "progress_only";
+            /*
+             * rc.9: a policy denial is not a refusal, and must not be reported
+             * as one.
+             *
+             * At rc.8 `looksLikeRefusal` was true for any zero-change turn that
+             * said ANYTHING, so StitchGuard's denylist block -- a fact about
+             * harness configuration -- was recorded as `loop.worker_refusal`
+             * and put to the operator as "the worker's explanation", quoting
+             * planning prose truncated mid-sentence. The worker had refused
+             * nothing; it had been refused.
+             */
+            const policyDenied =
+              NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "policy_denial";
+            /*
+             * rc.10 (F3, audits 5598/5601/5603): a deterministic denial is a
+             * fact about the turn, not a property of whether anything ELSE got
+             * committed.
+             *
+             * rc.9 predicated every policy-denial path on `!result.commitSha`,
+             * so the case that actually happened fell straight through it. The
+             * worker committed two implementation files AND was refused
+             * `.env.example`; because a commit existed, `policyDenied` was
+             * false, and the escalation took the contract-path-mismatch branch
+             * -- which asked the operator whether the missing template was a
+             * path mistake and offered "accept", "skip", or another path. The
+             * decisive fact, that a safety rule had refused the write, was not
+             * in the question at all.
+             *
+             * When the SAME denial recurred with no new commit (audit 5627) the
+             * classification was correct, which is the clearest possible
+             * evidence that the commit -- not the denial -- was deciding which
+             * question got asked.
+             *
+             * Read straight off the structured denials, independent of commit
+             * state and of NO_CHANGE_ONLY.
+             */
+            const deterministicDenial = policyDenialFrom(result.deniedToolCalls);
+            const policyDeniedWithPartialWork =
+              !policyDenied && !!deterministicDenial && failedResults.length > 0;
+            const looksLikeRefusal =
+              NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 && !harnessCorrectedIt && !policyDenied;
+            if (policyDenied) {
+              const policy = terminalOutcome.policy!;
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_policy_denied", phase: "worker", seq: st.seq, cycle,
+                reasonFirstLine: `${policy.code}${policy.rule ? `: ${policy.rule}` : ""}`,
+              });
+              this.deps.state.audit(
+                "loop.worker_policy_denied",
+                {
+                  sessionId, seq: st.seq, subTaskId, cycle,
+                  code: policy.code,
+                  rule: policy.rule ?? null,
+                  paths: policy.paths,
+                  tool: policy.tool ?? null,
+                  attempts: policy.attempts,
+                  retryCount: protocolRetries,
+                  failedKinds: failedResults.map((x) => x.kind),
+                },
+                sessionId,
+              );
+              this.deps.logger.warn("[loop] rc.9: a safety policy blocked this sub-task; the worker did not refuse it", {
+                sessionId, seq: st.seq, code: policy.code, rule: policy.rule ?? null, paths: policy.paths,
+              });
+            }
+            if (NO_CHANGE_ONLY && !result.commitSha && terminalOutcome.kind === "genuine_blocker") {
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_genuine_blocker", phase: "worker", seq: st.seq, cycle,
+                reasonFirstLine: (terminalOutcome.explanation ?? "").slice(0, 300),
+              });
+              this.deps.state.audit(
+                "loop.worker_genuine_blocker",
+                {
+                  sessionId, seq: st.seq, subTaskId, cycle,
+                  blockerKind: terminalOutcome.blockerKind ?? "unspecified",
+                  explanation: (terminalOutcome.explanation ?? "").slice(0, 1000),
+                  retryCount: protocolRetries,
+                  hasFiles: (result.filesChanged ?? []).length > 0 || (result.uncommittedFiles ?? []).length > 0,
+                  hasCommit: Boolean(result.commitSha),
+                  failedKinds: failedResults.map((x) => x.kind),
+                  finalOutcome: "awaiting_clarification",
+                },
+                sessionId,
+              );
+            }
+            // ---- beta.52: distinguish a PROTOCOL-ASSUMPTION failure from a
+            // reasoned refusal. Session fc64d8ea (beta.51 revise of #858) sub-
+            // task 3: the worker ended its turn with 24 words -- "The install
+            // is still completing. I'll await the Monitor event signaling tsc
+            // is ready rather than polling further." -- and ZERO side-effects.
+            // That is NOT a reasoned refusal (it did not dispute the task); it
+            // HALLUCINATED a mid-turn event stream that does not exist in the
+            // one-shot harness protocol, and exited waiting for a signal that
+            // never comes. The beta.52 worker-prompt hardening kills the
+            // behaviour; this tag makes the pattern greppable in metrics so we
+            // can tell "worker was wrong about the harness" apart from "worker
+            // correctly refused a bad task". Does NOT change pass/fail.
+            // rc.2: decoupled from `looksLikeRefusal`, which no longer fires on
+            // an env-wait hallucination (correctly -- awaiting an imaginary
+            // event is not a refusal). The tag itself is unchanged: same shape,
+            // same regex, still diagnostic only.
+            const looksLikeProtocolAssumption =
+              NO_CHANGE_ONLY && !result.commitSha && refusalText.length > 0 &&
+              matchesAsyncCoordConfabulation(refusalText);
+            if (looksLikeProtocolAssumption) {
+              const firstLine = refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+              this.deps.state.audit(
+                "loop.worker_env_wait_hallucination",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  reasonFirstLine: firstLine.slice(0, 300),
+                  finalMessage: refusalText.slice(0, 4000),
+                  failedKinds: failedResults.map((x) => x.kind),
+                },
+                sessionId,
+              );
+              this.deps.logger.warn("[loop] worker awaited a non-existent mid-turn event (env-wait hallucination) and did no work", {
+                sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200),
+              });
+            }
+            if (looksLikeRefusal) {
+              // rc.2: the narration-stripped explanation, not the first line.
+              // The first line of "Now let me check X. The credentials are
+              // missing." is the half-thought, and quoting it at an operator
+              // hides the only sentence that mattered.
+              const firstLine = terminalOutcome.explanation
+                ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+              // beta.58 (Bug B): split the audit event by semantics. A refusal
+              // whose explanation references a contradicted/invalid premise is
+              // a GOOD-FAITH skip, not a bad-faith refusal -- emit a distinct
+              // event so breakdowns are diagnosable without reading the prose.
+              // (Pass/fail is unchanged: both still escalate to clarification.)
+              const invalidPremiseSkip =
+                matchesInvalidPremiseSkip(refusalText) && failedResults.some((x) => x.kind === "commit_made");
+              this.deps.interactionLog?.log(sessionId, {
+                event: invalidPremiseSkip ? "worker_skipped_invalid_premise" : "worker_refusal",
+                phase: "worker", seq: st.seq, cycle, reasonFirstLine: firstLine.slice(0, 300),
+              });
+              this.deps.state.audit(
+                invalidPremiseSkip ? "loop.worker_skipped_invalid_premise" : "loop.worker_refusal",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  reasonFirstLine: firstLine.slice(0, 300),
+                  finalMessage: refusalText.slice(0, 4000),
+                  failedKinds: failedResults.map((x) => x.kind),
+                  summary: verification.summary,
+                },
+                sessionId,
+              );
+              this.deps.logger.warn(
+                invalidPremiseSkip
+                  ? "[loop] worker skipped a sub-task on a contradicted premise (good-faith, structured)"
+                  : "[loop] worker made a reasoned refusal (zero side-effects + explanation)",
+                { sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200) },
+              );
+            }
+            // beta.48 (C2): fold the refusal first-line into the persisted
+            // summary so harness_progress.headline and the terminal update
+            // show "worker refused: <reason>" rather than a bare
+            // verification-failed string.
+            // rc.2: when the harness corrected as far as it could and still got
+            // nothing, the summary is an ENGINEERING record -- the denied
+            // command, the guard's reason, how many attempts it had, what it
+            // failed. Everything a maintainer needs, and nothing shaped like a
+            // question, because there is nobody to ask.
+            const exhaustedSummary =
+              protocolRetries > 0 && harnessCorrectedIt && NO_CHANGE_ONLY && !result.commitSha
+                ? `worker protocol retries exhausted after ${protocolRetries} retr${protocolRetries === 1 ? "y" : "ies"} (${terminalOutcome.kind})` +
+                  (terminalOutcome.recoverable
+                    ? `; denied command ${terminalOutcome.recoverable.title ? `\`${terminalOutcome.recoverable.title.slice(0, 120)}\` ` : ""}(${terminalOutcome.recoverable.category}): ${terminalOutcome.recoverable.reason.slice(0, 200)}`
+                    : "") +
+                  `; unmet contract: ${describeContractForRetry(contract)}`
+                : null;
+            const failSummary = policyDenied
+              ? `blocked by safety policy${terminalOutcome.policy!.rule ? ` rule \`${terminalOutcome.policy!.rule}\`` : ""}` +
+                ` on ${terminalOutcome.policy!.paths.join(", ") || "the requested path"}` +
+                ` (${terminalOutcome.policy!.attempts} attempt(s)); the worker did not refuse`
+              : exhaustedSummary
+              ? exhaustedSummary
+              : looksLikeProtocolAssumption
+              ? `worker awaited a non-existent mid-turn event and did no work: ${(refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+              : looksLikeRefusal
+                ? `worker refused (no changes made): ${(terminalOutcome.explanation ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? "").slice(0, 300)}`
+                : `verification failed: ${verification.summary}`;
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
+            ).run(failSummary, Date.now(), subTaskId);
+            this.deps.logger.warn("[loop] harness-side verification FAILED (worker confabulated success)", {
+              sessionId, seq: st.seq, costUsd: result.costUsd, summary: verification.summary,
+            });
+            failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
+            failed.seq = st.seq;
+            // ---- beta.55 (B2): escalate a reasoned refusal / surviving
+            // confabulation to a HUMAN instead of hard-failing the run. ----
+            // Precondition: this is a genuine refusal (looksLikeRefusal) that
+            // has ALREADY had its beta.54 async-coord retry (envWaitRetried is
+            // true if a retry was attempted; a refusal that reaches here after
+            // the retry, OR one that never qualified for retry, is a real
+            // blocking ambiguity). Rather than kill the whole run, surface the
+            // worker's OWN explanation as a question and pause resumably. The
+            // worktree is preserved (finaliseAwaitingClarification does NOT
+            // release it) so harness_answer can re-drive from this seq in place.
+            if (policyDenied && this.deps.config.loop.clarification_escalation_enabled !== false) {
+              // rc.9: built from the structured denial. The worker's narrative
+              // appears last and clearly labelled, if at all -- at rc.8 it WAS
+              // the entire question.
+              clarify.question = buildPolicyDenialClarification({
+                seq: st.seq,
+                title: st.title,
+                policy: terminalOutcome.policy!,
+                workerNote: terminalOutcome.explanation?.slice(0, 300),
+              });
+              clarify.seq = st.seq;
+              clarify.subtask = { title: st.title, intent: st.intent, task: structuredClone(st) };
+            }
+            /*
+             * rc.10 (F3): the same question, for the case where the worker got
+             * some of the way there before being refused.
+             *
+             * Placed above the contract-path-mismatch escalation on purpose.
+             * That branch fires on `!!result.commitSha` and would otherwise
+             * claim this turn, which is precisely the substitution audit 5601
+             * made: a policy block reported as a possible path typo. Both facts
+             * belong in the question -- the work is real and must be preserved,
+             * AND the reason the rest is missing is a rule, not a mistake.
+             */
+            if (policyDeniedWithPartialWork && this.deps.config.loop.clarification_escalation_enabled !== false) {
+              const unmet = [...new Set(failedResults.map((x) => x.path).filter((p): p is string => !!p))];
+              const committedFiles = (result.filesChanged ?? []).filter(
+                (f): f is string => typeof f === "string" && !!f.trim(),
+              );
+              this.deps.state.audit(
+                "loop.worker_policy_denied",
+                {
+                  sessionId, seq: st.seq, subTaskId, cycle,
+                  code: deterministicDenial!.code,
+                  rule: deterministicDenial!.rule ?? null,
+                  paths: deterministicDenial!.paths,
+                  tool: deterministicDenial!.tool ?? null,
+                  attempts: deterministicDenial!.attempts,
+                  retryCount: protocolRetries,
+                  failedKinds: failedResults.map((x) => x.kind),
+                  // rc.10: what distinguishes this row from the rc.9 one.
+                  withPartialCommit: true,
+                  commitSha: result.commitSha ?? null,
+                  committedFiles: committedFiles.slice(0, 50),
+                  unmet,
+                },
+                sessionId,
+              );
+              this.deps.interactionLog?.log(sessionId, {
+                event: "worker_policy_denied", phase: "worker", seq: st.seq, cycle,
+                reasonFirstLine:
+                  `${deterministicDenial!.code}${deterministicDenial!.rule ? `: ${deterministicDenial!.rule}` : ""}` +
+                  ` (partial commit preserved)`,
+              });
+              this.deps.logger.warn(
+                "[loop] rc.10: safety policy blocked part of this sub-task; the committed work stands and the block is the reason for the rest",
+                { sessionId, seq: st.seq, rule: deterministicDenial!.rule ?? null, paths: deterministicDenial!.paths, unmet },
+              );
+              clarify.question = buildPolicyDenialClarification({
+                seq: st.seq,
+                title: st.title,
+                policy: deterministicDenial!,
+                workerNote: terminalOutcome.explanation?.slice(0, 300),
+                partialWork: { commitSha: result.commitSha ?? null, committed: committedFiles, unmet },
+              });
+              clarify.seq = st.seq;
+              clarify.subtask = { title: st.title, intent: st.intent, task: structuredClone(st) };
+            }
+            if (
+              looksLikeRefusal &&
+              this.deps.config.loop.clarification_escalation_enabled !== false
+            ) {
+              // rc.2: the narration-stripped explanation. The old first-line
+              // rule showed the operator whatever sentence happened to come
+              // first, which in "First, let me check the headers. I need you to
+              // decide X." is the half-thought and not the decision.
+              const firstLine = terminalOutcome.explanation
+                ?? refusalText.split("\n").map((l) => l.trim()).find(Boolean) ?? refusalText.slice(0, 200);
+              clarify.question =
+                `Sub-task ${st.seq} ("${st.title}") could not proceed. The worker's explanation: ` +
+                // rc.9: a backend reports a GUARD denial to the model as "the
+                // user rejected permission". Quoted verbatim at the operator,
+                // that sends them looking for a decision they never made.
+                `${correctFalseUserRejection(firstLine).slice(0, 500)}. ` +
+                `How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, or "abort".)`;
+              clarify.seq = st.seq;
+              // beta.58 (D1/D2): capture the paused sub-task's title+intent so a
+              // `skip` answer keys the prohibition by CONTENT (survives a re-plan's
+              // seq renumbering) and can strip the owning finding line.
+              clarify.subtask = { title: st.title, intent: st.intent, task: structuredClone(st) };
+            }
+            // ---- beta.100: a CONTRACT-PATH MISMATCH pauses, it does not kill ----
+            // b99 seq 3 (session 4420aa45): the worker committed d7cc9602 carrying
+            // BOTH deliverables, but placed the test at the repo's real Jest
+            // location rather than the co-located path the lead guessed pre-probe.
+            // EVERY recovery path missed -- the b53 env-wait retry requires NO
+            // commit, the b35 revise no-op requires cycle > 1, and the b55
+            // escalation directly above requires `looksLikeRefusal`, which also
+            // requires NO commit. So a run holding two good commits plus a correct
+            // third one hard-failed at cycle 1, $3.94 spent, no PR, nothing to
+            // resume from.
+            //
+            // The b100 reconciliation (see the contract build above) self-heals the
+            // provable case. What reaches HERE is the genuinely ambiguous
+            // remainder: the worker committed real work, but the harness cannot
+            // prove whether the PLAN's path or the WORKER's placement is the wrong
+            // one. That is a human decision, so pause resumably -- the worktree and
+            // its commits survive and harness_answer re-drives from this seq.
+            //
+            // This does NOT weaken trust-but-verify. The sub-task still FAILS
+            // (failed.err is set and the row is already `failed_verification`);
+            // nothing is accepted and no check is relaxed. We change only the
+            // TERMINAL DISPOSITION, from `failed` to `awaiting_clarification`. The
+            // worker's prose is quoted as context but is never the evidence: the
+            // expected paths come from the contract and the actual paths from git
+            // via result.filesChanged.
+            const PATH_MISMATCH_KINDS = new Set(["file_committed", "file_written"]);
+            const contractPathMismatch =
+              !!result.commitSha &&
+              failedResults.length > 0 &&
+              failedResults.every((x) => PATH_MISMATCH_KINDS.has(x.kind) && !!x.path);
+            // ---- beta.105: BASENAME-ANCHORED RESCUE, before we bother a human ----
+            // b103's rederive only corrects a path when an EARLIER sub-task
+            // already taught the run the substitution. On the b103 smoke, seq 9
+            // was the first sub-task to touch `src/components/`, so the lead's
+            // fictional `components/layout/sidebar.tsx` met the worker's correct
+            // `components/ui/sidebar.tsx` with no lesson to apply: no rederive
+            // fired, and a mechanically-obvious correction escalated to a human
+            // who took an hour to answer. Same basename, planned directory
+            // absent from the repo, committed directory present -- the harness
+            // had everything it needed to resolve this itself.
+            //
+            // So: propose the remap from the mismatch, re-verify against the
+            // corrected contract, and only continue if verification ACTUALLY
+            // passes. Nothing is waved through -- a rescue that does not verify
+            // falls straight into the escalation below, unchanged. The strict
+            // conditions live in basename-rescue.ts.
+            if (
+              !clarify.question &&
+              contractPathMismatch &&
+              this.deps.config.loop.basename_rescue_enabled !== false &&
+              this.deps.listRepoFiles &&
+              this.deps.buildVerifyProbes
+            ) {
+              try {
+                // rc.5: a GENERATED path is never rescued. The rescue exists
+                // because the lead may have guessed a source file's location
+                // wrong, so a same-basename file the worker did touch is
+                // probably the one it meant. A derived file has no such
+                // ambiguity: the operator declared exactly which path the
+                // generator writes. Rescuing it onto a same-basename sibling
+                // would launder "the generator never ran" into a pass.
+                const genMap = this.generatorVerifyCtx(workerWorktree).generators;
+                const isGenerated = (p: string) => !!genMap?.ownerOf(p);
+                const expected = rescuableContractPaths(genMap, [
+                  ...new Set(failedResults.map((x) => x.path!).filter(Boolean)),
+                ]);
+                const actual = (result.filesChanged ?? []).filter((f): f is string => typeof f === "string" && !!f.trim());
+                const repoFiles = await this.deps.listRepoFiles(workerWorktree);
+                // beta.122: the same idea, one condition further out. A
+                // contract that names a DIRECTORY can never pass `file_written`
+                // (it stats for a regular file), and for a Prisma migration the
+                // lead could not have named the file -- the timestamped
+                // directory does not exist until the migration is created. The
+                // b121 escalation over `prisma/migrations` had exactly one
+                // possible answer and cost the run, because answering it took
+                // the resume path that then orphaned the commits.
+                const rescue =
+                  proposeBasenameRescue({ expected, actual, repoDirs: repoDirsFromFiles(repoFiles) }) ??
+                  proposeDirectoryRescue({ expected, actual });
+                if (rescue) {
+                  const rescued = contract.map((v) =>
+                    "path" in v && !isGenerated(v.path) && rescueMatchesContractPath(v.path, rescue)
+                      ? { ...v, path: rescue.to }
+                      : v,
+                  );
+                  const rescueProbes = this.deps.buildVerifyProbes({
+                    plan, requester: row.requester, worktreePath: workerWorktree, baseSha: subTaskBaseSha,
+                  });
+                  const reverified = await verifySubTaskOutput(
+                    rescued,
+                    {
+                      defaultBranch: branchHint, subTaskStartMs: subTaskStartedAtMs,
+                      baseSha: subTaskBaseSha, branchBaseSha: planBaseShaForVerify,
+                      // rc.10: what earlier attempts of THIS sub-task committed,
+                      // so a continuation is not asked to re-edit a file it has
+                      // already written correctly. See verify.ts.
+                      priorAttemptCommits: priorCommitsForVerify,
+                      cycle,
+                      reviseTargetedPlanbaseWindow: this.deps.config.loop.revise_targeted_planbase_window !== false,
+                      acceptRenameAsWrite: this.deps.config.loop.file_written_accepts_rename !== false,
+                      ...this.generatorVerifyCtx(workerWorktree, rescued),
+                    },
+                    rescueProbes,
+                  );
+                  this.deps.state.audit(
+                    "loop.contract_path_basename_rescued",
+                    {
+                      sessionId, seq: st.seq, cycle,
+                      kind: rescue.kind ?? "basename",
+                      from: rescue.from, to: rescue.to, via: rescue.via, reason: rescue.reason,
+                      verified: reverified.ok, summary: reverified.summary,
+                    },
+                    sessionId,
+                  );
+                  if (reverified.ok) {
+                    cycleResolvedContractWithoutCommit = true;
+                    // Fold the correction into the plan through the same b103
+                    // writeback path a learned remap uses, so a later revise
+                    // cycle scopes against the real path too.
+                    if (this.deps.config.loop.plan_path_writeback_enabled !== false) {
+                      const before = st.filesLikelyTouched ?? [];
+                      const wb = applyPathCorrections(before, [{ from: rescue.from, to: rescue.to }]);
+                      if (wb.applied.length > 0) {
+                        st.filesLikelyTouched = wb.files;
+                        this.deps.state.audit(
+                          "loop.plan_path_written_back",
+                          { sessionId, seq: st.seq, cycle, applied: wb.applied, before, after: wb.files, source: "basename_rescue" },
+                          sessionId,
+                        );
+                      }
+                    }
+                    this.deps.interactionLog?.log(sessionId, {
+                      event: "contract_path_basename_rescued", phase: "worker", seq: st.seq, cycle,
+                      from: rescue.from, to: rescue.to,
+                    });
+                    this.deps.logger.info(`[loop] ${describeBasenameRescue(rescue)}; re-verified clean, continuing without a clarification`, {
+                      sessionId, seq: st.seq, cycle,
+                    });
+                    this.deps.state.db.prepare(
+                      `UPDATE sub_tasks SET status = ?, files_touched = ?, commit_sha = ?, sdk_session_id = ?, summary = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+                    ).run(
+                      "completed",
+                      JSON.stringify(result.filesChanged ?? []),
+                      result.commitSha ?? null,
+                      result.sdkSessionId ?? null,
+                      `basename-rescued contract path (${rescue.from} -> ${rescue.to}): ${reverified.summary}`,
+                      Date.now(), Date.now(), subTaskId,
+                    );
+                    // rc.9: re-verified clean, so this is a real completion.
+                    this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
+                    await this.durableCheckpoint({
+                      sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+                      worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+                      repo: row.repo, requester: row.requester,
+                    });
+                    retractFailure(st.seq, `basename_rescue:${rescue.kind}`);
+                    done.add(st.seq);
+                    return;
+                  }
+                }
+              } catch (err) {
+                // A rescue that throws must leave the run exactly where it was:
+                // escalating to a human, which is the pre-b105 behaviour.
+                this.deps.logger.warn("[loop] basename rescue failed (non-fatal; escalating as before)", {
+                  sessionId, seq: st.seq, cycle, err: String(err),
+                });
+              }
+            }
+            if (
+              !clarify.question &&
+              contractPathMismatch &&
+              this.deps.config.loop.contract_mismatch_escalation_enabled !== false &&
+              this.deps.config.loop.clarification_escalation_enabled !== false
+            ) {
+              const expected = [...new Set(failedResults.map((x) => x.path!).filter(Boolean))];
+              const actual = (result.filesChanged ?? []).filter((f) => typeof f === "string" && f.trim());
+              // rc1 follow-up (live smoke 6096e931): `expected` holds the
+              // POST-rederive paths, but the stored plan carries the
+              // PRE-rederive originals. An operator "accept" removes the
+              // expected paths from the stored plan; when a rederive/test
+              // reconcile rewrote the path first, that removal is a no-op and
+              // the SAME mismatch re-pauses every cycle (seq 5 paused three
+              // times on one phantom path). Map each failed path back through
+              // this sub-task's path corrections so the accept can remove the
+              // stored original as well.
+              const expectedSetForOriginals = new Set(expected);
+              const expectedOriginals = [
+                ...new Set(
+                  pathCorrections
+                    .filter((correction) => expectedSetForOriginals.has(correction.to))
+                    .map((correction) => correction.from),
+                ),
+              ];
+              // beta.101: select the worker's reason by RELEVANCE, not
+              // position. b100 quoted the first line and showed the operator
+              // "That's fine, it's a harmless temp file outside the repo" --
+              // about an unrelated file -- while the real explanation sat lower
+              // in the message. See extractStatedReason.
+              const statedReason = extractStatedReason(result.finalMessage ?? "", expected, actual);
+              this.deps.state.audit(
+                "loop.contract_path_mismatch_escalated",
+                {
+                  sessionId, seq: st.seq, cycle,
+                  expected, actual,
+                  commitSha: result.commitSha,
+                  failedKinds: failedResults.map((x) => x.kind),
+                  summary: verification.summary,
+                },
+                sessionId,
+              );
+              this.deps.interactionLog?.log(sessionId, {
+                event: "contract_path_mismatch_escalated", phase: "worker", seq: st.seq, cycle, expected, actual,
+              });
+              this.deps.logger.warn("[loop] contract-path mismatch on a REAL commit; pausing for a human instead of failing the run", {
+                sessionId, seq: st.seq, cycle, expected, actual,
+              });
+              // beta.111: before pausing a run for a human, check whether the
+              // answer is already sitting in the branch. See contract-clarify.ts.
+              const changedOnBranch =
+                this.deps.worktreeCommittedFiles && workerWorktree
+                  ? await this.deps
+                      .worktreeCommittedFiles(workerWorktree, planBaseShaForVerify)
+                      .catch(() => [] as string[])
+                  : [];
+              // rc.5: annotate any expected path a declared generator owns, so
+              // the question reports "the generator did not run" instead of
+              // asking a human to relocate a file whose location is declared.
+              const genCtx = this.generatorVerifyCtx(workerWorktree);
+              const generated = expected
+                .map((p) => {
+                  const owner = genCtx.generators?.ownerOf(p);
+                  return owner
+                    ? { path: p, script: owner.script, scriptDeclared: genCtx.generatorScriptDeclared?.(owner.script) ?? true }
+                    : null;
+                })
+                .filter((g): g is { path: string; script: string; scriptDeclared: boolean } => g !== null);
+              const mismatch = {
+                seq: st.seq, title: st.title, commitSha: result.commitSha!,
+                expected, actual, statedReason, changedOnBranch,
+                ...(generated.length > 0 ? { generated } : {}),
+              };
+              const auto = autoResolveContract(mismatch);
+              if (auto.resolved && this.deps.config.loop.auto_resolve_satisfied_contract !== false) {
+                cycleResolvedContractWithoutCommit = true;
+                this.deps.state.audit(
+                  "loop.contract_auto_resolved",
+                  { sessionId, seq: st.seq, cycle, expected, actual, coveredEarlier: auto.coveredEarlier, reason: auto.reason },
+                  sessionId,
+                );
+                this.deps.interactionLog?.log(sessionId, {
+                  event: "contract_auto_resolved", phase: "worker", seq: st.seq, cycle, coveredEarlier: auto.coveredEarlier,
+                });
+                this.deps.logger.info("[loop] beta.111: contract mismatch settled from branch history; not pausing for a human", {
+                  sessionId, seq: st.seq, coveredEarlier: auto.coveredEarlier,
+                });
+                this.deps.state.db
+                  .prepare(`UPDATE sub_tasks SET status = 'completed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`)
+                  .run(`contract satisfied by the branch: ${auto.reason}`, Date.now(), sessionId, cycle, st.seq);
+                retractFailure(st.seq, "contract_auto_resolved");
+                done.add(st.seq);
+                return;
+              }
+              clarify.question = buildContractClarification(mismatch);
+              clarify.seq = st.seq;
+              clarify.subtask = {
+                title: st.title,
+                intent: st.intent,
+                expectedPaths: expected,
+                actualPaths: actual,
+                expectedOriginalPaths: expectedOriginals,
+                task: structuredClone(st),
+              };
+            }
+            return;
+          }
+        } else if (st.taskMode === "observe" || (contract.length === 0 && st.taskMode !== "mutate")) {
+          // beta.16 fix #2 + beta.18 fix: emit the observe-mode breadcrumb
+          // when either:
+          //   (a) taskMode is explicitly 'observe', or
+          //   (b) the contract is empty AND taskMode is not explicitly
+          //       'mutate' (defensive for pre-beta.15 plans without
+          //       taskMode where inference just came up empty).
+          //
+          // Beta.16/17 shipped this branch without the `!== "mutate"`
+          // guard, so a mutate sub-task whose inferred contract was empty
+          // (or which took the buildVerifyProbes-absent test path) fired
+          // `loop.subtask_observe_completed` with `taskMode:"mutate"` in
+          // the payload — an incoherent event where the name says
+          // "observe" but the payload admits it's a mutation. The inner
+          // (verification-eligible) branch already had this guard; beta.18
+          // brings this branch in line.
+          //
+          // ---- rc.2: narration is not research ----
+          // An observe sub-task's contract is correctly empty, so reaching this
+          // branch at all meant "completed". A worker that ended on "Now let me
+          // check the workbook headers quickly, the tenant extension mechanism,
+          // and package.json prisma scripts." therefore passed -- and because
+          // the observe REPORT is `finalMessage` verbatim, that sentence was
+          // handed to every dependent sub-task under the heading "These are the
+          // VERBATIM reports ... Use the exact paths, names, and conventions
+          // below". A stated intention became evidence, and the next worker
+          // planned against it.
+          //
+          // Same bounded retry as the mutate path, and the same budget, because
+          // it is the same failure: a turn that stopped mid-thought.
+          const observeMaxAttempts = Math.min(5, Math.max(1, this.deps.config.loop.worker_protocol_max_attempts ?? 3));
+          let observeRetries = 0;
+          /*
+           * rc.10 (F4, audits 5572-5578): an observe turn must have LOOKED at
+           * something, not merely said something.
+           *
+           * The rc.2 gate above asks whether the report is narration, which is
+           * a judgement about English and duly missed a bare "I'll inspect ..."
+           * followed by a scope disclaimer. The counter beside it in the same
+           * audit row -- `unguardedReads: 0` -- was not a judgement about
+           * anything, and the harness already had it. The prerequisite was
+           * completed on four denied nested-agent calls and zero reads, and its
+           * promise was handed to two dependent workers as findings.
+           */
+          const observeHasNoEvidence = () =>
+            !st.observeContract &&
+            this.deps.config.loop.observe_evidence_check_enabled !== false &&
+            observeEvidenceVerdict(result).empty;
+          const validateStructuredObserve = async (): Promise<ObserveValidation | null> => {
+            if (!st.observeContract) return null;
+            const repoFiles = this.deps.listRepoFiles
+              ? await this.deps.listRepoFiles(workerWorktree).catch(() => [] as string[])
+              : [];
+            return validateObserveResult({
+              finalMessage: result.finalMessage,
+              contract: st.observeContract,
+              repoFiles,
+              readRepoFile: (path) => {
+                try {
+                  const root = realpathSync(resolve(workerWorktree));
+                  const target = realpathSync(resolve(root, path.replace(/^\.\//, "")));
+                  const rel = relative(root, target);
+                  if (rel.startsWith("..") || rel === "") return undefined;
+                  return readFileSync(target, "utf8");
+                } catch {
+                  return undefined;
+                }
+              },
+            });
+          };
+          let observeValidation = await validateStructuredObserve();
+          let structuredObserveOk = observeValidation === null || observeValidation.ok;
+          let priorObserveFailureFingerprint: string | undefined;
+          this.recordObserveAttemptReport({
+            sessionId,
+            subTaskId,
+            cycle,
+            seq: st.seq,
+            attempt: 1,
+            providerCallId: result.providerCallId,
+            finalMessage: result.finalMessage,
+            validation: observeValidation,
+          });
+          if (observeValidation?.kind === "blocked") {
+            const blockers = observeValidation.result.blockers?.filter((value): value is string =>
+              typeof value === "string" && value.trim().length > 0
+            ) ?? [];
+            const findingIds = observeValidation.result.findings.map((finding) => finding.id);
+            const blockerLines = blockers.slice(0, 12).map((blocker) => `- ${blocker.slice(0, 800)}`).join("\n");
+            const question =
+              `Sub-task ${st.seq} ("${st.title}") returned a validated BLOCKED observation. ` +
+              `No dependent mutation task was dispatched, and the full evidence report was preserved. ` +
+              `Review these worker-reported unresolved decisions; answer only the genuine authority or business-policy gaps, ` +
+              `and identify any item that is implementation work already authorised by the brief:\n${blockerLines}`;
+            this.attachProviderVerification(sessionId, cycle, st.seq, {
+              ok: false,
+              kind: "observe_blocked",
+              detail: observeValidation.reason,
+              findings: findingIds,
+            });
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'blocked', summary = ?, updated_at = ? WHERE id = ?`,
+            ).run(observeValidation.reason.slice(0, 2000), Date.now(), subTaskId);
+            this.deps.state.audit(
+              "loop.observe_contract_blocked",
+              {
+                sessionId,
+                seq: st.seq,
+                cycle,
+                providerCallId: result.providerCallId ?? null,
+                findingIds,
+                blockerCount: blockers.length,
+                missingRequired: observeValidation.missingRequired,
+              },
+              sessionId,
+            );
+            clarify.question = question;
+            clarify.seq = st.seq;
+            clarify.subtask = {
+              title: st.title,
+              intent: st.intent,
+              task: structuredClone(st),
+              observeBlockedReport: {
+                blockers,
+                findingIds,
+                providerCallId: result.providerCallId ?? null,
+              },
+            };
+            failed.err = `subtask_${st.seq}_observe_blocked`;
+            failed.seq = st.seq;
+            return;
+          }
+          while (
+            ((!st.observeContract && observeReportIsNarration(result.finalMessage)) || observeHasNoEvidence() || !structuredObserveOk) &&
+            this.deps.config.loop.worker_protocol_retry_enabled !== false &&
+            observeRetries < observeMaxAttempts - 1
+          ) {
+            const observeFailureFingerprint = createHash("sha256")
+              .update(JSON.stringify({
+                kind: observeValidation?.kind ?? "legacy",
+                reason: observeValidation && !observeValidation.ok
+                  ? observeValidation.reason
+                  : observeEvidenceVerdict(result).reason ?? "narration",
+                finalMessage: result.finalMessage ?? "",
+              }))
+              .digest("hex");
+            if (priorObserveFailureFingerprint === observeFailureFingerprint) {
+              this.deps.state.audit(
+                "loop.observe_retry_repeated",
+                { sessionId, seq: st.seq, cycle, fingerprint: observeFailureFingerprint, retryCount: observeRetries },
+                sessionId,
+              );
+              break;
+            }
+            priorObserveFailureFingerprint = observeFailureFingerprint;
+            const currentStructuredReason =
+              observeValidation && !observeValidation.ok ? observeValidation.reason : undefined;
+            this.attachProviderVerification(sessionId, cycle, st.seq, {
+              ok: false,
+              kind: "observe_report",
+              detail:
+                currentStructuredReason ??
+                observeEvidenceVerdict(result).reason ??
+                "observe report was progress narration",
+            });
+            observeRetries += 1;
+            this.deps.state.audit(
+              "loop.worker_noop_end_turn",
+              {
+                sessionId, seq: st.seq, subTaskId, cycle,
+                taskMode: "observe",
+                finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                hasFiles: (result.filesChanged ?? []).length > 0,
+                hasCommit: Boolean(result.commitSha),
+                failedKinds: [],
+                retryCount: observeRetries - 1,
+              },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "worker_protocol_retry", phase: "worker", seq: st.seq, cycle,
+              reasonFirstLine: observeEvidenceVerdict(result).reason ?? "observe report was progress narration",
+            });
+            this.deps.state.audit(
+              "loop.worker_protocol_retry",
+              {
+                sessionId, seq: st.seq, subTaskId, cycle,
+                outcome: observeValidation?.kind ?? "progress_only",
+                taskMode: "observe",
+                category: null,
+                retryCount: observeRetries,
+                maxAttempts: observeMaxAttempts,
+                hasFiles: (result.filesChanged ?? []).length > 0,
+                hasCommit: Boolean(result.commitSha),
+                failedKinds: [],
+              },
+              sessionId,
+            );
+            this.deps.logger.warn("[loop] observe sub-task ended on progress narration; retrying", {
+              sessionId, seq: st.seq, retry: observeRetries,
+            });
+            // rc.10: when the turn was denied its way of working, say so and
+            // name the permitted route. "Stop narrating" describes a symptom
+            // at a worker whose four tool calls were all refused.
+            const evidenceVerdict = observeEvidenceVerdict(result);
+            const structuredReason = observeValidation && !observeValidation.ok ? observeValidation.reason : "";
+            const observeHint = structuredReason
+              ? `OBSERVE CONTRACT ${observeValidation?.kind ?? "invalid"} (attempt ${observeRetries + 1}/${observeMaxAttempts}): ${structuredReason}.\n` +
+                renderObserveContractInstructions(st.observeContract!)
+              : evidenceVerdict.empty
+              ? buildObserveEvidenceHint({
+                  verdict: evidenceVerdict,
+                  intent: st.intent || st.title,
+                  attempt: observeRetries + 1,
+                  maxAttempts: observeMaxAttempts,
+                })
+              : buildProtocolRetryHint({
+                  outcome: { kind: "progress_only" },
+                  contractSummary:
+                    `a written report answering this probe's question -- ${st.intent || st.title}. ` +
+                    `There is nothing to commit: the REPORT is the deliverable, and it is handed verbatim to the sub-tasks that depend on it. ` +
+                    `State what you FOUND (paths, names, versions, conventions, and what is absent), not what you intend to look at.`,
+                  attempt: observeRetries + 1,
+                  maxAttempts: observeMaxAttempts,
+                });
+            const observeRetryStartedAt = Date.now();
+            try {
+              const retry = await withTimeout(
+                this.runAccountedWorker(
+                  {
+                    sessionId,
+                    subTaskId,
+                    cycle,
+                    seq: st.seq,
+                    model: selectWorkerModel(st, this.deps.config.models),
+                    requester: row.requester,
+                    baseSha: subTaskBaseSha,
+                  },
+                  () => this.deps.runWorker({
+                    brief,
+                    subTask: dispatchSt,
+                    plan,
+                    worktreePath: workerWorktree,
+                    requester: row.requester,
+                    resumeSessionId: result.sdkSessionId,
+                    dispatchHint: reviseHint ? `${reviseHint}\n\n${observeHint}` : observeHint,
+                    modelOverride: selectWorkerModel(st, this.deps.config.models),
+                    onStreamSlow: this.makeStreamSlowCallback(sessionId, st.seq, cycle),
+                    onActivity: this.makeWorkerActivityCallback(sessionId, st.seq, cycle),
+                  }),
+                ),
+                this.deps.config.loop.worker_timeout_seconds,
+              );
+              totalCost += retry.costUsd;
+              if (retry.costUsd > 0) subTaskCosts.push(retry.costUsd);
+              this.auditDeniedToolCalls({
+                sessionId, seq: st.seq, cycle, attempt: protocolRetries + 1, denied: retry.deniedToolCalls,
+              });
+              result = retry;
+              this.deps.state.db.prepare(
+                `UPDATE sub_tasks
+                    SET status = 'verifying', cost_usd = cost_usd + ?, sdk_session_id = ?,
+                        summary = ?, updated_at = ? WHERE id = ?`,
+              ).run(
+                retry.costUsd,
+                retry.sdkSessionId ?? null,
+                (retry.reason ?? retry.status).slice(0, 2000),
+                Date.now(),
+                subTaskId,
+              );
+              this.recordSubTaskAttempt({
+                sessionId,
+                subTaskId,
+                seq: st.seq,
+                cycle,
+                status: "observe_retry_completed",
+                costUsd: retry.costUsd,
+                baseSha: subTaskBaseSha,
+                commitSha: retry.commitSha ?? null,
+                commitShas: retry.commitShas ?? (retry.commitSha ? [retry.commitSha] : []),
+                filesTouched: retry.filesChanged,
+                summary: retry.finalMessage ?? retry.reason ?? retry.status,
+                startedAtMs: observeRetryStartedAt,
+                workerStatus: retry.status,
+                verificationStatus: "pending_observe_contract",
+                taskOutcome: "retrying",
+              });
+              observeValidation = await validateStructuredObserve();
+              structuredObserveOk = observeValidation === null || observeValidation.ok;
+              this.recordObserveAttemptReport({
+                sessionId,
+                subTaskId,
+                cycle,
+                seq: st.seq,
+                attempt: observeRetries + 1,
+                providerCallId: retry.providerCallId,
+                finalMessage: retry.finalMessage,
+                validation: observeValidation,
+              });
+              if (observeValidation?.kind === "blocked") {
+                const blockers = observeValidation.result.blockers?.filter((value): value is string =>
+                  typeof value === "string" && value.trim().length > 0
+                ) ?? [];
+                const findingIds = observeValidation.result.findings.map((finding) => finding.id);
+                clarify.question =
+                  `Sub-task ${st.seq} ("${st.title}") returned a validated BLOCKED observation. ` +
+                  `No dependent mutation task was dispatched, and the full evidence report was preserved. ` +
+                  `Review these worker-reported unresolved decisions; answer only genuine authority or business-policy gaps:\n` +
+                  blockers.slice(0, 12).map((blocker) => `- ${blocker.slice(0, 800)}`).join("\n");
+                clarify.seq = st.seq;
+                clarify.subtask = {
+                  title: st.title,
+                  intent: st.intent,
+                  task: structuredClone(st),
+                  observeBlockedReport: {
+                    blockers,
+                    findingIds,
+                    providerCallId: retry.providerCallId ?? null,
+                  },
+                };
+                this.deps.state.db.prepare(
+                  `UPDATE sub_tasks SET status = 'blocked', summary = ?, updated_at = ? WHERE id = ?`,
+                ).run(observeValidation.reason.slice(0, 2000), Date.now(), subTaskId);
+                this.deps.state.audit(
+                  "loop.observe_contract_blocked",
+                  {
+                    sessionId,
+                    seq: st.seq,
+                    cycle,
+                    providerCallId: retry.providerCallId ?? null,
+                    findingIds,
+                    blockerCount: blockers.length,
+                    missingRequired: observeValidation.missingRequired,
+                  },
+                  sessionId,
+                );
+                failed.err = `subtask_${st.seq}_observe_blocked`;
+                failed.seq = st.seq;
+                return;
+              }
+            } catch (err) {
+              if (err instanceof AccountingPersistenceError) {
+                failed.err = `accounting_incomplete: ${err.message}`;
+                failed.seq = st.seq;
+                return;
+              }
+              this.deps.logger.warn("[loop] observe retry threw; keeping the previous turn", {
+                sessionId, seq: st.seq, err: String(err),
+              });
+              break;
+            }
+          }
+          if ((!st.observeContract && observeReportIsNarration(result.finalMessage)) || observeHasNoEvidence() || !structuredObserveOk) {
+            // Out of attempts. Fail the sub-task with a record of why -- there
+            // is no question here for a human, only a worker that never
+            // produced the findings its dependents need.
+            // b100's rule: the worker's own prose never gets interpolated into
+            // text an operator reads. The full message is on the audit event
+            // below, where it belongs -- as a record, not as an explanation.
+            //
+            // rc.10: say which check refused it. "Ended describing what it
+            // intended to do" is the narration finding and would be simply
+            // untrue of a turn whose four tool calls were all denied.
+            const exhaustedVerdict = observeEvidenceVerdict(result);
+            const structuredReason = observeValidation && !observeValidation.ok ? observeValidation.reason : "";
+            const failReason = structuredReason
+              ? structuredReason
+              : exhaustedVerdict.empty
+              ? exhaustedVerdict.reason!
+              : "every turn ended describing what it intended to do rather than what it found";
+            const failSummary =
+              `observe sub-task produced no findings after ${observeRetries} retr${observeRetries === 1 ? "y" : "ies"}: ` +
+              failReason;
+            this.attachProviderVerification(sessionId, cycle, st.seq, {
+              ok: false,
+              kind: "observe_report",
+              detail: failReason,
+            });
+            this.deps.state.audit(
+              "loop.worker_retry_exhausted",
+              {
+                sessionId, seq: st.seq, subTaskId, cycle,
+                outcome: "progress_only",
+                taskMode: "observe",
+                category: null,
+                retryCount: observeRetries,
+                maxAttempts: observeMaxAttempts,
+                hasFiles: (result.filesChanged ?? []).length > 0,
+                hasCommit: Boolean(result.commitSha),
+                failedKinds: [],
+                failedChecks: [{ kind: "observe_report", detail: failReason }],
+                contract: "a written report answering the probe's question",
+                finalMessage: (result.finalMessage ?? "").slice(0, 1000),
+                finalOutcome: "failed_verification",
+                // rc.10: the non-linguistic evidence, so a reader can tell a
+                // narrating worker from a blocked one without re-reading prose.
+                evidenceCode: exhaustedVerdict.code ?? null,
+                allowedToolCalls: result.allowedToolCalls ?? null,
+                unguardedReads: result.unguardedReads ?? null,
+                deniedToolCalls: (result.deniedToolCalls ?? []).length,
+              },
+              sessionId,
+            );
+            this.deps.interactionLog?.log(sessionId, {
+              event: "worker_retry_exhausted", phase: "worker", seq: st.seq, cycle,
+              reasonFirstLine: failReason.slice(0, 300),
+            });
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
+            ).run(failSummary, Date.now(), subTaskId);
+            this.deps.logger.warn("[loop] observe sub-task never produced findings", { sessionId, seq: st.seq });
+            failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
+            failed.seq = st.seq;
+            return;
+          }
+
+          if (st.observeContract && observeValidation?.ok) {
+            try {
+              const revisionRow = this.deps.state.db
+                .prepare(`SELECT plan_revision FROM sessions WHERE id = ?`)
+                .get(sessionId) as { plan_revision: number | null } | undefined;
+              const sourceRevision = revisionRow?.plan_revision ?? 0;
+              const bound = applyObserveBindings({
+                plan,
+                producer: st,
+                result: observeValidation.result,
+              });
+              validatePlan(bound.plan, this.deps.config);
+              const changedTasks = bound.plan.subTasks.filter((task) => bound.changedConsumers.includes(task.seq));
+              const conflicts = findPlanPolicyConflicts(
+                changedTasks,
+                this.deps.config.safety?.path_denylist ?? [],
+                this.deps.config.safety?.path_denylist_exceptions ?? [],
+              );
+              if (conflicts.length > 0) {
+                throw new Error(
+                  `observe bindings would create a policy conflict: ${conflicts.map((c) => `${c.path} (${c.rule})`).join(", ")}`,
+                );
+              }
+              const workflowFiles = planTouchesWorkflows(changedTasks);
+              if (workflowFiles.length > 0 && this.deps.tokenScopes) {
+                const canPush = await this.deps.tokenScopes({
+                  repoFullName: plan.repo,
+                  requester: row.requester,
+                }).catch(() => null);
+                if (canPush === false) {
+                  throw new Error(
+                    `observe bindings introduced workflow files but the routed token lacks workflow scope: ${workflowFiles.join(", ")}`,
+                  );
+                }
+              }
+              const resultRevision = sourceRevision + (bound.changedConsumers.length > 0 ? 1 : 0);
+              const reportId =
+                `${sessionId}:${cycle}:${st.seq}:${sourceRevision}:${observeValidation.bindingsHash.slice(0, 16)}`;
+              this.deps.state.db.exec("BEGIN IMMEDIATE");
+              const current = this.deps.state.db
+                .prepare(`SELECT plan_revision FROM sessions WHERE id = ?`)
+                .get(sessionId) as { plan_revision: number | null } | undefined;
+              if ((current?.plan_revision ?? 0) !== sourceRevision) {
+                throw new Error("plan revision changed before observe bindings could activate");
+              }
+              if (bound.changedConsumers.length > 0) {
+                this.deps.state.db.prepare(
+                  `UPDATE sessions SET lead_plan_json = ?, plan_revision = ?,
+                                       minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`,
+                ).run(JSON.stringify(bound.plan), resultRevision, Date.now(), sessionId);
+              }
+              this.deps.state.db.prepare(
+                `INSERT INTO observe_reports
+                   (id,session_id,producer_sub_task_id,cycle,seq,producer_task_hash,source_plan_revision,
+                    result_plan_revision,report_json,bindings_hash,validation_json,created_at)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+              ).run(
+                reportId,
+                sessionId,
+                subTaskId,
+                cycle,
+                st.seq,
+                observeTaskHash(st),
+                sourceRevision,
+                resultRevision,
+                JSON.stringify({ finalMessage: result.finalMessage ?? "", result: observeValidation.result }),
+                observeValidation.bindingsHash,
+                JSON.stringify({ ok: true, changedConsumers: bound.changedConsumers }),
+                Date.now(),
+              );
+              this.deps.state.db.exec("COMMIT");
+              if (bound.changedConsumers.length > 0) {
+                // Preserve object identity: `ordered` was topologically sorted
+                // before this producer ran and holds references to these task
+                // objects. Replacing the array would leave dependants running
+                // their stale pre-binding contracts.
+                for (const seq of bound.changedConsumers) {
+                  const currentTask = plan.subTasks.find((task) => task.seq === seq);
+                  const revisedTask = bound.plan.subTasks.find((task) => task.seq === seq);
+                  if (currentTask && revisedTask) Object.assign(currentTask, structuredClone(revisedTask));
+                }
+              }
+              this.deps.state.audit(
+                "loop.observe_contract_validated",
+                {
+                  sessionId,
+                  seq: st.seq,
+                  cycle,
+                  sourcePlanRevision: sourceRevision,
+                  resultPlanRevision: resultRevision,
+                  changedConsumers: bound.changedConsumers,
+                  bindingsHash: observeValidation.bindingsHash,
+                },
+                sessionId,
+              );
+            } catch (err) {
+              try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
+              const failSummary = `observe contract could not be persisted/applied: ${String(err)}`;
+              this.deps.state.db.prepare(
+                `UPDATE sub_tasks SET status = 'failed_verification', summary = ?, updated_at = ? WHERE id = ?`,
+              ).run(failSummary, Date.now(), subTaskId);
+              this.deps.state.audit(
+                "loop.observe_contract_apply_failed",
+                { sessionId, seq: st.seq, cycle, error: String(err) },
+                sessionId,
+              );
+              failed.err = `subtask_${st.seq}_failed_verification: ${failSummary}`;
+              failed.seq = st.seq;
+              return;
+            }
+          }
+          this.attachProviderVerification(sessionId, cycle, st.seq, {
+            ok: true,
+            kind: st.observeContract ? "structured_observe_contract" : "observe_report",
+            bindingsHash: observeValidation?.ok ? observeValidation.bindingsHash : null,
+          });
+          this.emitObserveCompleted(sessionId, st, result, []);
+        }
+
+        // beta.55 (B3): the sub-task PASSED, but if the worker's own final
+        // message signals it deviated from the literal wording (a judgment
+        // call), make that a first-class audit signal so "guess-and-document"
+        // is auditable rather than buried in prose. Does NOT change pass/fail.
+        {
+          const finalMsg = (result.finalMessage ?? "").trim();
+          if (finalMsg && matchesWorkerDeviation(finalMsg)) {
+            const firstLine = finalMsg.split("\n").map((l) => l.trim()).find(Boolean) ?? finalMsg.slice(0, 200);
+            this.deps.state.audit(
+              "loop.worker_deviation",
+              { sessionId, seq: st.seq, cycle, summary: firstLine.slice(0, 500), finalMessage: finalMsg.slice(0, 2000) },
+              sessionId,
+            );
+            this.deps.logger.info("[loop] worker deviated from literal wording (passed verification, judgment call)", {
+              sessionId, seq: st.seq, summary: firstLine.slice(0, 200),
+            });
+          }
+        }
+
+        // beta.134 (observe-handoff): this sub-task passed. If it was a probe,
+        // keep its report for the sub-tasks that depend on it. Recorded here,
+        // on the single terminal-success path, so a probe that FAILED never
+        // hands its half-finished account downstream as if it were fact.
+        this.recordObserveReport(sessionId, st, result, observeReports);
+
+        /*
+         * rc.9: this -- and only this -- is where a sub-task is COMPLETED.
+         *
+         * Every other `checkpoint()` call records an attempt. Sub-task 11 in
+         * the incident DB was named as the last completed one while sitting at
+         * `failed_verification` with no commit, because attempts were the only
+         * thing anything ever wrote.
+         *
+         * The durable checkpoint is taken here too, at the moment there is
+         * verified work worth protecting, rather than at a "checkpoint" that
+         * only ever touched the database.
+         */
+        this.deps.state.db.prepare(
+          `UPDATE sub_tasks SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+        ).run(Date.now(), Date.now(), subTaskId);
+        this.checkpoint(sessionId, cycle, subTaskId, result.sdkSessionId, "completed");
+        await this.durableCheckpoint({
+          sessionId, cycle, subTaskId, trigger: "sub_task_complete",
+          worktreePath: workerWorktree, branch: (row.branch ?? "").trim() || null,
+          repo: row.repo, requester: row.requester,
+        });
+
+        done.add(st.seq);
+      };
+
+      /**
+       * v2.0.0: sub-tasks run one at a time, in the session worktree.
+       *
+       * That checkout IS the isolation boundary -- one session, one worktree,
+       * one branch -- so a serial worker commits straight onto the session
+       * branch and there is nothing to merge back. b117's slot pool and
+       * merge-back existed only to make CONCURRENT workers safe in a shared
+       * tree; with concurrency gone they are pure liability, so they are gone
+       * too. See the v2 CHANGELOG entry for the measurement that motivated it.
+       */
+      /*
+       * rc.7 (phase 2): `ordered` may grow by exactly one.
+       *
+       * A generator whose declared inputs moved but whose output no sub-task
+       * claims has no owner, so nobody regenerates it and the bundle goes
+       * stale. The plan cannot know this in advance -- it depends on what the
+       * sub-tasks actually changed -- so the decision is taken here, once, when
+       * every planned sub-task has run and the evidence exists.
+       *
+       * An index loop rather than `for..of` because the array is appended to
+       * mid-iteration, and the append is checked at the point the index passes
+       * the end rather than at the bottom of the body, so the `continue`s above
+       * cannot skip it. The appended sub-task then runs through exactly the
+       * same dispatch: same deadline, same verification, same commit path,
+       * same budget accounting.
+       */
+      let generationChecked = false;
+      for (let i = 0; ; i++) {
+        if (i >= ordered.length) {
+          if (generationChecked || failed.err) break;
+          generationChecked = true;
+          const appended = await this.appendGenerationSubTask({ sessionId, plan, cycle, ordered });
+          if (!appended) break;
+          ordered.push(appended);
+        }
+        const st = ordered[i]!;
+        // beta.123 (sweep): a sub-task can record a failure that a recovery
+        // path is about to retract, so the accumulator is read at the top of
+        // each iteration rather than mid-flight. Serial execution makes this
+        // unambiguous: whatever `failed.err` holds here is settled, because
+        // the sub-task that set it has fully returned.
+        if (failed.err) break;
+        if (done.has(st.seq)) continue;
+
+        const unmet = (st.dependsOn ?? []).filter((d) => !done.has(d));
+        if (unmet.length > 0) {
+          // topoSortSubTasks already ordered these, so an unmet dependency at
+          // this point is a cycle or a dangling reference the sort could not
+          // resolve -- a data bug in the plan, not a scheduling state.
+          failed.err = `subtask ${st.seq} has unresolved dependencies`;
+          failed.seq = st.seq;
+          break;
+        }
+
+        // beta.60: bound the ENTIRE sub-task, not just the worker SDK call.
+        // beta.42 wrapped runWorker in withTimeout, but a sub-task ALSO awaits
+        // unbounded git/IO before and after the worker (worktreeHeadSha,
+        // readReactions, verifySubTaskOutput probes, budget.recordSpend). A
+        // hang in ANY of those froze the run forever with the sub-task row
+        // stuck `running`, sdk_session_id=null, cost_usd=0, and NO worker
+        // process spawned -- the exact b59 PR#858 seq-7 stall (5h30m silent,
+        // no auto-recovery, because nothing re-called run() to arm the
+        // stall-watchdog). Bounding it converts any such hang into a clean
+        // SubTaskDeadlineError -> failed.err -> terminal.
+        await withTimeout(
+          runOneInner(st, plan.worktreePath),
+          this.deps.config.loop.subtask_deadline_seconds,
+          "subtask_deadline_seconds",
+        ).catch((err) => {
+          if (err instanceof WorkerTimeoutError) {
+            this.deps.state.audit(
+              "loop.subtask_deadline_exceeded",
+              { sessionId, seq: st.seq, subtask_deadline_seconds: this.deps.config.loop.subtask_deadline_seconds },
+              sessionId,
+            );
+            this.deps.logger.error(
+              "[loop] sub-task exceeded subtask_deadline_seconds (dispatch hang, likely a stalled git/IO await before or after the worker); failing the run",
+              { sessionId, seq: st.seq, seconds: this.deps.config.loop.subtask_deadline_seconds },
+            );
+            // mark the stuck row failed so it doesn't linger as `running`
+            this.deps.state.db.prepare(
+              `UPDATE sub_tasks SET status = 'failed', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`,
+            ).run(`sub-task dispatch exceeded ${this.deps.config.loop.subtask_deadline_seconds}s (stalled IO)`, Date.now(), sessionId, cycle, st.seq);
+            if (!failed.err) { failed.err = `subtask_deadline_exceeded (seq ${st.seq})`; failed.seq = st.seq; }
+          } else {
+            // runOneInner handles its own errors internally; a throw here is
+            // unexpected -- surface it rather than silently dropping.
+            if (!failed.err) { failed.err = `subtask_dispatch_error: ${String(err)}`; failed.seq = st.seq; }
+          }
+        });
+      }
+
+      if (failed.err) {
+        // beta.55 (B2): a resumable clarification pause takes precedence over a
+        // hard-fail. The sub-task DID fail verification (failed.err set), but
+        // if we captured a clarification request we pause instead of dying, so
+        // a human can unblock the exact sub-task rather than restart the run.
+        if (clarify.question) {
+          return await this.finaliseAwaitingClarification(sessionId, clarify.question, clarify.seq, cycle, totalCost, clarify.subtask);
+        }
+        // beta.64 (P0-3): best-effort verify already pushed a graceful reviewable
+        // PR (verify sub-task timed out but the prior probe was green + clean
+        // diff). The session row is already terminal `done`; return shipped.
+        if (failed.err === "__best_effort_shipped__") {
+          const bePr = this.deps.state.db.prepare(`SELECT final_pr_url FROM sessions WHERE id = ?`).get(sessionId) as { final_pr_url: string | null } | undefined;
+          return { status: "shipped", sessionId, prUrl: bePr?.final_pr_url ?? "", cycles: cycle, totalCostUsd: totalCost };
+        }
+        // rc.3: best-effort verify handled the terminal transition WITHOUT
+        // pushing -- either no adversary has ever reviewed this session, or the
+        // push itself threw. Either way the session row is already terminal and
+        // the worktree is preserved; report the truth rather than `shipped`.
+        if (failed.err === "__best_effort_preserved__") {
+          return {
+            status: "failed",
+            sessionId,
+            reason: failed.preservedReason || "verify_timeout_no_adversary_review",
+            cycles: cycle,
+            totalCostUsd: totalCost,
+          };
+        }
+        // beta.120 (fix 1): every abort that could be holding commits goes
+        // through the salvaging path -- it ships resource aborts and preserves
+        // the worktree for the rest. Only an abort with nothing committed ends
+        // up deleting anything.
+        if (failed.err === "user_abort_reaction") return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
+        if (failed.err === "hard_timeout") return await this.finaliseAbortSalvaging(sessionId, "hard_timeout", cycle, totalCost);
+        if (failed.err === "budget_exhausted") return await this.finaliseAbortSalvaging(sessionId, "budget_exhausted", cycle, totalCost);
+        // beta.78 (Feature 2): per-user daily hard-cap abort.
+        if (failed.err === "daily_max_exhausted") return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
+        if (String(failed.err).startsWith("accounting_incomplete")) {
+          this.deps.state.audit(
+            "loop.accounting_incomplete",
+            { sessionId, seq: failed.seq, reason: String(failed.err), worktreePreserved: true },
+            sessionId,
+          );
+          return {
+            status: "failed",
+            sessionId,
+            reason: String(failed.err),
+            cycles: cycle,
+            totalCostUsd: totalCost,
+          };
+        }
+        return await this.finaliseFailed(sessionId, String(failed.err), cycle, totalCost);
+      }
+
+      // 2b. Reviewing
+      // beta.7 fix #2 (hard cap inside review): don't start the adversary if
+      // we can't afford it. Estimate review cost from the priciest observed
+      // sub-task (reviews scan the whole diff, so they scale with work done),
+      // falling back to a conservative reserve. Abort at the cycle boundary
+      // rather than blowing the budget by ~$0.83 on a review we can't pay for.
+      {
+        const reactions = await this.deps.readReactions(sessionId);
+        const reviewEstimate = this.estimateReviewCost(subTaskCosts);
+        // beta.78 (Feature 2): the review-gate hard abort now keys off the
+        // per-user DAILY cap, not the (soft) session budget. Crossing the
+        // session budget only WARNS; a review is only skipped/aborted when
+        // paying for it would blow the user's daily_max_usd. budgetBump
+        // (:moneybag:) still overrides.
+        const dailyMax = this.dailyMaxUsd();
+        const dailySoFar = this.safeDailySpend(row.requester);
+        let dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
+        // rc.6: without a review nothing ships at all -- the branch is
+        // salvaged, not delivered -- so this is the most valuable dollar in the
+        // run and the worst one to refuse silently. Ask before abandoning it.
+        if (!reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed && !budgetExtensionRefused) {
+          const grantedUsd = await this.askForBudgetExtension({
+            sessionId,
+            cycle,
+            trigger: "review",
+            spentUsd: totalCost,
+            policy: budgetPolicy,
+            shortfallUsd: dailySoFar + reviewEstimate - dailyMax,
+            observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+            dailyCapUsd: dailyMax,
+            resumeStatus: "reviewing",
+          });
+          rebaseHardDeadlineFromPersistedClock();
+          if (grantedUsd > 0) {
+            budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+            budgetOverrideGranted = true;
+            row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+            dailyWouldExceed = false;
+          } else {
+            budgetExtensionRefused = true;
+          }
+        }
+        if (!reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed) {
+          // beta.8 (adversary point): the adversary was the only actor that
+          // caught the beta.6 confabulation, and beta.7's review-budget abort
+          // HID that failure by skipping review on cost. The observable-side-
+          // effect check is ~$0 in tokens, so run it UNCONDITIONALLY before
+          // aborting. This is the harness's own trust-but-verify guardrail;
+          // it must never be bypassed purely on token budget.
+          await this.runCheapObservableCheck(sessionId, plan, row.requester);
+          this.deps.state.audit(
+            "loop.review_budget_abort",
+            { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max", askedForBudget: budgetExtensionRefused },
+            sessionId,
+          );
+          this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+          return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
+        }
+      }
+      // beta.81 (Track B / B4): the beta.63 LOCAL check-script runner is RETIRED
+      // from the verification spine. Carel: "the harness should code, not try and
+      // run it locally ... I do not want it to run locally, ever." Verification
+      // is CI-only now (the post-push getCombinedStatus poll, B2). The runner is
+      // fully off by default (verify.run_repo_check_scripts defaults to false in
+      // beta.81); runFinalVerifyChecks early-returns [] in that case, so no local
+      // typecheck/lint/test/build runs here. The runCheckScripts plumbing is
+      // kept ONLY for the tryScriptedVerifyFallback rescue of a timed-out
+      // observe VERIFY sub-task (a deterministic diff/tsc rescue), NOT as a
+      // verify gate. An operator can still opt back in by setting
+      // verify.run_repo_check_scripts:true, but the default path is CI-only.
+      const conventionFindings = await this.runFinalVerifyChecks(sessionId, plan, cycle);
+      // beta.94 (Feature 1b): deterministic harness-side scope check -- replaces
+      // the elided LLM "final verification of scope boundaries" sub-task. Folds
+      // any out-of-scope committed file into the review as a `fit`/`medium`
+      // finding (never a hard fail). Same findings-return pattern.
+      // beta.110: ScopeBlowoutError is deliberately NOT caught here. It ends
+      // the run before the adversary is asked to review an unreviewable diff,
+      // and the outer handler preserves the worktree so the good commits that
+      // ARE in it stay recoverable. Ordinary scope creep is still a finding.
+      const scopeFindings = await this.runFinalScopeCheck(sessionId, plan, cycle);
+      if (scopeFindings.length > 0) conventionFindings.push(...scopeFindings);
+      // beta.111: a branch that does not compile must not reach a merge
+      // recommendation. The adversary reads the diff, not the compiler.
+      const typeFindings = await this.runTypecheckGate(sessionId, plan, cycle);
+      if (typeFindings.length > 0) conventionFindings.push(...typeFindings);
+      // rc.5: broken generated-artifact ownership config is an ACTIONABLE
+      // failure, reported here rather than left to emerge as a path mismatch
+      // on whichever contract happens to name an unproducible file.
+      const generatorFindings = this.runGeneratorConfigCheck(sessionId, plan, cycle);
+      if (generatorFindings.length > 0) conventionFindings.push(...generatorFindings);
+
+      this.setStatus(sessionId, "reviewing");
+      await this.deps.reportProgress?.(sessionId, "reviewing", { cycle });
+      let runtime: RuntimeSnapshot | undefined;
+      try {
+        runtime = await this.deps.fetchRuntime?.({ plan, sessionId });
+      } catch (err) {
+        this.deps.logger.warn("[loop] fetchRuntime failed", { err: String(err) });
+      }
+      // beta.7 fix #1: if no external runtime is available, synthesise a
+      // "local" runtime snapshot from this cycle's verification audits so
+      // the adversary still gets observable-output ground truth.
+      if (!runtime) {
+        const localVerification = this.readLocalVerification(sessionId);
+        if (localVerification.length > 0) {
+          const anyFailed = localVerification.some((v) => !v.ok);
+          runtime = {
+            provider: "local",
+            status: anyFailed ? "unavailable" : "ok",
+            logsExcerpt: localVerification
+              .map((v) => `sub-task ${v.seq}: ${v.ok ? "VERIFIED" : "FAILED"} — ${v.summary}`)
+              .join("\n"),
+            errorCount: localVerification.filter((v) => !v.ok).length,
+            localVerification,
+          };
+        }
+      }
+      // beta.101: LEDGER-COMMIT REACHABILITY GUARD. Runs BEFORE the adversary
+      // SDK call so a branch that has lost work costs nothing to detect.
+      //
+      // b100 (session 3c6c1608) shipped six recorded commits into the void and
+      // then paid for a review of a diff that contained none of them. The
+      // adversary had to infer the problem from absence and blocked with
+      // findings about "missing" work that had actually been written. Every
+      // input needed to catch this deterministically was already in the DB.
+      let ledgerUnreachable: string[] = [];
+      if (this.deps.config.loop.ledger_reachability_guard_enabled !== false) {
+        const check = await this.checkLedgerReachability(sessionId, plan.worktreePath, cycle, "review");
+        ledgerUnreachable = check.unreachable;
+        if (check.failed) {
+          this.deps.logger.error("[loop] recorded sub-task commits are unreachable from HEAD; refusing to review or ship an incomplete branch", {
+            sessionId, cycle, headSha: check.headSha, unreachable: check.unreachable,
+          });
+          // Fail rather than pause: a text answer cannot restore a branch, and
+          // reviewing or shipping this diff would silently omit work the run
+          // already did. The commits survive under the rescue refs.
+          return await this.finaliseFailed(sessionId, `ledger_commits_unreachable: ${check.detail}`, cycle, totalCost);
+        }
+      }
+
+      this.emitPhaseTiming(sessionId, "executing", cycle, executeStart, {
+        subTasks: plan.subTasks.length,
+      });
+
+      // beta.108: a revise cycle that moved the branch tip nowhere has nothing
+      // for the adversary to review, and re-reviewing an unchanged diff cannot
+      // do anything but re-emit the previous cycle's findings.
+      //
+      // The b106 revise (session 21c9c44e) closed exactly this way: cycle 3
+      // dispatched five sub-tasks, four came back `subtask_revise_no_change`,
+      // and the run still paid for a full adversary pass over the whole branch
+      // to change two files. When NOTHING commits, that pass is pure cost.
+      //
+      // Guarded tightly: only on a revise cycle (cycle > 1, so a first cycle
+      // that legitimately produced no diff still gets reviewed), only when we
+      // could actually read both shas (an unreadable sha must not be mistaken
+      // for "no change"), and only when a prior review exists to carry forward
+      // as the verdict.
+      if (
+        this.deps.config.loop.early_exit_no_change_cycle !== false &&
+        cycle > 1 &&
+        lastReview &&
+        cycleBaseSha &&
+        this.deps.worktreeHeadSha
+      ) {
+        const tipNow = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+        // rc.3: an unmoved tip is necessary but not sufficient. PR #1168 cycle 4
+        // took this exit with modified files in the worktree, carried cycle 3's
+        // findings forward, and terminated -- the work was never reviewed and
+        // never committed. Ask the working tree before believing "no change".
+        const dirtyNow =
+          tipNow && tipNow === cycleBaseSha ? await this.worktreeDirtyFiles(sessionId, plan.worktreePath) : [];
+        if (dirtyNow.length > 0) {
+          this.deps.state.audit(
+            "loop.cycle_no_change_rejected_dirty",
+            {
+              sessionId,
+              cycle,
+              gate: "cycle_early_exit",
+              headSha: tipNow,
+              dirtyFiles: dirtyNow.slice(0, 100),
+              dirtyCount: dirtyNow.length,
+            },
+            sessionId,
+          );
+          this.deps.logger.warn("[loop] refusing the no-change early exit: the worktree has uncommitted changes", {
+            sessionId, cycle, dirtyCount: dirtyNow.length,
+          });
+        }
+        if (tipNow && tipNow === cycleBaseSha && dirtyNow.length === 0 && !cycleResolvedContractWithoutCommit) {
+          const carriedBlocking = this.countBlockingFindings(lastReview.findings ?? []);
+          this.deps.state.audit(
+            "loop.cycle_no_change_early_exit",
+            {
+              sessionId,
+              cycle,
+              headSha: tipNow,
+              carriedVerdict: lastReview.verdict,
+              carriedFindings: lastReview.findings?.length ?? 0,
+              carriedBlocking,
+            },
+            sessionId,
+          );
+          // beta.135: "carry the prior verdict" means obey it, not merely copy
+          // it into the eventual PR body. beta.108 unconditionally broke to the
+          // ship path here, even when the carried review was `revise` with
+          // blocking HIGH/CRITICAL findings. The policy-Drive smoke therefore
+          // opened a persistence-only PR after the adversary explicitly said
+          // the entire export workflow and tests were absent.
+          if (
+            lastReview.verdict === "pass" ||
+            (
+              lastReview.verdict === "revise" &&
+              carriedBlocking === 0 &&
+              this.deps.config.loop.ship_when_no_blocking_findings !== false
+            )
+          ) {
+            this.deps.logger.info(
+              "[loop] revise cycle produced no commits; unchanged diff retains a shippable prior verdict",
+              { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking },
+            );
+            terminalDoneReason =
+              lastReview.verdict === "pass"
+                ? "shipped_no_change_after_pass"
+                : "shipped_no_change_no_blocking_findings";
+            break;
+          }
+          const reason =
+            lastReview.verdict === "block"
+              ? "no_change_cycle_carried_adversary_block"
+              : "no_change_cycle_with_blocking_findings";
+          this.deps.logger.error(
+            "[loop] revise cycle produced no commits while blocking findings remain; refusing to open a misleading PR",
+            {
+              sessionId,
+              cycle,
+              headSha: tipNow,
+              verdict: lastReview.verdict,
+              carriedBlocking,
+            },
+          );
+          this.deps.state.audit(
+            "loop.cycle_no_change_blocked",
+            { sessionId, cycle, headSha: tipNow, verdict: lastReview.verdict, carriedBlocking, reason },
+            sessionId,
+          );
+          return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
+        }
+      }
+
+      let report: ReviewReport;
+      let rawReview: ReviewReport | undefined;
+      let adversaryBaseSha: string | undefined;
+      let revisionContext: AdversaryRevisionContext | undefined;
+      // beta.63 (Part B): adversary SDK call boundary logging.
+      const reviewStart = Date.now();
+      this.deps.interactionLog?.logSdkRequest(sessionId, {
+        role: "adversary", ...this.routeLog("adversary", this.deps.config.models.adversary), phase: "review", cycle,
+        prompt: `adversary review cycle ${cycle} for ${brief.title}; checklist: ${(plan.reviewChecklist ?? []).join("; ")}`,
+      });
+      try {
+        // beta.43: bound the adversary SDK call by adversary_timeout_seconds
+        // (previously declared in config but UNENFORCED on this await). A hung
+        // reviewer froze the run at the review phase with no timeout.
+        // beta.67 (Bug B): read the persisted fork-point sha and hand it to the
+        // adversary so its diff is `git diff <plan_base_sha>..HEAD` -- ONLY
+        // this branch's own commits. Also emit the cheap sanity log
+        // (loop.adversary_diff_base) with the base + HEAD sha and the branch's
+        // commit count; warn when the count is suspiciously high vs the plan's
+        // sub-task count (the beta.66 smoke #4 signature).
+        try {
+          const r = this.deps.state.db
+            .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+            .get(sessionId) as { plan_base_sha: string | null } | undefined;
+          adversaryBaseSha = r?.plan_base_sha ?? undefined;
+          if (adversaryBaseSha && this.deps.worktreeHeadSha) {
+            const headSha = await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "");
+            const commitCount = this.deps.worktreeCommitCount
+              ? await this.deps.worktreeCommitCount(plan.worktreePath, adversaryBaseSha).catch(() => -1)
+              : -1;
+            const subTaskCount = plan.subTasks.length;
+            const tooManyCommits = commitCount >= 0 && commitCount > Math.max(subTaskCount * 3, subTaskCount + 5);
+            // beta.101: the b67 heuristic only ever asked "too MANY commits?".
+            // The b100 smoke was the mirror image -- a diff of ONE commit while
+            // six recorded sub-task commits were missing from it -- and scored
+            // `suspicious: false`. Missing recorded work is at least as strong
+            // a signal that the diff base is wrong as excess commits are.
+            const missingLedgerCommits = ledgerUnreachable.length > 0;
+            const suspicious = tooManyCommits || missingLedgerCommits;
+            this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha, headSha, commitCount, subTaskCount, suspicious, tooManyCommits, missingLedgerCommits, unreachableLedgerCommits: ledgerUnreachable }, sessionId);
+            if (tooManyCommits) {
+              this.deps.logger.warn("[loop] adversary diff commit count is suspiciously high vs sub-task count -- diff base may be wrong", { sessionId, commitCount, subTaskCount, baseSha: adversaryBaseSha });
+            }
+            if (missingLedgerCommits) {
+              this.deps.logger.warn("[loop] adversary diff is missing recorded sub-task commits -- diff base or branch may be wrong", { sessionId, unreachable: ledgerUnreachable, baseSha: adversaryBaseSha });
+            }
+          } else {
+            this.deps.state.audit("loop.adversary_diff_base", { sessionId, cycle, baseSha: adversaryBaseSha ?? null, headSha: null, commitCount: -1, subTaskCount: plan.subTasks.length, fallback: !adversaryBaseSha }, sessionId);
+          }
+        } catch (err) {
+          this.deps.logger.warn("[loop] adversary_diff_base sanity log failed (non-fatal)", { sessionId, err: String(err) });
+        }
+        // rc.3: on a revise, hand the adversary the feature contract and the
+        // revision directives as separate sections. Built here rather than in
+        // the adapter because the loop is what knows the session id.
+        revisionContext = await this.buildRevisionReviewContext(sessionId, plan);
+        if (revisionContext) {
+          this.deps.state.audit(
+            "loop.review_diff_windows_selected",
+            {
+              sessionId,
+              cycle,
+              stage: "adversary",
+              correctnessBase: revisionContext.originalPrBaseSha ?? adversaryBaseSha ?? null,
+              revisionStartSha: revisionContext.revisionStartSha ?? null,
+              deltaFileCount: revisionContext.deltaFiles.length,
+              directiveCount: revisionContext.directives.length,
+              revisionOnlyOutOfScopeCount: revisionContext.outOfScopeRules.length,
+            },
+            sessionId,
+          );
+        }
+        report = await this.runAccountedProvider(
+          {
+            sessionId,
+            requester: row.requester,
+            role: "adversary",
+            cycle,
+            model: this.routeLog("adversary", this.deps.config.models.adversary).model,
+            route: this.routeLog("adversary", this.deps.config.models.adversary).backend,
+            baseSha: adversaryBaseSha,
+          },
+          () => withTimeout(
+            this.deps.runAdversary({ brief, plan, sessionId, runtime, requester: row.requester, baseSha: adversaryBaseSha, priorFindings: lastReview?.findings, revision: revisionContext }),
+            this.deps.config.loop.adversary_timeout_seconds,
+            "adversary_timeout_seconds",
+          ),
+          (review) => ({
+            costUsd: review.costUsd,
+            usageMeasured: review.usageMeasured,
+            providerResultId: review.sdkSessionId ?? null,
+            result: { verdict: review.verdict, findings: review.findings.length },
+          }),
+        );
+        rawReview = {
+          ...report,
+          findings: [...(report.findings ?? [])],
+        };
+        this.deps.state.audit(
+          "loop.review_raw",
+          {
+            sessionId,
+            cycle,
+            verdict: rawReview.verdict,
+            findings: rawReview.findings,
+            summary: rawReview.summary,
+            sdkSessionId: rawReview.sdkSessionId ?? null,
+          },
+          sessionId,
+        );
+        this.deps.interactionLog?.logSdkResponse(sessionId, {
+          role: "adversary", ...this.routeLog("adversary", this.deps.config.models.adversary), phase: "review", cycle,
+          finishReason: report.verdict, costUsd: report.costUsd, durationMs: Date.now() - reviewStart,
+          outputChars: report.summary ? report.summary.length : undefined, sdkSessionId: report.sdkSessionId,
+        });
+        // beta.62 (fix #1): the post-review persist awaits (recordSpend,
+        // saveReview) were OUTSIDE any try/catch. A throw there propagated
+        // uncaught out of runInner -> run()'s try/finally -> the external
+        // fire-and-forget `.catch` which only logs to api.logger (NOT the
+        // audit_log DB). Combined with the non-timeout review error below
+        // emitting NO audit, this produced the b60-attempt-2 signature: no
+        // `loop.review` event, no crash event, `status=failed` with a multi-
+        // minute gap -- indistinguishable from a stall. Fold them into the
+        // same try so any failure surfaces as `loop.review_failed`.
+        totalCost += report.costUsd;
+        // beta.83 (#2): the session-budget SOFT warn also fires here, after the
+        // adversary review's cost lands. Pre-beta.83 the ONLY soft-warn check
+        // was inside runOne (the sub-task loop), so a run that crossed its
+        // session budget DURING the review (the DR/BCP run, session 37b01e86:
+        // $11.62 -> $12.27 = 123% across the review) never warned -- the warn
+        // path was simply never reached. Now the review path re-checks the
+        // LIVE total and warns once if it just crossed. `sessionBudgetWarned`
+        // is the same runInner-scoped latch, so we still warn at most once.
+        if (totalCost > row.budget_usd && !sessionBudgetWarned) {
+          sessionBudgetWarned = true;
+          this.deps.state.audit(
+            "loop.session_budget_warn",
+            { sessionId, phase: "review", cycle, totalCost, sessionBudget: row.budget_usd },
+            sessionId,
+          );
+          this.warnSessionBudgetSoft(sessionId, row.requester, totalCost, row.budget_usd);
+        }
+        // beta.69 (F5): if the user cancelled while the adversary SDK call was
+        // in flight (forensic 1f2e6642: cycle-3 review landed 2s AFTER the
+        // cancel and was persisted + transitioned on), discard this review and
+        // abort cleanly. We still record the spend already incurred (honest
+        // accounting) but do NOT let a post-cancel verdict drive a transition.
+        const postReviewReactions = await this.deps.readReactions(sessionId);
+        if (postReviewReactions.abort) {
+          this.deps.state.audit("loop.review_discarded_post_cancel", { sessionId, cycle, verdict: report.verdict }, sessionId);
+          this.deps.logger.info("[loop] adversary review completed after user cancel; discarding verdict and aborting", { sessionId, cycle });
+          return await this.finaliseAbortSalvaging(sessionId, "user_abort_reaction", cycle, totalCost);
+        }
+      } catch (err) {
+        // beta.43: a hung reviewer is a distinct, already-audited class.
+        const accountingError = err instanceof AccountingPersistenceError;
+        const accountingCause = accountingError ? (err as Error & { cause?: unknown }).cause : undefined;
+        const isTimeout = err instanceof WorkerTimeoutError || accountingCause instanceof WorkerTimeoutError;
+        if (isTimeout) {
+          this.deps.state.audit("loop.adversary_timeout", { sessionId, cycle, adversary_timeout_seconds: this.deps.config.loop.adversary_timeout_seconds }, sessionId);
+        }
+        // beta.62 (fix #1): ALWAYS emit a structured crash event so the audit
+        // trail never just stops mid-review. This is the telemetry that was
+        // missing -- without it a review crash is invisible until you read the
+        // sessions row's status column directly.
+        this.deps.interactionLog?.logSdkResponse(sessionId, {
+          role: "adversary", ...this.routeLog("adversary", this.deps.config.models.adversary), phase: "review", cycle,
+          finishReason: isTimeout ? "timeout" : "error", durationMs: Date.now() - reviewStart,
+        });
+        this.deps.interactionLog?.log(sessionId, { event: "review_failed", phase: "review", cycle, isTimeout, error: String((err as Error)?.message ?? err) });
+        this.deps.state.audit(
+          "loop.review_failed",
+          { sessionId, cycle, isTimeout, error: String((err as Error)?.message ?? err) },
+          sessionId,
+        );
+        this.deps.logger.error("[loop] adversary review crashed", { sessionId, cycle, isTimeout, err: String(err) });
+        // beta.110: time the review even when it fails, especially then.
+        //
+        // On PR #932 session `9217236c` the adversary hung for a full 900s and
+        // the session died -- and because phase_timing only fired on success,
+        // the audit log shows one `executing` event and nothing else. The
+        // single most expensive stretch of the run was the one stretch with no
+        // number against it, and the 15 minutes had to be inferred by
+        // subtracting timestamps.
+        this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+          verdict: null,
+          isTimeout,
+          error: String((err as Error)?.message ?? err).slice(0, 200),
+        });
+        if (accountingError) {
+          return {
+            status: "failed",
+            sessionId,
+            reason: `accounting_incomplete: ${err.message}`,
+            cycles: cycle,
+            totalCostUsd: totalCost,
+          };
+        }
+        // beta.62 (fix #2/#3): try to salvage the run rather than discard the
+        // completed, self-verified work. Returns a terminal outcome either way.
+        return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
+      }
+      // beta.63 (Fix 2): fold the convention-check failures into the review as
+      // REVISE-worthy findings. If the adversary said `pass` but a declared
+      // check script failed, downgrade to `revise` so the worker gets another
+      // cycle to fix the convention violation (e.g. regenerate the OKF bundle).
+      // Never escalates to `block` (not a hard fail) -- max-cycles still ships.
+      //
+      // beta.70 (F2): only force `pass`->`revise` when a convention finding is
+      // actually BLOCKING (diff_addressable + medium+). A `process`-class
+      // convention finding -- e.g. "OKF bundle not regenerated" -- is enforced
+      // by the convention-check phase itself (it re-runs the regenerator) and
+      // must NOT force another expensive code cycle. In PR #870 this exact
+      // force-upgrade turned a clean `pass` into a 19-min cycle-2 that re-ran
+      // `npm run okf` over 1436 files for a zero diff. All findings still
+      // attach to the report (they ship on the PR body); only the verdict is
+      // gated. A real typecheck/lint failure or a persisted heap OOM stays
+      // blocking and still triggers the revise.
+      if (conventionFindings.length > 0) {
+        const blockingConvention = conventionFindings.filter((f) =>
+          isBlockingFinding(f, classifyFinding(f, this.classifyCtx)),
+        );
+        report = {
+          ...report,
+          findings: [...report.findings, ...conventionFindings],
+          verdict:
+            report.verdict === "pass" && blockingConvention.length > 0
+              ? "revise"
+              : report.verdict,
+        };
+        if (report.verdict === "pass" && blockingConvention.length === 0 && conventionFindings.length > 0) {
+          this.deps.state.audit("loop.convention_findings_nonblocking", { sessionId, cycle, total: conventionFindings.length }, sessionId);
+        }
+      }
+      // Two-stage preview verification: only a statically passing candidate is
+      // published. The exact pushed SHA is then awaited and reviewed with real
+      // deployment evidence before a PR is opened.
+      if (
+        report.verdict === "pass" &&
+        this.deps.previewVerificationEnabled === true &&
+        this.deps.pushBranchForPreview &&
+        this.deps.fetchRuntime
+      ) {
+        const previewStartedAt = Date.now();
+        let previewHeadSha = "";
+        try {
+          if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
+            try {
+              const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+              if (authored) {
+                authoredWorkflowThisCycle = true;
+                this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts, stage: "pre_preview" }, sessionId);
+              }
+            } catch (err) {
+              this.deps.logger.warn("[loop] pre-preview CI workflow authoring failed (non-fatal)", { sessionId, err: String(err) });
+            }
+          }
+          if (!this.deps.worktreeHeadSha) {
+            throw new Error("exact-SHA preview verification requires the worktree HEAD probe");
+          }
+          previewHeadSha = await this.deps.worktreeHeadSha(plan.worktreePath);
+          if (!previewHeadSha) {
+            throw new Error("could not resolve candidate HEAD before preview push");
+          }
+          this.deps.state.audit("loop.preview_push_started", { sessionId, cycle, branch: plan.branch }, sessionId);
+          const pushed = await this.deps.pushBranchForPreview({ plan, requester: row.requester, commitSha: previewHeadSha });
+          if (!pushed.remoteSha || pushed.remoteSha !== previewHeadSha) {
+            throw new Error(
+              `preview branch tip mismatch: expected ${previewHeadSha}, received ${pushed.remoteSha || "(missing)"}`,
+            );
+          }
+          this.deps.state.audit("loop.preview_branch_pushed", { sessionId, cycle, branch: plan.branch, headSha: previewHeadSha }, sessionId);
+          // rc.5 (#2): the preview push is a REAL publication of a SPECIFIC
+          // commit -- `pushBranchForPreview` already re-reads the remote tip
+          // and throws unless it equals `previewHeadSha`, which is exactly the
+          // proof this evidence records. Finalisation reuses it (and skips a
+          // second push) only while the candidate is still this same SHA.
+          publication = {
+            sha: previewHeadSha,
+            branch: plan.branch,
+            repo: plan.repo,
+            verifiedAt: Date.now(),
+            via: "pushed",
+          };
+        } catch (err) {
+          const diagnosis = diagnosePushFailure(err);
+          this.deps.state.audit(
+            "loop.preview_push_failed",
+            { sessionId, cycle, branch: plan.branch, failureKind: diagnosis.kind, error: String(err), worktreePreserved: true },
+            sessionId,
+          );
+          return await this.finaliseFailedPreserveWorktree(
+            sessionId,
+            `preview_push_error (${diagnosis.kind}; worktree preserved): ${String(err)}`,
+            cycle,
+            totalCost,
+          );
+        }
+
+        let previewRuntime: RuntimeSnapshot | undefined;
+        try {
+          previewRuntime = await this.deps.fetchRuntime({
+            plan,
+            sessionId,
+            waitForPreview: true,
+            commitSha: previewHeadSha || undefined,
+          });
+        } catch (err) {
+          previewRuntime = {
+            provider: "vercel",
+            status: "unavailable",
+            logsExcerpt: `Preview verification failed: ${String(err)}`,
+          };
+        }
+        this.deps.state.audit(
+          "loop.preview_runtime",
+          { sessionId, cycle, headSha: previewHeadSha || null, status: previewRuntime?.status ?? "unavailable", deploymentUrl: previewRuntime?.deploymentUrl ?? null },
+          sessionId,
+        );
+        if (
+          previewRuntime?.provider !== "vercel" ||
+          (previewRuntime.status !== "ok" && previewRuntime.status !== "build_failed")
+        ) {
+          return await this.finaliseFailedPreserveWorktree(
+            sessionId,
+            `preview_runtime_unavailable (exact SHA ${previewHeadSha.slice(0, 12)} was not verified; worktree preserved)`,
+            cycle,
+            totalCost,
+          );
+        }
+
+        const runtimeReviewStart = Date.now();
+        this.deps.interactionLog?.logSdkRequest(sessionId, {
+          role: "adversary",
+          ...this.routeLog("adversary", this.deps.config.models.adversary),
+          phase: "review",
+          cycle,
+          prompt: `runtime-enriched adversary review cycle ${cycle} for ${brief.title}; preview status: ${previewRuntime?.status ?? "unavailable"}`,
+        });
+        try {
+          const runtimeReport = await this.runAccountedProvider(
+            {
+              sessionId,
+              requester: row.requester,
+              role: "adversary",
+              cycle,
+              model: this.routeLog("adversary", this.deps.config.models.adversary).model,
+              route: this.routeLog("adversary", this.deps.config.models.adversary).backend,
+              baseSha: adversaryBaseSha,
+            },
+            () => withTimeout(
+              this.deps.runAdversary({
+                brief,
+                plan,
+                sessionId,
+                runtime: previewRuntime,
+                requester: row.requester,
+                baseSha: adversaryBaseSha,
+                priorFindings: report.findings,
+                revision: revisionContext,
+              }),
+              this.deps.config.loop.adversary_timeout_seconds,
+              "adversary_timeout_seconds",
+            ),
+            (review) => ({
+              costUsd: review.costUsd,
+              usageMeasured: review.usageMeasured,
+              providerResultId: review.sdkSessionId ?? null,
+              result: { verdict: review.verdict, findings: review.findings.length, stage: "runtime" },
+            }),
+          );
+          rawReview = { ...runtimeReport, findings: [...(runtimeReport.findings ?? [])] };
+          this.deps.state.audit(
+            "loop.review_raw",
+            { sessionId, cycle, stage: "runtime", verdict: rawReview.verdict, findings: rawReview.findings, summary: rawReview.summary, sdkSessionId: rawReview.sdkSessionId ?? null },
+            sessionId,
+          );
+          totalCost += runtimeReport.costUsd;
+          const blockingConvention = conventionFindings.filter((finding) =>
+            isBlockingFinding(finding, classifyFinding(finding, this.classifyCtx)),
+          );
+          report = {
+            ...runtimeReport,
+            findings: [...runtimeReport.findings, ...conventionFindings],
+            verdict:
+              runtimeReport.verdict === "pass" && blockingConvention.length > 0
+                ? "revise"
+                : runtimeReport.verdict,
+          };
+          this.deps.interactionLog?.logSdkResponse(sessionId, {
+            role: "adversary",
+            ...this.routeLog("adversary", this.deps.config.models.adversary),
+            phase: "review",
+            cycle,
+            finishReason: report.verdict,
+            costUsd: runtimeReport.costUsd,
+            durationMs: Date.now() - runtimeReviewStart,
+            outputChars: runtimeReport.summary?.length,
+            sdkSessionId: runtimeReport.sdkSessionId,
+          });
+        } catch (err) {
+          this.deps.state.audit("loop.preview_review_failed", { sessionId, cycle, error: String(err) }, sessionId);
+          return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
+        }
+        this.emitPhaseTiming(sessionId, "preview", cycle, previewStartedAt, {
+          headSha: previewHeadSha || null,
+          runtimeStatus: previewRuntime?.status ?? "unavailable",
+          verdict: report.verdict,
+        });
+      }
+      // rc.3: findings get their identity here -- deduplicated, reconciled
+      // against everything this session already established, and stamped with a
+      // lifecycle state. After this point a finding the run already fixed no
+      // longer counts as a blocker, and a duplicate from another review chunk
+      // no longer counts twice.
+      //
+      // "What this cycle changed" is what separates a genuine regression from
+      // the adversary rediscovering something, and a late discovery from a
+      // review of the work in front of it. Read from the branch tip taken
+      // before this cycle's workers ran; an unreadable probe yields an empty
+      // list, which is the conservative reading (nothing is called unchanged
+      // that might have moved).
+      const changedThisCycle =
+        cycleBaseSha && this.deps.worktreeCommittedFiles
+          ? await this.deps.worktreeCommittedFiles(plan.worktreePath, cycleBaseSha).catch(() => [] as string[])
+          : [];
+      report = this.reconcileCycleFindings(sessionId, cycle, report, changedThisCycle);
+
+      // The reviews table is the resumable source of truth, so persist the
+      // effective report that actually drives control flow—not the raw model
+      // response from before deterministic findings changed its verdict.
+      try {
+        this.saveReview(sessionId, cycle, report);
+      } catch (err) {
+        this.deps.state.audit(
+          "loop.review_failed",
+          { sessionId, cycle, isTimeout: false, stage: "persist_effective_review", error: String(err) },
+          sessionId,
+        );
+        this.deps.logger.error("[loop] effective review persistence failed", { sessionId, cycle, err: String(err) });
+        this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+          verdict: report.verdict,
+          error: String((err as Error)?.message ?? err).slice(0, 200),
+        });
+        return await this.finaliseReviewCrash(sessionId, err, cycle, totalCost, { plan, brief, lastReview, row });
+      }
+      lastReview = report;
+      // beta.69 (F1): visibility for the convergence gate. When the adversary's
+      // raw verdict was `revise` but the final verdict is `pass` AND there were
+      // no real convention failures, the run converged on a green cycle whose
+      // only remaining findings were non-blocking (process/env/architectural/
+      // unproven-runtime). This is the fix for forensic 1f2e6642's cycle-2
+      // all-green revise. (The downgrade itself happens in runAdversary; here
+      // we just record that the loop is now shipping instead of churning.)
+      if (report.verdict === "pass" && conventionFindings.length === 0 && (report.findings?.length ?? 0) > 0) {
+        this.deps.state.audit("loop.converged_on_green", { sessionId, cycle, findings: report.findings.length }, sessionId);
+      }
+      this.deps.state.audit("loop.review", { sessionId, cycle, verdict: report.verdict, findings: report.findings.length, conventionFindings: conventionFindings.length }, sessionId);
+      // beta.108: the review phase is the largest UNMEASURED block in a run.
+      // The b106 revise (session 21c9c44e) reported a 55.2-minute wall clock of
+      // which planning (574s) and worker execution (1499s) account for 35
+      // minutes; the other ~20 were review, push, PR update and CI polling, and
+      // nothing timed any of them. We were optimising the two thirds we could
+      // see. Emit the phase duration so the next speed decision has a number
+      // behind it.
+      this.emitPhaseTiming(sessionId, "review", cycle, reviewStart, {
+        verdict: report.verdict,
+        findings: report.findings.length,
+        costUsd: report.costUsd,
+      });
+      // beta.97 (Fix #7): record this cycle's finding count for the convergence check.
+      findingCountsByCycle.push(report.findings?.length ?? 0);
+      // beta.119: keep the findings themselves, not just how many there were.
+      findingsByCycle.push([...((report.findings ?? []) as MapFinding[])]);
+
+      // beta.129: this cycle is now as long as it is going to get before the
+      // decision that follows, so fold it into the observed cycle length the
+      // wall-clock guards reason with.
+      if (cycleStartedAtMs > 0) maxCycleMs = Math.max(maxCycleMs, Date.now() - cycleStartedAtMs);
+
+      const reactions = await this.deps.readReactions(sessionId);
+      const blockingFindings = this.countBlockingFindings(report.findings);
+      blockingCountsByCycle.push(blockingFindings);
+      this.deps.state.audit(
+        "loop.blocking_findings",
+        { sessionId, cycle, verdict: report.verdict, findings: report.findings?.length ?? 0, blockingFindings },
+        sessionId,
+      );
+      const advanceInput = {
+        currentStatus: "reviewing" as const,
+        verdict: report.verdict,
+        blockingFindings,
+        shipWhenNoBlockingFindings: this.deps.config.loop.ship_when_no_blocking_findings !== false,
+        cyclesRan: cycle,
+        maxCycles: this.deps.config.loop.max_cycles,
+        findingCountsByCycle,
+        // beta.119: one more cycle, when the trend says it will land and the
+        // budget can genuinely absorb it. See `advance`.
+        blockingCountsByCycle,
+        cycleExtensionsGranted,
+        maxCycleExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+        budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted),
+        // beta.120 (fix 4): only meaningful once there is something to land.
+        // beta.129: now sized against a MEASURED cycle, and against the
+        // session's own ceiling rather than the configured default -- an
+        // operator who bought four hours at the confirmation gate was still
+        // having the reserve clamped against the 2h default.
+        shipTimeReserved: shouldReserveTimeToShip({
+          now: Date.now(),
+          hardDeadlineMs,
+          reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
+          totalBudgetSeconds: sessionTimeoutSeconds,
+          hasWork: cycle >= 1,
+          observedCycleMs: maxCycleMs,
+        }),
+        reactions,
+        // beta.78 (Feature 2): whether to run ANOTHER cycle is gated by the
+        // per-user DAILY cap, not the (now-soft) session budget. Crossing the
+        // session budget warns but does not stop; only the daily hard-cap
+        // (or :moneybag: override) blocks a further cycle.
+        budgetExhausted:
+          !reactions.budgetBump &&
+          this.dailyMaxUsd() > 0 &&
+          this.safeDailySpend(row.requester) > this.dailyMaxUsd(),
+        hardTimeout: Date.now() > hardDeadlineMs,
+      };
+      let decision = OrchestratorLoop.advance(advanceInput);
+
+      // rc.6: was money the ONLY thing standing between this run and another
+      // cycle? Asking `advance` a second time with the money satisfied is the
+      // way to know without restating its rules here -- it is a pure function,
+      // the second call costs nothing, and a copy of its conditions in this
+      // file would drift the first time somebody edited one of them.
+      if (
+        !budgetOverrideGranted &&
+        !budgetExtensionRefused &&
+        decision.nextStatus !== "executing"
+      ) {
+        const ifFunded = OrchestratorLoop.advance({ ...advanceInput, budgetHeadroomOk: true, budgetExhausted: false });
+        if (ifFunded.nextStatus === "executing") {
+          const dailyBlocked = advanceInput.budgetExhausted;
+          const grantedUsd = await this.askForBudgetExtension({
+            sessionId,
+            cycle,
+            trigger: dailyBlocked ? "daily_cap" : "cycle_extension",
+            spentUsd: totalCost,
+            policy: budgetPolicy,
+            shortfallUsd: Math.max(0, totalCost + projectCycleCostUsd(totalCost, cycle) - budgetPolicy.implementationTargetUsd),
+            observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+            ...(dailyBlocked ? { dailyCapUsd: this.dailyMaxUsd() } : {}),
+            resumeStatus: "reviewing",
+          });
+          rebaseHardDeadlineFromPersistedClock();
+          if (grantedUsd > 0) {
+            budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+            budgetOverrideGranted = true;
+            row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+            decision = ifFunded;
+          } else {
+            budgetExtensionRefused = true;
+          }
+        }
+      }
+      this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
+
+      // beta.129: the clock is about to land a branch that still has blocking
+      // findings on it, while the money to fix them is sitting unspent. That is
+      // the one case worth interrupting a human for, so ask before shipping
+      // short. Everything about this is bounded: only when work remains, only
+      // while the operator keeps saying yes, and only for as long as
+      // `time_extension_wait_seconds`. If the answer does not come, we ship
+      // exactly as b120 shipped and nothing is lost by having asked.
+      if (
+        decision.nextStatus === "done" &&
+        decision.reason === "ship_time_reserved" &&
+        this.deps.config.loop.time_extension_ask_enabled !== false &&
+        !timeExtensionRefused &&
+        blockingFindings > 0 &&
+        this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted)
+      ) {
+        const grantedSeconds = await this.askForTimeExtension({
+          sessionId,
+          cycle,
+          blockingFindings,
+          spentUsd: totalCost,
+          budgetUsd: row.budget_usd,
+          remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
+          observedCycleMs: maxCycleMs,
+        });
+        rebaseHardDeadlineFromPersistedClock();
+        if (grantedSeconds > 0) {
+          hardDeadlineMs += grantedSeconds * 1000;
+          sessionTimeoutSeconds += grantedSeconds;
+          timeExtensionCyclesGranted += 1;
+          this.persistExtendedDeadline(sessionId, sessionTimeoutSeconds);
+          this.setStatus(sessionId, "executing");
+          continue;
+        }
+        timeExtensionRefused = true;
+      }
+
+      if (decision.nextStatus === "done") {
+        terminalDoneReason = decision.reason;
+        break;
+      }
+      if (decision.nextStatus === "failed") {
+        return await this.finaliseFailed(sessionId, decision.reason, cycle, totalCost);
+      }
+      if (decision.nextStatus === "aborted") {
+        return await this.finaliseAbortSalvaging(sessionId, decision.reason, cycle, totalCost);
+      }
+      if (decision.reason === "max_cycles_extended_converging") {
+        cycleExtensionsGranted += 1;
+        this.deps.state.audit(
+          "loop.max_cycles_extended",
+          {
+            sessionId, cycle, granted: cycleExtensionsGranted,
+            maxExtensions: this.deps.config.loop.max_cycle_extensions ?? 1,
+            arc: [...findingCountsByCycle], blockingArc: [...blockingCountsByCycle],
+            spentUsd: Number(totalCost.toFixed(4)),
+          },
+          sessionId,
+        );
+        this.deps.logger.info(
+          "[loop] beta.119: findings are converging and the budget covers another cycle -- extending rather than shipping on the ceiling",
+          { sessionId, cycle, arc: findingCountsByCycle.join(" -> "), granted: cycleExtensionsGranted },
+        );
+      }
+      // else "executing": continue the outer while
+    }
+
+    // 3. Push + PR (the ship gate; may send us back for a repair cycle)
+    if (!lastReview) {
+      return await this.finaliseFailed(sessionId, "no_review_produced", cycle, totalCost);
+    }
+    // beta.127: reset per attempt. A green second attempt must not inherit the
+    // first attempt's red verdict.
+    ciOverride = null;
+    ciNeverRegisteredCaveat = null;
+    // beta.63 (Part A): mark finalize START so the watchdog sees the push/PR
+    // phase as live (this is exactly the b60 gap: quiet AFTER the last sub-task
+    // deadline but BEFORE/at finalize, with no watchdog covering it).
+    this.markProgress(sessionId, "finalize_start", "finalize", { cycle });
+    // beta.130: where SHIPPING starts. `shipStart` sits outside the
+    // ship-attempt loop, so it spans every cycle -- the first local b129 run
+    // reported `phase=ship 1518s` for six minutes of pushing and CI polling,
+    // and summing the phases came to 45 minutes of a 34-minute run. That
+    // contradicts the one property emitPhaseTiming promises. Keep the
+    // cross-attempt span, but report it as what it is.
+    shipPhaseStart = Date.now();
+    // beta.73 (D3): instrument the push/PR-open step. Pre-beta.73 there was NO
+    // audit event between the transition->done and the terminal worktree
+    // release, so a push/PR failure (422 branch collision, missing GH token, a
+    // bare exception) was completely invisible (session 70341bc3). Emit an
+    // explicit start + failure event carrying the underlying error.
+    this.deps.state.audit("loop.pr_open_started", { sessionId, cycle, branch: plan.branch }, sessionId);
+    // beta.81 (Track B / B3): if the repo has NO CI, AUTHOR a GitHub Actions
+    // workflow running the repo's declared check scripts and COMMIT it into the
+    // worktree BEFORE the push, so verification runs on GitHub (Carel: build the
+    // CI, never run locally). ciAuthorWorkflow returns null when a workflow
+    // already exists or nothing is runnable. Best-effort: a failure here must
+    // not block the push (the PR + review already stand); it just means no CI.
+    if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
+      try {
+        const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+        if (authored) {
+          authoredWorkflowThisCycle = true;
+          this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
+          this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
+        }
+      } catch (err) {
+        this.deps.logger.warn("[loop] CI workflow authoring failed (non-fatal; repo will simply have no CI)", { sessionId, err: String(err) });
+      }
+    }
+    try {
+      // rc.5 (#2): THE FIX FOR PR #1168.
+      //
+      // Pre-rc.5 this line read `previewVerificationEnabled === true` and, if
+      // so, called the PR-ONLY callback. That flag says preview verification is
+      // CONFIGURED; it says nothing about whether a push happened. The preview
+      // push above runs only for a `pass` verdict, so every `revise` run with
+      // preview enabled took the PR-only branch, found the revision's existing
+      // PR, posted a comment, and was recorded as shipped with its commits
+      // still on local disk. Two sessions lost 35 commits that way.
+      //
+      // `publishCandidate` asks the question that actually matters -- is the
+      // commit I am about to ship already proven to be on the remote? -- and
+      // pushes whenever the answer is no. Note the ordering: it resolves the
+      // candidate AFTER the CI-workflow authoring above, so a workflow commit
+      // that moves HEAD invalidates the preview push's evidence instead of
+      // inheriting it.
+      const published = await this.publishCandidate({
+        sessionId, plan, brief, reviewReport: lastReview, requester: row.requester,
+        cycle, stage: "finalize", existing: publication,
+      });
+      if (!published.ok) {
+        if (published.kind === "push_failed") {
+          // Same shape as before: let the existing push-failure catch below
+          // classify it, audit it and preserve the worktree.
+          throw published.pushError;
+        }
+        // The call RESOLVED and the remote still does not hold the candidate.
+        // This is the #1168 shape; it is not shipped.
+        return await this.finaliseUnpublished({
+          sessionId, plan, cycle, totalCost,
+          kind: published.kind,
+          candidateSha: published.candidateSha,
+          observedSha: published.observedSha,
+          detail: published.message,
+          prUrl: published.prUrl,
+        });
+      }
+      prUrl = published.prUrl;
+      publication = published.evidence;
+      // beta.129: record the PR the MOMENT it exists, not only if the run
+      // reaches a terminal `shipped`. b127 opens the PR here and can then
+      // re-enter the loop for a CI repair cycle, so a run that later aborted
+      // left `final_pr_url` NULL while a perfectly real PR sat on GitHub
+      // holding its commits. Session d48ba433 reported "PR (none)" about
+      // PR #1051 -- its own -- and an hour went into looking for work that was
+      // never lost. A row that knows about its PR also lets the abort salvage
+      // see it.
+      try {
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, updated_at = ? WHERE id = ?`)
+          .run(prUrl, parsePrNumber(prUrl) ?? null, Date.now(), sessionId);
+      } catch (dbErr) {
+        this.deps.logger.warn("[loop] could not record the PR url at open time", { sessionId, err: String(dbErr) });
+      }
+      this.deps.state.audit("loop.pr_opened", { sessionId, cycle, prUrl, prNumber: parsePrNumber(prUrl) }, sessionId);
+    } catch (err) {
+      // beta.119: PRESERVE THE WORKTREE. A push failure is the one terminal
+      // where the run's commits provably exist ONLY on local disk -- failing to
+      // push means nothing reached the remote. Releasing it here deleted a
+      // finished, correct, one-line CI change whose push was rejected purely
+      // for a missing `workflow` token scope. b62 built
+      // finaliseFailedPreserveWorktree for this exact class ("discarded 8 good
+      // commits precisely because the crash path released the worktree") and
+      // wired it only to review crashes.
+      const diagnosis = diagnosePushFailure(err);
+      this.deps.state.audit(
+        "loop.pr_open_failed",
+        {
+          sessionId, cycle, branch: plan.branch, error: String(err),
+          failureKind: diagnosis.kind, recoverable: diagnosis.recoverable,
+          worktreePreserved: true, worktreePath: plan.worktreePath,
+        },
+        sessionId,
+      );
+      this.deps.interactionLog?.log(sessionId, {
+        event: "pr_open_failed", phase: "finalize", cycle, error: String(err), failureKind: diagnosis.kind,
+      });
+      this.deps.logger.error(
+        "[loop] push/PR-open failed; PRESERVING the worktree so the commits can be recovered",
+        { sessionId, branch: plan.branch, worktreePath: plan.worktreePath, kind: diagnosis.kind },
+      );
+      return await this.finaliseFailedPreserveWorktree(
+        sessionId,
+        `pr_error (${diagnosis.kind}; worktree preserved): ${describePreservedPushFailure({
+          diagnosis, branch: plan.branch, worktreePath: plan.worktreePath, error: String(err),
+        })}`,
+        cycle,
+        totalCost,
+      );
+    }
+    // beta.63 (Part A): PR opened -- mark progress before the terminal write.
+    this.markProgress(sessionId, "pr_opened", "finalize", { cycle });
+    // beta.81 (Track B / B2): POST-PUSH CI VERIFICATION WAIT-STATE. Now that the
+    // branch is on GitHub, poll CI and fold the result into the terminal
+    // recommendation. success -> ship as normal (review verdict drives the
+    // merge rec below). failure -> flag needs_human_review with the failing CI
+    // logs as the recorded reason (the revise finding source). timeout ->
+    // SOFT checkpoint: keep the PR open, needs_human_review, offer a resumable
+    // continue-watch (never a hard fail). none/skipped -> ship on the review
+    // verdict (a no-CI repo just got a workflow authored above but its FIRST
+    // status may not exist yet on this SHA; do not block the deliverable).
+    // beta.127: declared outside the ship-attempt loop, above.
+    {
+      // rc.5 (#2): poll CI on the PUBLISHED commit, not the local one.
+      //
+      // Pre-rc.5 this read the worktree HEAD and polled that. In #1168 nothing
+      // had been pushed, so GitHub had never heard of the SHA -- there were no
+      // checks to be red, the outcome resolved as "no CI", and the run shipped.
+      // Absent CI on an unpublished commit is not a green light; it is not even
+      // a reading. `publication.sha` is a commit somebody confirmed is on the
+      // remote, so a CI answer about it means something.
+      let headSha = publication?.sha ?? "";
+      if (!headSha) {
+        try {
+          headSha = this.deps.worktreeHeadSha ? await this.deps.worktreeHeadSha(plan.worktreePath).catch(() => "") : "";
+        } catch { headSha = ""; }
+        if (headSha) {
+          // Only reachable when publication could not be verified at all (no
+          // probe wired). Say so, so a green here is never read as proof the
+          // published commit is green.
+          this.deps.state.audit(
+            "loop.ci_polled_unverified_sha",
+            { sessionId, cycle, sha: headSha, reason: "no verified publication evidence for this candidate" },
+            sessionId,
+          );
+        }
+      }
+      if (headSha && (this.deps.ciCombinedStatus || this.deps.ciSnapshot)) {
+        behaviorVerificationFailure = null;
+        ciPolledSha = headSha;
+        this.setStatus(sessionId, "reviewing");
+        this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
+        const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
+        if (ci.outcome === "success") {
+          const required = requiredBehaviorChecks;
+          const observedNames = ci.checkNames ?? [];
+          const observed = observedNames.map((name) => name.toLowerCase());
+          const missing = required.filter((check) => {
+            const wanted = check.ciCheck.toLowerCase();
+            return !observed.some((name) => name === wanted || name.includes(wanted));
+          });
+          if (missing.length > 0) {
+            behaviorVerificationPassed = false;
+            behaviorVerificationFailure =
+              `required CI behavior checks missing on ${headSha}: ${missing.map((check) => check.ciCheck).join(", ")}`;
+            ciOverride = {
+              recommendation: "needs_human_review",
+              reason: `${behaviorVerificationFailure}. Path/commit checks are not behavioral verification.`,
+            };
+            this.deps.state.audit(
+              "loop.behavior_verification_failed",
+              {
+                sessionId,
+                cycle,
+                candidateSha: headSha,
+                ciSha: headSha,
+                required: required.map((check) => ({ id: check.id, ciCheck: check.ciCheck })),
+                observed: observedNames,
+                missing: missing.map((check) => check.ciCheck),
+              },
+              sessionId,
+            );
+          } else if (required.length > 0) {
+            behaviorVerificationPassed = true;
+            this.deps.state.audit(
+              "loop.behavior_verification_passed",
+              { sessionId, cycle, candidateSha: headSha, observed: observedNames, required: required.map((check) => check.ciCheck) },
+              sessionId,
+            );
+          }
+        }
+        if (ci.outcome === "failure") {
+          // beta.127: the excerpt now comes from the Actions job log when the
+          // check run carries no output of its own, so this is the failing
+          // assertion rather than the word "failure". 1500 chars was sized for
+          // a check-run title; a real excerpt needs room to name the test.
+          lastCiFindings = buildCiFailureFindings(ci.logs ?? "", { sha: headSha });
+          ciOverride = {
+            recommendation: "needs_human_review",
+            reason:
+              `GitHub CI FAILED on ${headSha}. Do NOT merge until CI is green. Failing check logs (excerpt):\n` +
+              `${(ci.logs || "(no log excerpt available)").slice(0, 3000)}`,
+          };
+        } else if (ci.outcome === "timeout") {
+          ciOverride = {
+            recommendation: "needs_human_review",
+            reason:
+              `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
+              `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
+          };
+        } else if (ci.outcome === "indeterminate") {
+          // beta.119: we never got a readable verdict out of GitHub for this
+          // sha. Pre-b119 this path did not exist -- an unreadable check-run
+          // list collapsed into "success" and the run shipped a merge
+          // recommendation over failing checks (ProjectThanos PR #986). An
+          // unverifiable commit is now blocking, exactly like a red one.
+          ciOverride = {
+            recommendation: "needs_human_review",
+            reason:
+              `Could NOT determine CI state for ${headSha} after ${ci.waitedSeconds}s of polling` +
+              `${ci.reason ? ` (${ci.reason})` : ""}. ` +
+              `The harness will not call an unverifiable commit green. Check the PR's checks tab before merging.`,
+          };
+        } else if (ci.outcome === "authored_workflow_never_registered") {
+          // beta.91 (F4): we authored + pushed a workflow this cycle but GitHub
+          // never registered a run within the grace window. NON-blocking: the
+          // merge recommendation is NOT overridden to needs_human_review (that
+          // would be too aggressive for a registration lag), but the caveat is
+          // surfaced so a human knows CI never actually verified this SHA.
+          this.deps.state.audit("loop.ci_authored_never_registered", { sessionId, cycle, sha: headSha, waitedSeconds: ci.waitedSeconds }, sessionId);
+          this.deps.logger.warn("[loop] authored a CI workflow but GitHub never registered a run within the grace window; shipping with a visible caveat (CI did NOT verify this SHA)", { sessionId, sha: headSha, waitedSeconds: ci.waitedSeconds });
+          ciNeverRegisteredCaveat =
+            `NOTE: the harness authored a CI workflow but GitHub did not register a run on ${headSha} within ${ci.waitedSeconds}s. CI did NOT verify this commit -- confirm the workflow ran (or re-run it) before relying on a green check.`;
+        } else if (ci.outcome === "success" && ci.degradedSource) {
+          // beta.125: a real green, from a narrower window than usual. NOT
+          // blocking -- every Actions run and every legacy status on this sha
+          // passed, which is the whole of CI on most repos, and the pre-b125
+          // alternative was needs_human_review carrying no information at all.
+          // But it is stated, because the one thing this green does not cover
+          // is a third-party App's check run, and a reader who assumes
+          // otherwise is making the b118 mistake with better inputs.
+          this.deps.state.audit("loop.ci_green_via_workflow_runs", { sessionId, cycle, sha: headSha }, sessionId);
+          ciNeverRegisteredCaveat = `NOTE: ${ci.degradedSource}`;
+        }
+      }
+    }
+
+    // beta.127: CI IS RED AND THERE IS STILL A CYCLE TO BE HAD.
+    //
+    // This is the edge the ship-attempt loop exists for. Everything above ran
+    // in b126 too; the difference is that b126's only move from here was to
+    // write "Do NOT merge" and stop.
+    //
+    // Deliberately narrow. Only `failure` qualifies -- a timeout or an
+    // indeterminate verdict means we do not KNOW what is wrong, and sending a
+    // worker to fix an unknown is how a run burns a cycle producing noise.
+    // Only findings we could actually build from the log qualify, for the same
+    // reason: without the failing assertion there is nothing to hand a worker.
+    {
+      const repairCeiling = Math.max(0, this.deps.config.ci?.max_repair_cycles ?? 1);
+      // rc.6: repair is paid for out of its own reserve, and the gate never
+      // reads `totalCost`. That is the whole #1184 fix. Before it, this asked
+      // "does the run's TOTAL spend plus a projected cycle fit inside the
+      // session budget?", so implementation spending $53.81 of $50 refused the
+      // repair that would have turned a red build green. Repair now answers for
+      // its own spending only; the daily cap and hard ceiling below are what
+      // still bound it.
+      const repairFunding = assessRepairFunding({
+        policy: budgetPolicy,
+        repairSpentUsd: Math.max(0, totalCost - repairSpendBaselineUsd),
+        repairCyclesGranted: ciRepairCyclesGranted,
+        projectedRepairCostUsd:
+          ciRepairCyclesGranted > 0
+            ? projectCycleCostUsd(Math.max(0, totalCost - repairSpendBaselineUsd), ciRepairCyclesGranted)
+            : 0,
+      });
+      let budgetOk =
+        repairFunding.funded &&
+        this.hardCapsAllow(row.requester, totalCost, cycle, budgetOverrideGranted);
+      // beta.129: a repair cycle costs TIME as well as money, and b127 only
+      // ever priced the money. Session d48ba433 was granted one with roughly
+      // twenty minutes left on a clock that cycles were eating in twenty-five,
+      // and the run was guillotined during the review that would have shipped
+      // it. The same question `shipTimeReserved` asks at the review boundary
+      // has to be asked here, because this grant re-enters the loop behind its
+      // back.
+      // beta.130: `shouldReserveTimeToShip` answers false once the deadline is
+      // behind us -- at the review boundary that is correct, because
+      // `hardTimeout` has already claimed the run by then. Here it is not:
+      // b129's own "a pass outranks the clock" rule is what carried us past
+      // that check, so a run that earned its verdict AFTER the deadline
+      // arrives holding `remaining <= 0` and would read it as all the time in
+      // the world. A dead clock cannot fund a repair cycle.
+      const remainingMs = hardDeadlineMs - Date.now();
+      let clockOk =
+        remainingMs > 0 &&
+        !shouldReserveTimeToShip({
+          now: Date.now(),
+          hardDeadlineMs,
+          reserveSeconds: this.deps.config.loop.ship_time_reserve_seconds ?? 600,
+          totalBudgetSeconds: sessionTimeoutSeconds,
+          hasWork: true,
+          observedCycleMs: maxCycleMs,
+        });
+      const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;
+      const ceilingOk = ciRepairCyclesGranted < repairCeiling;
+
+      // beta.130: b129 taught this site to refuse a repair it could not
+      // finish, and refusing was right -- but refusing SILENTLY was not. The
+      // first local b129 run reached exactly here with $30.16 of its $40
+      // unspent, 15.6 minutes on the clock, and a CI failure that was one
+      // assertion out of 9,027 tests (a sidebar ordering index that the new
+      // nav entry had shifted). It shipped a do-not-merge PR without asking.
+      //
+      // This is a stronger case for interrupting a human than the b129 one:
+      // the branch is already pushed, so the cost of a "yes" is bounded and
+      // the prize is a green PR instead of one somebody has to finish by
+      // hand. Only the clock may be missing -- a ceiling shortfall is a real
+      // no, and asking for time would not change it.
+      //
+      // rc.6: money is no longer a real no either. b130 wrote "a ceiling or
+      // budget shortfall is a real no" because there was nothing to be done
+      // about money mid-run; there is now, and it is the same ask. Money is
+      // asked FIRST because the clock question describes itself as "out of
+      // time, not out of money", which would be a lie if both were short.
+      if (wantsRepair && ceilingOk && !budgetOk && !budgetExtensionRefused) {
+        const grantedUsd = await this.askForBudgetExtension({
+          sessionId,
+          cycle,
+          trigger: "ci_repair",
+          spentUsd: totalCost,
+          policy: budgetPolicy,
+          shortfallUsd: repairFunding.funded ? 0 : (repairFunding.shortfallUsd ?? 0),
+          observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
+          ciSummary: describeCiFindings(lastCiFindings),
+          // The repair re-enters the loop as an execution cycle; the ship path
+          // it was asked from is not a phase to be parked in.
+          resumeStatus: "executing",
+        });
+        rebaseHardDeadlineFromPersistedClock();
+        if (grantedUsd > 0) {
+          budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
+          budgetOverrideGranted = true;
+          row.budget_usd = budgetPolicy.authorizedMaximumUsd;
+          budgetOk = true;
+        } else {
+          budgetExtensionRefused = true;
+        }
+      }
+
+      if (
+        wantsRepair &&
+        ceilingOk &&
+        budgetOk &&
+        !clockOk &&
+        this.deps.config.loop.time_extension_ask_enabled !== false &&
+        !timeExtensionRefused
+      ) {
+        const grantedSeconds = await this.askForTimeExtension({
+          sessionId,
+          cycle,
+          blockingFindings: lastCiFindings.length,
+          spentUsd: totalCost,
+          budgetUsd: row.budget_usd,
+          remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
+          observedCycleMs: maxCycleMs,
+          trigger: "ci_repair",
+          ciSummary: describeCiFindings(lastCiFindings),
+          // The repair re-enters the loop as an execution cycle; the ship path
+          // it was asked from is not a phase to be parked in.
+          resumeStatus: "executing",
+        });
+        rebaseHardDeadlineFromPersistedClock();
+        if (grantedSeconds > 0) {
+          hardDeadlineMs += grantedSeconds * 1000;
+          sessionTimeoutSeconds += grantedSeconds;
+          // Deliberately NOT bumping `timeExtensionCyclesGranted`: the repair
+          // grant below raises the loop bound by one on its own, and counting
+          // it twice would buy a cycle nobody agreed to.
+          this.persistExtendedDeadline(sessionId, sessionTimeoutSeconds);
+          clockOk = true;
+        } else {
+          timeExtensionRefused = true;
+        }
+      }
+
+      const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;
+
+      if (wantsRepair && !canRepair) {
+        // Say why the run is shipping over a red build. "Do NOT merge" with no
+        // account of what was tried reads as the harness not having noticed.
+        this.deps.state.audit(
+          "loop.ci_repair_declined",
+          {
+            sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
+            budgetOk, ceilingOk, clockOk, spentUsd: Number(totalCost.toFixed(4)),
+            // rc.6: `reason: "budget"` says money and nothing else, which is
+            // how #1184 read as "too expensive" when the truth was "somebody
+            // else spent the reserve". These say which.
+            repairFunding: repairFunding.basis,
+            repairReserveUsd: budgetPolicy.repairReserveUsd,
+            repairSpentUsd: Number(Math.max(0, totalCost - repairSpendBaselineUsd).toFixed(4)),
+            askedForBudget: budgetExtensionRefused,
+            remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
+            observedCycleMs: maxCycleMs,
+            // beta.130: distinguishes "the clock said no" from "the clock said
+            // no AND the operator was given the chance to overrule it". Only
+            // the second is a complete account of why a red build shipped.
+            askedForTime: timeExtensionRefused,
+            // beta.131: the ladder used to test the clock BEFORE the ceiling,
+            // so a run that had already spent its one repair reported
+            // `wall_clock` whenever the clock happened to be short too. Session
+            // 03a8a7b6 did exactly that: granted 1 of 1, then declined the
+            // second with reason `wall_clock`. b130's report reads that as
+            // "shipped red without asking" and calls it a regression -- at a
+            // run where not asking was correct, because no amount of time buys
+            // a cycle the ceiling has already refused.
+            //
+            // Ordered by what an operator could actually change: the ceiling
+            // and the budget are settled facts, the clock is the one they can
+            // still overrule. Naming the clock LAST means `wall_clock` now says
+            // precisely "the clock is the only thing missing" -- the same
+            // condition the ask tests, so the two can no longer disagree.
+            reason:
+              repairCeiling === 0 ? "disabled"
+              : !ceilingOk ? "ceiling"
+              : !budgetOk ? "budget"
+              : !clockOk ? "wall_clock"
+              // Defensive: `canRepair` is exactly these three, so reaching here
+              // means one of them changed without this ladder being told.
+              : "unknown",
+            // Every constraint that was failing, because naming one of three is
+            // how the single-reason field misled us in the first place.
+            blockers: [!ceilingOk ? "ceiling" : "", !budgetOk ? "budget" : "", !clockOk ? "wall_clock" : ""].filter(Boolean),
+            findings: describeCiFindings(lastCiFindings),
+          },
+          sessionId,
+        );
+      }
+
+      if (canRepair) {
+        // rc.6: everything spent from here is repair's, charged to the reserve
+        // rather than to the run. Stamped on the FIRST grant only, so a second
+        // repair is still measured from where repair began.
+        if (ciRepairCyclesGranted === 0) repairSpendBaselineUsd = totalCost;
+        ciRepairCyclesGranted += 1;
+        // Fold the CI findings into the review the next cycle maps from. They
+        // carry `file`, so mapFindingsToSubTasks routes each one to whoever
+        // owns that path; an unroutable one becomes a mapping miss and is
+        // broadcast, which for a red build is the right failure mode.
+        lastReview = {
+          ...lastReview,
+          verdict: "revise",
+          findings: [...(lastReview.findings ?? []), ...lastCiFindings],
+        };
+        this.deps.state.audit(
+          "loop.ci_repair_cycle_granted",
+          {
+            sessionId, cycle, granted: ciRepairCyclesGranted, ceiling: repairCeiling,
+            spentUsd: Number(totalCost.toFixed(4)),
+            findings: describeCiFindings(lastCiFindings),
+            files: lastCiFindings.map((f) => f.file).filter(Boolean),
+          },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "ci_repair_cycle_granted", phase: "finalize", cycle,
+          findings: lastCiFindings.length,
+        });
+        this.addCiRepairSubTask(sessionId, cycle, plan, lastCiFindings);
+        this.deps.logger.info(
+          "[loop] beta.127: CI is red and the budget covers another cycle -- routing the failures back as blocking findings instead of shipping over them",
+          { sessionId, cycle, granted: ciRepairCyclesGranted, findings: describeCiFindings(lastCiFindings) },
+        );
+        await this.deps.reportProgress?.(sessionId, "executing", { cycle });
+        lastCiFindings = [];
+        continue shipAttempts;
+      }
+      break shipAttempts;
+    }
+    } // end shipAttempts
+
+    if (!behaviorVerificationPassed) {
+      return await this.finaliseFailedPreserveWorktree(
+        sessionId,
+        `behavior_verification_failed: ${behaviorVerificationFailure ?? "required CI checks never produced a green verdict on the candidate SHA"}`,
+        cycle,
+        totalCost,
+      );
+    }
+
+    // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
+    // the final review + whether we reached a clean pass. Persist it + the PR
+    // number for the harness_merge_pr hard gate.
+    const reachedCleanPass = lastReview.verdict === "pass";
+    const mergeBlockers = this.mergeBlockingFindings(lastReview.findings);
+    const rec = deriveMergeRecommendation({
+      review: { verdict: lastReview.verdict, findings: lastReview.findings ?? [] },
+      // beta.109: so a `revise` carrying only lows is recommended for merge
+      // rather than blocked on the verdict word alone.
+      blockingFindings: this.countBlockingFindings(lastReview.findings),
+      // rc.5: what stops a merge, as opposed to what buys another cycle. Passing
+      // only the cycle count let step 4 fall back to raw severity and gate on
+      // findings nobody could ever close -- PR #1084.
+      mergeBlockingFindings: mergeBlockers.length,
+      mergeBlockingTitles: mergeBlockers.map((f) => f.title || f.dimension || "(untitled)"),
+      reachedCleanPass,
+      ciStatus: undefined, // the merge tool re-checks CI at merge time
+    });
+    // beta.81 (Track B / B2): a CI failure/timeout OVERRIDES the review-derived
+    // recommendation to needs_human_review -- CI is the verification spine, so
+    // a red or still-running CI must never be recommended for merge.
+    const finalRecommendation = ciOverride?.recommendation ?? rec.recommendation;
+    let finalReason = ciOverride ? `${ciOverride.reason}\n\n(review verdict: ${lastReview.verdict}; ${rec.reason})` : rec.reason;
+    // beta.91 (F4): append the never-registered caveat to whatever reason we have
+    // (merge still recommended, but the human sees CI did not verify the SHA).
+    if (ciNeverRegisteredCaveat) finalReason = `${finalReason}\n\n${ciNeverRegisteredCaveat}`;
+    // beta.119: findings the reviewer raised in consecutive cycles that nobody
+    // resolved. On b118 three of these shipped inside a 9-finding list that
+    // looked no different from cycle 1's, so "raised three times, fixed never"
+    // was invisible to the reader. Say it plainly.
+    if (unresolvedAcrossCycles.length > 0) {
+      finalReason = `${finalReason}\n\n${describeUnresolvable(unresolvedAcrossCycles)}`;
+    }
+    // rc.3: a verification blocker is the one do_not_merge no cycle can clear,
+    // so the note has to say what WOULD clear it. Without this the operator
+    // reads "do not merge: the typecheck could not run" and has nothing to act
+    // on but the log -- which is how the missing `tsc` on StitchGuard PR #1168
+    // survived four repair cycles and shipped anyway.
+    {
+      const blockers = (lastReview.findings ?? [])
+        .map((f) => ({ f, b: detectVerificationBlocker(f) }))
+        .filter((x): x is { f: ReviewFinding; b: VerificationBlocker } => x.b !== null);
+      if (blockers.length > 0) {
+        finalReason = `${finalReason}\n\n${blockers.map(({ f, b }) => describeVerificationBlocker(f, b)).join("\n\n")}`;
+      }
+    }
+    // beta.97 (Fix #7): if we shipped on max-cycles with a CONVERGING finding
+    // trend, append an explicit ask-to-extend note. The merge recommendation is
+    // UNCHANGED (still do_not_merge / needs_human_review); this is purely the
+    // operator-facing signal that one more revise cycle was plausibly worth it,
+    // rather than a bare do_not_merge with no context.
+    if (terminalDoneReason === "shipped_max_cycles_revise_converging") {
+      const arc = findingCountsByCycle.join(" → ");
+      // beta.124: the ceiling this run actually hit, not the configured one --
+      // an extended run stops at max_cycles + the grants it was given, and
+      // quoting the config number at an operator who watched four cycles go by
+      // reads as a bug in the report.
+      const effectiveCeiling = this.deps.config.loop.max_cycles + cycleExtensionsGranted;
+      const extended = cycleExtensionsGranted > 0
+        ? ` (${this.deps.config.loop.max_cycles} configured, +${cycleExtensionsGranted} granted for converging findings)`
+        : "";
+      finalReason =
+        `${finalReason}\n\nCONVERGING: adversary findings were trending down across cycles (${arc}) but the run hit the ${effectiveCeiling}-cycle ceiling${extended} before a clean pass. ` +
+        `This looks worth extending: re-run \`harness_revise\` on this PR to continue from the current findings — a clean sign-off was plausibly one or two cycles away.`;
+      this.deps.state.audit(
+        "loop.max_cycles_extend_suggested",
+        {
+          sessionId, findingCountsByCycle,
+          maxCycles: this.deps.config.loop.max_cycles,
+          cycleExtensionsGranted, effectiveCeiling,
+        },
+        sessionId,
+      );
+    }
+    // rc.5 (#2): say which of the three states this run is in, on the record an
+    // operator actually reads. #1168 reported "shipped" for work that was never
+    // pushed, so "published" now names the SHA it published and repeats that
+    // published is not approved -- a `revise` verdict goes up for review with
+    // its blocking findings intact, and must not be merged.
+    finalReason = `${finalReason}\n\n${describePublicationState({
+      published: !!publication,
+      verdict: lastReview.verdict,
+      sha: publication?.sha,
+    })}`;
+    const prNumber = parsePrNumber(prUrl);
+    this.deps.state.db
+      .prepare(
+        `UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`,
+      )
+      .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, Date.now(), sessionId);
+    this.recordPublicationEvidence(sessionId, publication);
+    this.deps.state.audit(
+      "loop.shipped",
+      {
+        sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride,
+        // The commit this outcome is actually about. Absent means publication
+        // could not be verified -- never that it was verified as absent.
+        publishedSha: publication?.sha ?? null,
+        publicationVerified: !!publication,
+        ciSha: ciPolledSha || null,
+      },
+      sessionId,
+    );
+    this.emitPhaseTiming(sessionId, "ship", cycle, shipPhaseStart, {
+      prNumber,
+      mergeRecommendation: finalRecommendation,
+      // The whole run from the first ship attempt, kept because it is genuinely
+      // useful -- just not as the duration of the ship phase.
+      sinceFirstShipAttemptMs: Math.max(0, Date.now() - shipStart),
+    });
+    // beta.16 fix #3 + beta.17 correctness: prune the worktree on
+    // `loop.shipped`. Beta.16 emitted the audit event but the underlying
+    // release() silently no-op'd because it reconstructed the path from
+    // sessionId (a UUID) while the allocator used `pending-<Date.now()>`
+    // on-disk ids. Beta.17 threads the actual `worktree_path` from the
+    // sessions row into the release call.
+    await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
+    return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
+  }
+
+  /**
+   * beta.70 (F5): did THIS observe sub-task already complete cleanly in a
+   * PRIOR cycle? Used to skip a redundant observe re-probe on a revise cycle.
+   * Returns the prior cycle + status when a `sub_tasks` row exists at the same
+   * seq, in an earlier cycle, with a completed/no-change status. Conservative:
+   * a prior FAILED observe returns null (we re-run it). Best-effort; on any DB
+   * error returns null (never blocks the run).
+   */
+  private priorObserveCompleted(
+    sessionId: string,
+    cycle: number,
+    seq: number,
+  ): { cycle: number; status: string } | null {
+    try {
+      const row = this.deps.state.db
+        .prepare(
+          `SELECT cycle, status FROM sub_tasks
+           WHERE session_id = ? AND seq = ? AND cycle < ?
+             AND status IN ('completed', 'completed_no_change')
+           ORDER BY cycle DESC LIMIT 1`,
+        )
+        .get(sessionId, seq, cycle) as { cycle: number; status: string } | undefined;
+      return row ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * beta.135: load the exact plan being continued after an operator accepts a
+   * committed sub-task whose verification contract named the wrong path.
+   *
+   * Fail closed. Falling back to a fresh lead call here is the data-loss mode
+   * this helper exists to remove: a replacement plan is free to omit pending
+   * work. Completed rows from the latest cycle seed the scheduler's `done` set,
+   * preserving dependency satisfaction while leaving the full plan intact for
+   * final scope checks and adversarial review.
+   */
+  private loadAcceptedContinuation(
+    sessionId: string,
+  ): {
+    plan: LeadPlan;
+    completedSeqs: Set<number>;
+    resumeSeq?: number;
+    resumeQuestion?: string;
+    resumeAnswer?: string;
+  } {
+    const row = this.deps.state.db
+      .prepare(
+        `SELECT lead_plan_json, repo, branch,
+                clarification_seq, clarification_question, clarification_answer
+           FROM sessions WHERE id = ?`,
+      )
+      .get(sessionId) as
+      | {
+          lead_plan_json: string | null;
+          repo: string | null;
+          branch: string | null;
+          clarification_seq: number | null;
+          clarification_question: string | null;
+          clarification_answer: string | null;
+        }
+      | undefined;
+    if (!row?.lead_plan_json) {
+      throw new Error(`accepted clarification cannot resume: session ${sessionId} has no stored lead plan`);
+    }
+    let plan: LeadPlan;
+    try {
+      plan = JSON.parse(row.lead_plan_json) as LeadPlan;
+    } catch (err) {
+      throw new Error(`accepted clarification cannot resume: stored lead plan is invalid JSON (${String(err)})`);
+    }
+    if (!plan || !Array.isArray(plan.subTasks) || plan.subTasks.length === 0 || !plan.worktreePath) {
+      throw new Error(`accepted clarification cannot resume: stored lead plan is incomplete`);
+    }
+
+    // rc.2: a stored plan is a RECOLLECTION of where a worktree was, not proof
+    // that it is still there or that it was ever this session's. This is the
+    // one path that skips allocation and adopts a path verbatim, so it is the
+    // one path that has to check.
+    //
+    // Failing here is not a dead end: the caller audits `loop.plan_resume_failed`
+    // and preserves the session, which is the correct outcome for "the work you
+    // accepted is no longer on disk". Silently continuing would point the run at
+    // a directory that is missing, or worse, at one holding somebody else's
+    // branch.
+    const mismatch = verifyContinuationWorktree(plan, {
+      sessionId,
+      repo: (row.repo ?? "").trim(),
+      branch: (row.branch ?? "").trim(),
+    });
+    if (mismatch) {
+      throw new Error(`accepted clarification cannot resume: ${mismatch}`);
+    }
+    const completedRows = this.deps.state.db
+      .prepare(
+        `SELECT current.seq
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`,
+      )
+      .all(sessionId) as Array<{ seq: number }>;
+    // rc.2: the answer travels with the plan, so the sub-task that asked the
+    // question is the one that hears the reply. Without this the decision only
+    // reached the brief's acceptance criteria -- read by the LEAD, which a
+    // resumed run no longer calls -- and the paused worker was re-dispatched
+    // with the identical prompt that made it stop.
+    const seq = row.clarification_seq;
+    const answer = (row.clarification_answer ?? "").trim();
+    return {
+      plan,
+      completedSeqs: new Set(completedRows.map((r) => r.seq)),
+      resumeSeq: typeof seq === "number" && seq >= 0 ? seq : undefined,
+      resumeQuestion: (row.clarification_question ?? "").trim() || undefined,
+      resumeAnswer: answer || undefined,
+    };
+  }
+
+  /**
+   * beta.134 (observe-handoff): keep a completed observe sub-task's report so
+   * the sub-tasks that depend on it can be dispatched holding it.
+   *
+   * Only `observe` sub-tasks: a mutate's final message is a summary of edits
+   * the next worker can read out of the diff, whereas a probe's IS the
+   * deliverable -- it produces no commit, so the report is the entire result of
+   * the turn and dropping it drops the sub-task.
+   *
+   * A later cycle's re-probe overwrites the earlier one (the newer reading of
+   * the repo wins). Truncated on the way in, so nothing downstream has to hold
+   * a runaway report in memory for the rest of the run.
+   */
+  private recordObserveReport(
+    sessionId: string,
+    st: LeadPlanSubTask,
+    result: WorkerResult,
+    into: Map<number, ObserveReport>,
+  ): void {
+    if (st.taskMode !== "observe") return;
+    const report = (result.finalMessage ?? "").trim();
+    if (!report) return;
+    into.set(st.seq, {
+      seq: st.seq,
+      title: st.title,
+      report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+    });
+    this.deps.state.audit(
+      "loop.observe_report_recorded",
+      {
+        sessionId,
+        seq: st.seq,
+        title: st.title,
+        chars: report.length,
+        // Durable handoff. `harness_answer` and process recovery start a new
+        // runInner invocation, so an in-memory map alone loses the probe at
+        // exactly the boundary where later dependants need it.
+        report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
+      },
+      sessionId,
+    );
+  }
+
+  /**
+   * beta.135: rebuild the observe handoff map from the durable audit trail.
+   *
+   * New rows use `loop.observe_report_recorded.report` (8k cap). The
+   * `loop.worker_end_turn.finalMessage` fallback keeps reports produced by
+   * beta.134 before this persistence fix resumable too (that older event is
+   * capped at 4k). Latest report per seq wins.
+   */
+  private hydrateObserveReports(
+    sessionId: string,
+    plan: LeadPlan,
+  ): Map<number, ObserveReport> {
+    if (!plan.subTasks.some((st) => st.taskMode === "observe")) return new Map();
+    try {
+      const revision = this.deps.state.db
+        .prepare(`SELECT plan_revision FROM sessions WHERE id = ?`)
+        .get(sessionId) as { plan_revision: number | null } | undefined;
+      const planRevision = revision?.plan_revision ?? 0;
+      const structured = this.deps.state.db
+        .prepare(
+          `SELECT seq, producer_task_hash, report_json
+             FROM observe_reports
+            WHERE session_id = ? AND result_plan_revision = ?
+            ORDER BY created_at DESC`,
+        )
+        .all(sessionId, planRevision) as Array<{
+          seq: number;
+          producer_task_hash: string;
+          report_json: string;
+        }>;
+      const out = new Map<number, ObserveReport>();
+      for (const row of structured) {
+        if (out.has(row.seq)) continue;
+        const task = plan.subTasks.find((candidate) => candidate.seq === row.seq && candidate.taskMode === "observe");
+        if (!task || !task.observeContract || observeTaskHash(task) !== row.producer_task_hash) continue;
+        try {
+          const payload = JSON.parse(row.report_json) as { finalMessage?: string };
+          const report = (payload.finalMessage ?? "").trim();
+          if (!report) continue;
+          out.set(row.seq, { seq: row.seq, title: task.title, report: report.slice(0, OBSERVE_REPORT_MAX_CHARS) });
+        } catch {
+          /* malformed structured row is ignored */
+        }
+      }
+
+      const rows = this.deps.state.db
+        .prepare(
+          `SELECT event, payload
+             FROM audit_log
+            WHERE session_id = ?
+              AND event IN ('loop.observe_report_recorded', 'loop.worker_end_turn')
+            ORDER BY id DESC
+            LIMIT 500`,
+        )
+        .all(sessionId) as unknown as ObserveReportAuditRow[];
+      const legacyTasks = plan.subTasks.filter((task) => !task.observeContract);
+      const legacy = recoverObserveReports(legacyTasks, rows);
+      for (const [seq, report] of legacy) if (!out.has(seq)) out.set(seq, report);
+      if (out.size > 0) {
+        this.deps.state.audit(
+          "loop.observe_reports_hydrated",
+          {
+            sessionId,
+            fromSeqs: [...out.keys()].sort((a, b) => a - b),
+            chars: [...out.values()].reduce((n, r) => n + r.report.length, 0),
+          },
+          sessionId,
+        );
+      }
+      return out;
+    } catch (err) {
+      // Best effort: a fresh run has no rows, and a read failure must not block
+      // normal execution. The absence remains visible because no hydrated
+      // breadcrumb is emitted.
+      this.deps.logger.warn("[loop] observe report hydration failed; continuing without prior probe reports", {
+        sessionId,
+        err: String(err),
+      });
+      return new Map();
+    }
+  }
+
+  /**
+   * beta.134 (observe-handoff): a dispatch-time COPY of the sub-task carrying
+   * the reports of the probes it depends on. Returns `st` unchanged when there
+   * is nothing to hand down, so a plan with no observe step dispatches exactly
+   * as it did before.
+   *
+   * The audit line matters as much as the overlay: "the worker was handed
+   * sub-task 1's findings" and "the worker was told to apply findings it never
+   * received" produced identical trails, which is why the second went unnoticed
+   * through a whole run that reported success and shipped nothing.
+   */
+  private withObserveReports(
+    sessionId: string,
+    st: LeadPlanSubTask,
+    cycle: number,
+    recorded: ReadonlyMap<number, ObserveReport>,
+  ): LeadPlanSubTask {
+    const reports = selectObserveReports(st, recorded);
+    if (reports.length === 0) return st;
+    this.deps.state.audit(
+      "loop.observe_reports_handed_down",
+      {
+        sessionId,
+        cycle,
+        seq: st.seq,
+        fromSeqs: reports.map((r) => r.seq),
+        chars: reports.reduce((n, r) => n + r.report.length, 0),
+        via: st.dependsOn && st.dependsOn.length > 0 ? "dependsOn" : "earlier_observe",
+      },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, {
+      event: "observe_reports_handed_down", phase: "worker", seq: st.seq, cycle,
+    });
+    return { ...st, priorObserveReports: reports };
+  }
+
+  /**
+   * beta.16 fix #2: helper for emitting the `loop.subtask_observe_completed`
+   * audit breadcrumb. Fires exactly once per observe-mode sub-task terminal
+   * success. Payload is intentionally similar to `loop.subtask_verification`
+   * so downstream consumers can treat the two events uniformly.
+   */
+  private emitObserveCompleted(
+    sessionId: string,
+    st: LeadPlanSubTask,
+    result: WorkerResult,
+    contract: unknown[],
+  ): void {
+    this.deps.state.audit(
+      "loop.subtask_observe_completed",
+      {
+        sessionId,
+        seq: st.seq,
+        taskMode: st.taskMode ?? "unspecified",
+        verify_count: contract.length,
+        worker_files_touched: result.filesChanged ?? [],
+        worker_commit_sha: result.commitSha ?? null,
+        worker_end_reason: result.reason ?? null,
+        cost_usd: result.costUsd,
+      },
+      sessionId,
+    );
+  }
+
+  /**
+   * beta.16 fix #3 + beta.17 telemetry: best-effort worktree release.
+   * Called on all terminal transitions (shipped/aborted/failed). Never
+   * throws — worktree cleanup failures are logged, audited, and swallowed
+   * so they cannot fail an already-terminal session.
+   *
+   * beta.17: audit payload now carries `{ok, path, error?}` on both the
+   * success and failure events so operators can distinguish
+   * event-fired-but-nothing-happened from event-fired-and-succeeded.
+   * Beta.16's `loop.worktree_released` was a lie on production because
+   * the underlying release() silently no-op'd (see releaseByPath docs).
+   */
+  private async tryReleaseWorktree(sessionId: string, repoFullName: string, worktreePath: string, reason: "shipped" | "aborted" | "failed"): Promise<void> {
+    if (!this.deps.releaseWorktree) {
+      // beta.120 (fix 5): a silent return here is how "the worktree is gone and
+      // nothing says why" happens. Whatever the outcome, the stream records it.
+      this.deps.state.audit(
+        "loop.worktree_release_skipped",
+        { sessionId, reason, reason_skipped: "no releaseWorktree dependency wired", path: worktreePath },
+        sessionId,
+      );
+      return;
+    }
+    try {
+      const outcome = await this.deps.releaseWorktree({ sessionId, repoFullName, worktreePath, reason });
+      if (outcome.ok) {
+        this.deps.state.db.prepare(
+          `UPDATE sessions SET storage_state = 'released', storage_reason = ?,
+                               storage_checked_at = ?, updated_at = ? WHERE id = ?`,
+        ).run(`worktree intentionally released after terminal ${reason}`, Date.now(), Date.now(), sessionId);
+        this.deps.state.audit(
+          "loop.worktree_released",
+          { sessionId, reason, ok: true, path: outcome.path ?? worktreePath, ...(outcome.error ? { note: outcome.error } : {}) },
+          sessionId,
+        );
+      } else {
+        this.deps.logger.warn("[loop] worktree release reported not-ok", { sessionId, reason, worktreePath, err: outcome.error });
+        this.deps.state.audit(
+          "loop.worktree_release_failed",
+          { sessionId, reason, ok: false, path: outcome.path ?? worktreePath, error: outcome.error ?? "unknown" },
+          sessionId,
+        );
+      }
+    } catch (err) {
+      // The releaseWorktree impl threw synchronously / rejected. Different
+      // failure mode from ok:false, but the operator surface is the same.
+      this.deps.logger.warn("[loop] worktree release threw", { sessionId, reason, worktreePath, err: String(err) });
+      this.deps.state.audit(
+        "loop.worktree_release_failed",
+        { sessionId, reason, ok: false, path: worktreePath, error: String(err) },
+        sessionId,
+      );
+    }
+  }
+
+  /**
+   * Pull the latest verification outcome per sub-task from the audit log,
+   * to feed the adversary as local runtime data (beta.7 fix #1).
+   */
+  /**
+   * beta.8: cheap, unconditional final observable check. Independently asks
+   * the provider whether the branch exists on origin (the single most
+   * important fact: did anything actually reach the remote?). Runs even when
+   * the review budget is exhausted, because it costs ~$0 in tokens and is
+   * the harness's last line of defence against a confabulated "it shipped".
+   * Records loop.cheap_observable_check with the result.
+   */
+  private async runCheapObservableCheck(sessionId: string, plan: LeadPlan, requester: string): Promise<void> {
+    if (!this.deps.buildVerifyProbes) return;
+    try {
+      const probes = this.deps.buildVerifyProbes({ plan, requester, worktreePath: plan.worktreePath, baseSha: "" });
+      const branch = await probes.remoteBranchExists(plan.branch);
+      this.deps.state.audit(
+        "loop.cheap_observable_check",
+        { sessionId, branch: plan.branch, remoteBranchExists: branch.exists, detail: branch.detail },
+        sessionId,
+      );
+      if (!branch.exists) {
+        this.deps.logger.warn("[loop] cheap observable check: branch NOT on remote at abort time", {
+          sessionId, branch: plan.branch, detail: branch.detail,
+        });
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] cheap observable check errored", { sessionId, err: String(err) });
+    }
+  }
+
+  private readLocalVerification(sessionId: string): Array<{ seq: number; ok: boolean; summary: string }> {
+    const rows = this.deps.state.db
+      .prepare(
+        `SELECT payload FROM audit_log
+         WHERE session_id = ? AND event = 'loop.subtask_verification'
+         ORDER BY created_at ASC`,
+      )
+      .all(sessionId) as Array<{ payload: string }>;
+    const bySeq = new Map<number, { seq: number; ok: boolean; summary: string }>();
+    for (const r of rows) {
+      try {
+        const p = JSON.parse(r.payload) as { seq: number; ok: boolean; summary: string };
+        if (typeof p.seq === "number") bySeq.set(p.seq, { seq: p.seq, ok: !!p.ok, summary: String(p.summary ?? "") });
+      } catch {
+        // ignore malformed audit rows
+      }
+    }
+    const completed = this.deps.state.db
+      .prepare(
+        `SELECT current.seq, current.status, current.summary
+           FROM sub_tasks current
+          WHERE current.session_id = ?
+            AND current.cycle = (
+              SELECT MAX(latest.cycle)
+                FROM sub_tasks latest
+               WHERE latest.session_id = current.session_id
+                 AND latest.seq = current.seq
+            )
+            AND current.status IN ('completed', 'completed_no_change')`,
+      )
+      .all(sessionId) as Array<{ seq: number; status: string; summary: string | null }>;
+    for (const task of completed) {
+      if (!bySeq.has(task.seq)) continue;
+      bySeq.set(task.seq, {
+        seq: task.seq,
+        ok: true,
+        summary: task.summary || `sub-task ${task.status}`,
+      });
+    }
+    return [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+  }
+
+  /**
+   * beta.7 fix #2: project the cost of an upcoming sub-task. Prefer the
+   * running median of ACTUAL costs (empirical, per-session), because token
+   * estimates from the lead are notoriously optimistic. Fall back to the
+   * plan's token estimate via the price table, then to a conservative
+   * per-task reserve so we never project zero.
+   */
+  private estimateSubTaskCost(st: LeadPlanSubTask, observed: number[]): number {
+    if (observed.length > 0) return median(observed);
+    if (st.estimatedTokens > 0) {
+      return estimateSubTaskCost(
+        this.deps.config.models.worker,
+        st.estimatedTokens,
+        this.deps.config.models.price_overrides,
+      );
+    }
+    return 0.25; // conservative reserve when we have nothing to go on
+  }
+
+  /**
+   * beta.7 fix #2: estimate adversary review cost. Reviews scan the whole
+   * diff, so cost scales with the work done: use the max observed sub-task
+   * cost as a proxy, with a conservative floor.
+   */
+  private estimateReviewCost(observed: number[]): number {
+    const floor = 0.5;
+    if (observed.length === 0) return floor;
+    return Math.max(floor, Math.max(...observed));
+  }
+
+  /**
+   * beta.64 (P0-1 + P0-2): run ONE worker sub-task call bounded by
+   * worker_timeout_seconds, emit the sdk_stream_opened / sdk_first_token /
+   * sdk_response interaction-log events (P0-1), and RETRY ONCE on a FRESH SDK
+   * session when the attempt times out (P0-2). A timeout is either:
+   *   - the outer withTimeout throwing WorkerTimeoutError (full-turn worker
+   *     timeout), OR
+   *   - the inner first-token watchdog returning result.status ===
+   *     'first_token_timeout' (stream opened, ZERO tokens -- beta.63 smoke #2).
+   * Returns `{outcome:'ok', result}` on a usable turn (even a non-completed
+   * end_turn -- the caller's verification handles that), or `{outcome:'timeout',
+   * summary, failErr}` when the (possibly retried) call still timed out.
+   * `worker_timeout_retry_enabled: false` disables the retry (still audits the
+   * timeout). Max 1 retry per sub-task, mirroring the beta.53 env-wait pattern.
+   */
+  private async runWorkerCallWithRetry(p: {
+    sessionId: string; st: LeadPlanSubTask; cycle: number; brief: CrystallisedBrief;
+    plan: LeadPlan; requester: string; dispatchHint?: string; workerStart: number; subTaskId: string;
+    /** beta.117: the leased slot; NOT plan.worktreePath when running parallel. */
+    workerWorktree: string;
+  }): Promise<{ outcome: "ok"; result: WorkerResult } | { outcome: "timeout"; summary: string; failErr: string }> {
+    const { sessionId, st, cycle, brief, plan, requester, dispatchHint, workerWorktree } = p;
+    const selectedWorkerModel = selectWorkerModel(st, this.deps.config.models);
+    const retryEnabled = this.deps.config.loop.worker_timeout_retry_enabled !== false;
+    // beta.113: two attempts was one retry. Three gives the escalated
+    // first-token window (below) somewhere to escalate to.
+    const maxAttempts = retryEnabled ? Math.max(2, this.deps.config.loop.worker_timeout_max_attempts ?? 3) : 1;
+    // beta.94 (Feature 2): capture the sub-task base sha ONCE so the idle-no-work
+    // "did this sub-task touch files" probe can diff <subTaskBase>..HEAD. Absent
+    // probe => the idle detector still tracks counts but the no-writes gate is
+    // conservative (treats an unavailable diff as "no writes").
+    const idleSubTaskBase = this.deps.worktreeHeadSha
+      ? await this.deps.worktreeHeadSha(workerWorktree).catch(() => "")
+      : "";
+
+    let lastFirstToken = false;
+    let lastSummary = "";
+    let lastFailErr = "";
+    // beta.113: widen the first-token deadline on each retry.
+    //
+    // The DR/BCP run died here. Sub-task 3 hit `phase2_first_token` on attempt
+    // 1, the b64 retry fired exactly as designed, and attempt 2 hit
+    // `phase2_first_token` again -- both against the same 30-second window.
+    // Retrying a slow start against an identical deadline is not a retry, it is
+    // the same experiment twice, and it cost a 56-minute, $9.41 run that had
+    // eleven typecheck-clean commits and one blocking finding left to fix.
+    //
+    // 30s is fine for a small dispatch and tight for a large one: this worker
+    // carried a revise context, a dispatch hint and 18 ingested convention
+    // files, and a model that thinks before emitting can spend longer than that
+    // before its first visible token. So each attempt gets the previous
+    // window multiplied, capped, and always inside the full-turn timeout that
+    // bounds everything anyway.
+    const baseFirstToken = this.deps.config.loop.sdk_first_token_timeout_seconds ?? 30;
+    const mult = this.deps.config.loop.worker_first_token_retry_multiplier ?? 3;
+    const cap = Math.max(baseFirstToken, this.deps.config.loop.worker_first_token_retry_cap_seconds ?? 300);
+    const firstTokenFor = (attempt: number) =>
+      firstTokenWindowForAttempt(attempt, baseFirstToken, mult, cap);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      if (attempt > 1) {
+        // beta.64 (P0-2): audit the retry BEFORE it runs, so a durable trail
+        // shows we re-invoked on a fresh session (no resumeSessionId is passed
+        // at this callsite, so the SDK opens a brand-new stream).
+        this.deps.state.audit(
+          "loop.worker_timeout_retry",
+          { sessionId, seq: st.seq, attempt, priorKind: lastFirstToken ? "first_token_timeout" : "worker_timeout" },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, {
+          event: "worker_timeout_retry", phase: "worker", seq: st.seq, cycle, attempt,
+          priorKind: lastFirstToken ? "first_token_timeout" : "worker_timeout",
+        });
+        this.deps.logger.warn("[loop] worker timed out; retrying once on a FRESH SDK session", {
+          sessionId, seq: st.seq, attempt, priorKind: lastFirstToken ? "first_token_timeout" : "worker_timeout",
+        });
+      }
+      const attemptStart = Date.now();
+      let result: WorkerResult | null = null;
+      let threwTimeout = false;
+      // beta.81 (Track C / C1): PROVE the SDK re-entry actually happens on a
+      // retry. Forensic d01a7484 logged `worker_timeout_retry attempt:2` but
+      // then fired ZERO sdk_request/sdk_stream_opened for ~65 min -- the retry
+      // executor died BETWEEN the audit log line and the runWorker call, so the
+      // retry "log-then-noop"'d into silence with the sub-task row untouched.
+      // This audit fires IMMEDIATELY before the (re-)invocation, so a retry that
+      // never reaches runWorker is now distinguishable in the trail, and the
+      // loop still cannot fall out of this method without a terminal outcome
+      // (see the guaranteed `{outcome:'timeout'}` return below).
+      if (attempt > 1) {
+        this.deps.state.audit(
+          "loop.worker_retry_reinvoked",
+          { sessionId, seq: st.seq, attempt, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds },
+          sessionId,
+        );
+      }
+      // beta.94 (Feature 2): a narrow idle-no-work ABORT channel. onStreamSlow
+      // (when the conjunction holds AND loop.worker_idle_abort_enabled is true)
+      // rejects this race with a WorkerTimeoutError, routing the sub-task into
+      // the SAME timeout-class terminal ({outcome:'timeout'}) as a real worker
+      // timeout -- worktree preserved, no new terminal path. When the abort flag
+      // is off the reject is never called, so behaviour is unchanged.
+      let idleAbortReject: ((e: Error) => void) | undefined;
+      const idleAbortPromise = new Promise<never>((_resolve, reject) => { idleAbortReject = reject; });
+      idleAbortPromise.catch(() => { /* swallow if the worker wins the race */ });
+      try {
+        // beta.90 (Feature 2): surface a worker stream that opens then goes idle
+        // (no token delta) as loop.worker_stream_slow + a heartbeat bump.
+        // beta.94 (Feature 2): also arm the idle-no-work conjunction detector.
+        const onStreamSlow = this.makeStreamSlowCallback(sessionId, st.seq, cycle, {
+          plan,
+          baseSha: idleSubTaskBase,
+          onIdleAbort: () => idleAbortReject?.(new WorkerTimeoutError(this.deps.config.loop.worker_timeout_seconds)),
+        });
+        result = await withTimeout(
+          Promise.race([
+            // beta.91 (Fix 3): mechanical sub-tasks -> cheaper worker model.
+            this.runAccountedWorker(
+              {
+                sessionId,
+                subTaskId: p.subTaskId,
+                cycle,
+                seq: st.seq,
+                model: selectedWorkerModel,
+                requester,
+                baseSha: idleSubTaskBase,
+              },
+              () => this.deps.runWorker({
+                brief, subTask: st, plan, requester, dispatchHint,
+                // beta.117: the leased slot, which is NOT plan.worktreePath when
+                // this sub-task is running in parallel.
+                worktreePath: workerWorktree,
+                modelOverride: selectedWorkerModel,
+                onStreamSlow,
+                onActivity: this.makeWorkerActivityCallback(sessionId, st.seq, cycle),
+                firstTokenTimeoutSecondsOverride: firstTokenFor(attempt),
+              }),
+            ),
+            idleAbortPromise,
+          ]),
+          this.deps.config.loop.worker_timeout_seconds,
+        );
+      } catch (err) {
+        if (err instanceof AccountingPersistenceError) {
+          return {
+            outcome: "timeout",
+            summary: String(err.message),
+            failErr: `accounting_incomplete: ${err.message}`,
+          };
+        }
+        if (err instanceof WorkerTimeoutError) {
+          threwTimeout = true;
+          // The provider may still be running after the local timeout. Do not
+          // buy a duplicate attempt until that started call is reconciled.
+          try {
+            const now = Date.now();
+            this.deps.state.db.prepare(
+              `UPDATE provider_calls
+                  SET status = 'unknown', result_json = ?, ended_at = ?
+                WHERE session_id = ? AND role = 'worker' AND cycle = ? AND seq = ? AND status = 'started'`,
+            ).run(
+              JSON.stringify({ error: "local worker timeout; provider completion and cost unknown" }),
+              now,
+              sessionId,
+              cycle,
+              st.seq,
+            );
+            this.deps.state.db.prepare(
+              `UPDATE sessions SET accounting_state = 'incomplete', status = 'accounting_incomplete',
+                                   worktree_preserved = 1, updated_at = ? WHERE id = ?`,
+            ).run(now, sessionId);
+          } catch { /* terminal path below still preserves the worktree */ }
+          return {
+            outcome: "timeout",
+            summary: `provider attempt timed out with unknown completion/cost; reconciliation required before retry`,
+            failErr: `accounting_incomplete: worker timeout seq ${st.seq}`,
+          };
+        } else {
+          // A non-timeout throw is NOT retried here -- surface it immediately as
+          // the pre-beta.64 worker_error terminal (the caller marks it failed).
+          this.deps.interactionLog?.logSdkResponse(sessionId, {
+            role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+            finishReason: "error", durationMs: Date.now() - attemptStart,
+          });
+          return { outcome: "timeout", summary: `worker threw: ${String(err)}`, failErr: `worker_error: ${String(err)}` };
+        }
+      }
+
+      const firstTokenTimeout = !threwTimeout && result?.status === "first_token_timeout";
+      if (!threwTimeout && result && !firstTokenTimeout) {
+        // Usable turn. Emit P0-1 stream events + the sdk_response boundary.
+        if (result.streamOpened) {
+          this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
+            role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+            sdkSessionId: result.sdkSessionId,
+          });
+        }
+        if (typeof result.msToFirstToken === "number") {
+          this.deps.interactionLog?.logSdkFirstToken(sessionId, {
+            role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+            msToFirstToken: result.msToFirstToken, sdkSessionId: result.sdkSessionId,
+          });
+        }
+        this.deps.interactionLog?.logSdkResponse(sessionId, {
+          role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+          finishReason: result.reason ?? "end_turn", costUsd: result.costUsd,
+          outputChars: result.finalMessage ? result.finalMessage.length : undefined,
+          durationMs: Date.now() - attemptStart, sdkSessionId: result.sdkSessionId,
+          finalMessageTail: result.finalMessage ? result.finalMessage.slice(-500) : undefined,
+        });
+        // A timed-out earlier attempt still cost tokens; account for the
+        // retry's spend by returning the result (the caller adds result.costUsd).
+        return { outcome: "ok", result };
+      }
+
+      // Timeout-class outcome for THIS attempt. Emit the boundary + audit.
+      lastFirstToken = !!firstTokenTimeout;
+      if (firstTokenTimeout && result?.streamOpened) {
+        // The stream DID open; record that so the trail distinguishes
+        // "POST hung before open" from "opened, no tokens".
+        this.deps.interactionLog?.logSdkStreamOpened(sessionId, {
+          role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+          sdkSessionId: result.sdkSessionId,
+        });
+      }
+      this.deps.interactionLog?.logSdkResponse(sessionId, {
+        role: "worker", ...this.routeLog("worker", this.deps.config.models.worker, selectedWorkerModel), phase: "worker", seq: st.seq, cycle,
+        finishReason: firstTokenTimeout ? "first_token_timeout" : "timeout", durationMs: Date.now() - attemptStart,
+        sdkSessionId: result?.sdkSessionId,
+      });
+      if (firstTokenTimeout) {
+        // beta.65 (P0): split-phase attribution. streamOpened=false => the
+        // PHASE-1 (call-init -> stream-open) watchdog fired (the pre-stream POST
+        // hang beta.64 missed); streamOpened=true => the PHASE-2 (stream-open ->
+        // first-token) watchdog fired (the beta.63 smoke #2 case). Both audit
+        // the same event + route into the same fresh-session retry.
+        const phase = result?.streamOpened ? "phase2_first_token" : "phase1_stream_open";
+        this.deps.state.audit(
+          "loop.worker_first_token_timeout",
+          {
+            sessionId, seq: st.seq, attempt, phase, streamOpened: !!result?.streamOpened,
+            sdk_first_token_timeout_seconds: firstTokenFor(attempt),
+            sdk_stream_open_timeout_seconds: this.deps.config.loop.sdk_stream_open_timeout_seconds ?? 120,
+          },
+          sessionId,
+        );
+        lastSummary = result?.streamOpened
+          ? `worker first_token_timeout (phase 2: stream opened, zero tokens) attempt ${attempt}`
+          : `worker first_token_timeout (phase 1: stream never opened / pre-stream POST hang) attempt ${attempt}`;
+        lastFailErr = `worker_first_token_timeout: seq ${st.seq}`;
+      } else {
+        this.deps.state.audit(
+          "loop.worker_timeout",
+          { sessionId, seq: st.seq, attempt, worker_timeout_seconds: this.deps.config.loop.worker_timeout_seconds },
+          sessionId,
+        );
+        lastSummary = `worker_timeout attempt ${attempt}`;
+        lastFailErr = `worker_timeout: seq ${st.seq}`;
+      }
+      // Loop continues to the retry attempt (if any); otherwise falls through.
+    }
+    // beta.81 (Track C / C1): a retried-but-still-timed-out sub-task MUST return
+    // a terminal timeout outcome (the caller marks the row failed) -- NEVER a
+    // no-op that leaves the sub-task row `running` forever. Guarantee a
+    // non-empty summary/failErr so the terminal fail is always attributable.
+    return {
+      outcome: "timeout",
+      summary: lastSummary || `worker_timeout (exhausted ${maxAttempts} attempt(s)) seq ${st.seq}`,
+      failErr: lastFailErr || `worker_timeout: seq ${st.seq}`,
+    };
+  }
+
+  /**
+   * beta.64 (P0-4): SCRIPTED VERIFIER FALLBACK for an observe-mode VERIFY
+   * sub-task whose LLM turn timed out. A "run tsc, diff, check scripts" verify
+   * step needs no model: run `npx tsc --noEmit`, `git diff --stat <base>..HEAD`,
+   * and the allowlisted repo check scripts (reusing the beta.63 discover/run
+   * plumbing) deterministically, and report pass/fail as if the sub-task ran.
+   * Returns 'pass' (all deterministic checks green), 'fail' (a check failed), or
+   * 'unavailable' (feature disabled, or nothing runnable -> caller escalates to
+   * best-effort verify). Never throws. Gated by loop.scripted_verify_fallback.
+   */
+  private async tryScriptedVerifyFallback(
+    sessionId: string, plan: LeadPlan, st: LeadPlanSubTask, cycle: number, baseSha: string,
+  ): Promise<"pass" | "fail" | "unavailable"> {
+    if (this.deps.config.loop.scripted_verify_fallback === false) return "unavailable";
+    const worktree = plan.worktreePath;
+    if (!worktree) return "unavailable";
+    let tscOk: boolean | null = null;
+    let diffStat = "";
+    let scriptFailures = 0;
+    let scriptsRan = 0;
+    // 1. tsc --noEmit (only if the repo has a tsconfig AND a runner is wired).
+    try {
+      const runTsc = this.deps.runScriptedTsc;
+      if (runTsc && existsSync(join(worktree, "tsconfig.json"))) {
+        const timeoutMs = Math.max(10, this.deps.config.verify?.check_script_timeout_seconds ?? 600) * 1000;
+        const out = await runTsc(worktree, timeoutMs).catch(() => null);
+        if (out) tscOk = out.ok;
+      }
+    } catch { /* best-effort */ }
+    // 2. git diff --stat base..HEAD (informational + folded into the log).
+    try {
+      if (this.deps.gitDiffStat && baseSha) {
+        diffStat = (await this.deps.gitDiffStat(worktree, baseSha).catch(() => "")) ?? "";
+      }
+    } catch { /* best-effort */ }
+    // 3. Allowlisted repo check scripts (reuse beta.63 plumbing).
+    try {
+      const vcfg = this.deps.config.verify;
+      if (!vcfg || vcfg.run_repo_check_scripts !== false) {
+        const discovered = discoverCheckScripts(worktree);
+        if (discovered.length > 0) {
+          const results = runCheckScripts({
+            repoRoot: worktree,
+            discovered,
+            allowlist: vcfg?.check_script_allowlist ?? ["okf:check", "lint", "typecheck", "test"],
+            timeoutSeconds: vcfg?.check_script_timeout_seconds ?? 600,
+            runScript: this.deps.runCheckScript,
+          });
+          for (const r of results) {
+            if (r.ran) { scriptsRan++; if (r.exitCode !== 0) scriptFailures++; }
+          }
+        }
+      }
+    } catch { /* best-effort */ }
+
+    const ranAnything = tscOk !== null || scriptsRan > 0;
+    if (!ranAnything) {
+      this.deps.state.audit("loop.scripted_verify_fallback", { sessionId, seq: st.seq, cycle, result: "unavailable", tscOk, scriptsRan, scriptFailures, diffStat: diffStat.slice(0, 500) }, sessionId);
+      this.deps.interactionLog?.log(sessionId, { event: "scripted_verify_fallback", phase: "worker", seq: st.seq, cycle, result: "unavailable" });
+      return "unavailable";
+    }
+    const passed = (tscOk === null || tscOk === true) && scriptFailures === 0;
+    const result: "pass" | "fail" = passed ? "pass" : "fail";
+    this.deps.state.audit("loop.scripted_verify_fallback", { sessionId, seq: st.seq, cycle, result, tscOk, scriptsRan, scriptFailures, diffStat: diffStat.slice(0, 500) }, sessionId);
+    this.deps.interactionLog?.log(sessionId, { event: "scripted_verify_fallback", phase: "worker", seq: st.seq, cycle, result, tscOk, scriptsRan, scriptFailures });
+    this.deps.logger.warn("[loop] scripted verifier fallback ran (LLM verify sub-task timed out)", { sessionId, seq: st.seq, result, tscOk, scriptFailures });
+    return result;
+  }
+
+  /**
+   * beta.64 (P0-3): BEST-EFFORT VERIFY. Honors the beta.60 "Carel must get a
+   * reviewable PR" rule. When an observe-mode VERIFY sub-task times out (after
+   * the P0-2 retry AND the P0-4 scripted fallback declined/was unavailable),
+   * AND the prior mutate sub-task's verify_probe is GREEN, AND git diff-stat
+   * shows only expected files touched, do NOT discard the work: push the branch
+   * and open the PR flagged merge_recommendation=needs_human_review (reusing the
+   * beta.62 graceful-PR machinery), marking the run verify_skipped. Returns true
+   * when a graceful PR was opened (run is terminal `done`), false otherwise (the
+   * caller falls through to terminal fail). Gated by loop.best_effort_verify.
+   * Never throws.
+   */
+  private async tryBestEffortVerify(
+    sessionId: string, plan: LeadPlan, brief: CrystallisedBrief, st: LeadPlanSubTask,
+    cycle: number, totalCost: number, requester: string, baseSha: string,
+  ): Promise<false | "shipped" | { preserved: string }> {
+    if (this.deps.config.loop.best_effort_verify === false) return false;
+    // Precondition 1: the PRIOR mutate sub-task's verify_probe was GREEN. Read
+    // the latest per-sub-task verification (green means the code is shippable).
+    const localVerify = this.readLocalVerification(sessionId);
+    const priorGreen = localVerify.length > 0 && localVerify.every((v) => v.ok);
+    // Precondition 2: git diff-stat shows only expected files touched (a clean,
+    // in-scope diff). Best-effort -- if we can't compute it, treat as unclean.
+    let cleanDiff = false;
+    let diffStat = "";
+    try {
+      if (this.deps.gitDiffStat && baseSha) {
+        diffStat = (await this.deps.gitDiffStat(plan.worktreePath, baseSha).catch(() => "")) ?? "";
+        // "Clean" = there IS a diff (work was done) and every changed path is
+        // within the plan's expected files (or the plan declared none, in which
+        // case any diff is accepted since the mutate probe already vouched).
+        const changedPaths = parseDiffStatPaths(diffStat);
+        const expected = new Set(collectExpectedFiles(plan));
+        cleanDiff = changedPaths.length > 0 && (expected.size === 0 || changedPaths.every((f) => expected.has(f) || [...expected].some((e) => f === e || f.startsWith(e))));
+      }
+    } catch { cleanDiff = false; }
+
+    const eligible = priorGreen && cleanDiff;
+    this.deps.state.audit(
+      "loop.verify_skipped_best_effort",
+      { sessionId, seq: st.seq, cycle, eligible, priorGreen, cleanDiff, reason: "worker_timeout", diffStat: diffStat.slice(0, 800), changedFiles: parseDiffStatPaths(diffStat) },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "verify_skipped_best_effort", phase: "finalize", seq: st.seq, cycle, eligible, priorGreen, cleanDiff, reason: "worker_timeout" });
+    if (!eligible) {
+      this.deps.logger.warn("[loop] best-effort verify NOT eligible (prior probe not green or diff not clean); falling through to terminal", { sessionId, seq: st.seq, priorGreen, cleanDiff });
+      return false;
+    }
+
+    // rc.3: `priorGreen` is the WORKER's own verify probe -- the author marking
+    // its own homework. It is good evidence that the code runs, and no evidence
+    // at all that anything adversarial looked at it. When no review has ever
+    // run, keep the commits and refuse the push.
+    if (this.refuseUnreviewedSalvage(sessionId, "best_effort_verify", { seq: st.seq, cycle })) {
+      const why =
+        "verify_timeout_no_adversary_review: the VERIFY sub-task timed out and no adversary review has ever run for this session, so there is nothing to ship behind. " +
+        "The commits are preserved in the worktree -- run harness_resume to review and push them.";
+      await this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
+      // Distinct from "shipped": both short-circuit the caller's terminal fail
+      // path, but only one of them opened a PR. Reporting this as shipped would
+      // hand back an outcome with an empty prUrl and a session that never
+      // pushed.
+      return { preserved: why };
+    }
+
+    // Open the graceful PR flagged needs_human_review (beta.62 pattern).
+    this.markProgress(sessionId, "finalize_start", "finalize", { cycle, viaBestEffortVerify: true });
+    const priorReview = this.getLastReview(sessionId);
+    const reviewReport: ReviewReport = priorReview ?? {
+      verdict: "revise",
+      findings: [],
+      summary: "The LLM VERIFY sub-task timed out; the prior mutate sub-task self-verified GREEN with a clean, in-scope diff. Opened for MANUAL human review (best-effort verify).",
+      costUsd: 0, tokensIn: 0, tokensOut: 0,
+    };
+    let prUrl: string;
+    let publication: PublicationEvidence | null = null;
+    try {
+      // rc.5 (#2): this path always pushed, so it was never the #1168 defect --
+      // but it never checked either, and "the callback resolved" is not
+      // publication. `existing: null` means it always pushes; the value added
+      // here is that the remote is read back before anything is called shipped.
+      const published = await this.publishCandidate({
+        sessionId, plan, brief, reviewReport, requester,
+        cycle, stage: "best_effort_verify", existing: null,
+      });
+      if (!published.ok) {
+        if (published.kind === "push_failed") throw published.pushError;
+        const why = `verify_timeout_best_effort_unpublished (${published.kind}): ${published.message}`;
+        await this.finaliseUnpublished({
+          sessionId, plan, cycle, totalCost,
+          kind: published.kind, candidateSha: published.candidateSha,
+          observedSha: published.observedSha, detail: published.message, prUrl: published.prUrl,
+        });
+        return { preserved: why };
+      }
+      prUrl = published.prUrl;
+      publication = published.evidence;
+    } catch (pushErr) {
+      this.deps.state.audit("loop.best_effort_verify_pr_failed", { sessionId, seq: st.seq, error: String((pushErr as Error)?.message ?? pushErr) }, sessionId);
+      this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr_failed", phase: "finalize", seq: st.seq, error: String(pushErr) });
+      // Push failed -- preserve the worktree so the branch is still inspectable.
+      const why = `verify_timeout_best_effort_pr_failed: ${String(pushErr)}`;
+      await this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
+      // Signals to the caller that we ALREADY handled the terminal transition,
+      // short-circuiting its own terminal fail path.
+      //
+      // rc.3: this used to return the same `true` as the success path below, so
+      // a run whose push THREW was reported to the caller as `shipped`, with an
+      // empty prUrl and a session row marked failed. Nothing pushed here.
+      return { preserved: why };
+    }
+    const recReason =
+      `The final VERIFY sub-task's LLM turn TIMED OUT (no first token / worker timeout) even after a fresh-session retry, but the prior mutate sub-task self-verified GREEN and the diff is clean + in-scope. ` +
+      `Opened for MANUAL human review (best-effort verify) -- there is no machine verify sign-off, so this is NOT auto-mergeable.`;
+    const prNumber = parsePrNumber(prUrl);
+    this.markProgress(sessionId, "pr_opened", "finalize", { cycle, viaBestEffortVerify: true });
+    this.setStatus(sessionId, "done");
+    this.deps.state.db
+      .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
+      .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+    this.recordPublicationEvidence(sessionId, publication);
+    this.deps.state.audit(
+      "loop.shipped",
+      {
+        sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaBestEffortVerify: true,
+        publishedSha: publication?.sha ?? null, publicationVerified: !!publication,
+      },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "best_effort_verify_pr", phase: "finalize", seq: st.seq, prUrl, prNumber });
+    await this.tryReleaseWorktree(sessionId, plan.repo, plan.worktreePath, "shipped");
+    return "shipped";
+  }
+
+  /**
+   * beta.81 (Track B / B2 + B3): POST-PUSH CI VERIFICATION WAIT-STATE. After a
+   * branch is pushed + the PR opened, CI is the verification spine (Carel:
+   * "the harness should just monitor the CI and check for errors"). This polls
+   * getCombinedStatus(headSha) every `ci.poll_interval_seconds` until it is not
+   * `pending`, up to `ci.wait_timeout_seconds`, and returns one of:
+   *   - {outcome:'success'}  -> proceed to ship (caller keeps the PR).
+   *   - {outcome:'failure', logs} -> CI red; caller drives a revise / flags the
+   *       PR needs_human_review with the failing logs as the finding source.
+   *   - {outcome:'timeout'} -> SOFT checkpoint (Carel: not a hard fail): surface
+   *       "CI still running after N min on <sha>" + offer a resumable
+   *       continue-watching. Caller keeps the PR open (needs_human_review).
+   *   - {outcome:'none'} -> repo has NO CI. Caller authors a workflow (B3) --
+   *       NEVER a local fallback (Carel: "I do not want it to run locally, ever").
+   *   - {outcome:'skipped'} -> ciCombinedStatus dep absent (pre-beta.81 test
+   *       doubles / unwired deployments); caller ships on the review verdict.
+   * Injected `sleep` (default real setTimeout) keeps tests instant. Never throws
+   * -- a status-fetch error is treated as a transient `pending` and re-polled.
+   */
+  async pollCiStatus(input: {
+    sessionId: string;
+    repoFullName: string;
+    sha: string;
+    requester: string;
+    /**
+     * beta.91 (F4): true when the harness AUTHORED + pushed a CI workflow this
+     * cycle. A `none` status then means "GitHub has not registered the run
+     * YET" (registration lag), NOT "repo has no CI" -- so we grace-poll instead
+     * of terminating on poll 1 (the b90 shipped-known-red bug).
+     */
+    workflowAuthoredThisSession?: boolean;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  }): Promise<
+    // beta.125: `degradedSource` is set when the green came from the Actions
+    // workflow-runs fallback rather than the Checks API. Still a success --
+    // every Actions run and every legacy status was read and passed -- but the
+    // caller must be able to say so on the PR, because a third-party GitHub
+    // App's check run is invisible to that endpoint.
+    | { outcome: "success"; degradedSource?: string; checkNames?: string[] }
+    | { outcome: "failure"; logs: string }
+    | { outcome: "timeout"; sha: string; waitedSeconds: number }
+    | { outcome: "none" }
+    | { outcome: "authored_workflow_never_registered"; sha: string; waitedSeconds: number }
+    | { outcome: "indeterminate"; sha: string; waitedSeconds: number; reason: string }
+    | { outcome: "skipped" }
+  > {
+    const { sessionId, repoFullName, sha, requester } = input;
+    if (!this.deps.ciCombinedStatus && !this.deps.ciSnapshot) return { outcome: "skipped" };
+    const cfg = this.deps.config.ci ?? { wait_timeout_seconds: 900, poll_interval_seconds: 20, none_grace_seconds: 45 };
+    const waitMs = Math.max(30, cfg.wait_timeout_seconds ?? 900) * 1000;
+    const pollMs = Math.max(5, cfg.poll_interval_seconds ?? 20) * 1000;
+    // beta.91 (F4): when we authored + pushed a workflow this cycle, a `none`
+    // status means GitHub has not registered the run YET (registration lag),
+    // not "no CI". Grace-poll for the run to appear instead of terminating on
+    // poll 1 (the b90 shipped-known-red bug). Bounded, never exceeds waitMs.
+    //
+    // beta.103: the SAME registration lag applies to a repo that ALREADY has
+    // CI, and b91 gated the grace on `workflowAuthoredThisSession` -- so for
+    // those repos poll 1 still terminated on `none`. The b102 smoke shipped
+    // PR #906 that way: the PR opened at 10:30:44, GitHub registered the first
+    // check run at 10:30:49, and the immediate first poll landed in that
+    // ~5s hole, read `none`, and concluded "this repo has no CI". Lint went
+    // red at 10:33:11 against a 900s wait budget that was never touched, and
+    // the run shipped `do_not_merge` on the review verdict instead of
+    // `needs_human_review` with the failing logs.
+    //
+    // The grace is now unconditional. A repo that genuinely has no CI still
+    // resolves to `none`, just `none_grace_seconds` later -- irrelevant at the
+    // end of a multi-minute run, and the price of never again mistaking
+    // "GitHub has not caught up" for "there is nothing to wait for".
+    // `authoredWorkflowGrace` is kept separate because only the authoring case
+    // may return `authored_workflow_never_registered`.
+    const graceMs = Math.max(0, cfg.none_grace_seconds ?? 45) * 1000;
+    const graceActive = graceMs > 0;
+    const authoredWorkflowGrace = !!input.workflowAuthoredThisSession && graceMs > 0;
+    const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    const now = input.now ?? (() => Date.now());
+    const started = now();
+    this.deps.state.audit("loop.ci_poll_started", { sessionId, sha, waitTimeoutSeconds: cfg.wait_timeout_seconds, pollIntervalSeconds: cfg.poll_interval_seconds }, sessionId);
+    this.deps.interactionLog?.log(sessionId, { event: "ci_poll_started", phase: "finalize", sha });
+    let polls = 0;
+    // beta.119: the highest check-run count seen across polls on this sha. The
+    // Check Runs API is eventually consistent and can transiently return fewer
+    // runs -- or none -- than it did a moment earlier. A shrinking list is the
+    // signature of the b118 false-green: ProjectThanos PR #986 was declared
+    // green off a lone passing Vercel legacy status while its ten Actions
+    // checks were momentarily invisible. Once we have seen N checks on a sha,
+    // a poll reporting fewer is a stale read, not progress.
+    let maxChecksSeen = 0;
+    let lastIndeterminateReason = "";
+    // beta.124: consecutive polls whose failure was 401/403/404 -- a denial,
+    // not a delay. The b123 smoke spent 896s and 44 polls re-asking a
+    // check-runs 403 that answered identically every time, then reported
+    // nothing more useful than "could not determine". Counted rather than
+    // tripped on the first sighting, because a single 403 can be a rate-limit
+    // secondary or a mid-rotation token; two in a row is a configuration fact.
+    let consecutivePermanentDenials = 0;
+    let lastPermanentDenial = "";
+    // beta.125: set when the verdict came from the Actions workflow-runs
+    // fallback rather than the Checks API. Carried onto a GREEN so the PR body
+    // says which signal it is a green from.
+    let degradedChecksSource = false;
+    let lastCheckNames: string[] = [];
+    // First read is immediate (no leading sleep) so a repo with no CI resolves
+    // fast and a fast CI is not needlessly waited on.
+    for (;;) {
+      let status: "success" | "failure" | "pending" | "none" | "unknown";
+      let checkTotal: number | undefined;
+      try {
+        if (this.deps.ciSnapshot) {
+          const snap = await this.deps.ciSnapshot({ repoFullName, sha, requester });
+          status = snap.state;
+          checkTotal = snap.checkTotal;
+          lastCheckNames = [...(snap.checkNames ?? [])];
+          if (snap.state === "unknown") lastIndeterminateReason = snap.reason;
+          if (snap.permanentDenial) {
+            consecutivePermanentDenials += 1;
+            lastPermanentDenial = snap.permanentDenial;
+          } else {
+            consecutivePermanentDenials = 0;
+          }
+          if (snap.checksSource === "workflow_runs" && !degradedChecksSource) {
+            degradedChecksSource = true;
+            this.deps.state.audit(
+              "loop.ci_read_via_workflow_runs",
+              { sessionId, sha, polls, checkTotal: snap.checkTotal, reason: snap.reason },
+              sessionId,
+            );
+          }
+        } else {
+          status = await this.deps.ciCombinedStatus!({ repoFullName, sha, requester });
+        }
+      } catch (err) {
+        // Transient fetch error -> treat as pending + re-poll (never throw).
+        this.deps.logger.warn("[loop] CI status fetch failed (treating as pending)", { sessionId, sha, err: String(err) });
+        status = "pending";
+      }
+      polls++;
+
+      if (typeof checkTotal === "number") {
+        if (checkTotal > maxChecksSeen) maxChecksSeen = checkTotal;
+        else if (checkTotal < maxChecksSeen && (status === "success" || status === "none")) {
+          // The list regressed AND this poll wants to end the wait on a
+          // non-red note. Refuse it and keep polling.
+          this.deps.state.audit(
+            "loop.ci_check_count_regressed",
+            { sessionId, sha, polls, checkTotal, maxChecksSeen, rejectedStatus: status },
+            sessionId,
+          );
+          status = "pending";
+        }
+      }
+
+      if (status === "unknown") {
+        // beta.124: a denial is an answer. Stop asking, and hand back the
+        // remedy instead of the elapsed time.
+        const denialCeiling = Math.max(1, cfg.permanent_denial_polls ?? 2);
+        if (consecutivePermanentDenials >= denialCeiling) {
+          const waitedSeconds = Math.round((now() - started) / 1000);
+          this.deps.state.audit(
+            "loop.ci_permanently_denied",
+            { sessionId, sha, polls, waitedSeconds, denial: lastPermanentDenial, reason: lastIndeterminateReason },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "ci_permanently_denied", phase: "finalize", sha });
+          this.deps.logger.warn(
+            "[loop] beta.124: CI is unreadable for a reason waiting cannot fix -- abandoning the poll",
+            { sessionId, sha, polls, denial: lastPermanentDenial },
+          );
+          return {
+            outcome: "indeterminate",
+            sha,
+            waitedSeconds,
+            reason: `CI could not be read: ${lastPermanentDenial}`,
+          };
+        }
+        // beta.119: we could not read one of the two APIs (or read a state we
+        // have no rule for). That is NOT a pass. Re-poll inside the budget; if
+        // it never resolves, the caller flags the PR for a human.
+        const elapsedUnknown = now() - started;
+        if (elapsedUnknown + pollMs <= waitMs) {
+          this.deps.state.audit("loop.ci_unknown_retry", { sessionId, sha, polls, reason: lastIndeterminateReason }, sessionId);
+          await sleep(pollMs);
+          continue;
+        }
+        const waitedSeconds = Math.round(elapsedUnknown / 1000);
+        this.deps.state.audit("loop.ci_indeterminate", { sessionId, sha, polls, waitedSeconds, reason: lastIndeterminateReason }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_indeterminate", phase: "finalize", sha });
+        return { outcome: "indeterminate", sha, waitedSeconds, reason: lastIndeterminateReason };
+      }
+
+      if (status === "success") {
+        this.deps.state.audit(
+          "loop.ci_success",
+          { sessionId, sha, polls, checkTotal: checkTotal ?? null, maxChecksSeen, viaWorkflowRuns: degradedChecksSource },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, { event: "ci_success", phase: "finalize", sha, polls });
+        return {
+          outcome: "success",
+          ...(lastCheckNames.length > 0 ? { checkNames: lastCheckNames } : {}),
+          ...(degradedChecksSource
+            ? {
+                degradedSource:
+                  `CI passed, but read via the Actions workflow-runs API: this token cannot call the Checks API ` +
+                  `(a fine-grained PAT never can). Every GitHub Actions run on ${sha.slice(0, 8)} and every legacy ` +
+                  `commit status passed. A check run posted by a third-party GitHub App would not have been seen.`,
+              }
+            : {}),
+        };
+      }
+      if (status === "failure") {
+        let logs = "";
+        try {
+          logs = this.deps.ciFailingLogs ? await this.deps.ciFailingLogs({ repoFullName, sha, requester }) : "";
+        } catch (err) {
+          this.deps.logger.warn("[loop] CI failing-log fetch failed (non-fatal)", { sessionId, sha, err: String(err) });
+        }
+        this.deps.state.audit("loop.ci_failure", { sessionId, sha, polls, logsExcerpt: (logs ?? "").slice(0, 800) }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_failure", phase: "finalize", sha, polls });
+        return { outcome: "failure", logs: logs ?? "" };
+      }
+      if (status === "none") {
+        // beta.91 (F4): if we authored a workflow this cycle and are still
+        // inside the grace window, treat `none` as "not registered yet" and
+        // keep polling -- GitHub often takes several seconds to register a
+        // freshly-pushed workflow run. Only after the grace window elapses with
+        // still-`none` do we conclude the authored workflow never registered.
+        const elapsedNone = now() - started;
+        if (graceActive && elapsedNone < graceMs && elapsedNone + pollMs <= waitMs) {
+          this.deps.state.audit("loop.ci_none_grace_wait", { sessionId, sha, polls, elapsedMs: elapsedNone, graceMs }, sessionId);
+          await sleep(pollMs);
+          continue;
+        }
+        this.deps.state.audit("loop.ci_none", { sessionId, sha, polls, graceActive, authoredWorkflowGrace, elapsedMs: elapsedNone }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_none", phase: "finalize", sha });
+        // Authored a workflow but it never registered within grace -> distinct,
+        // NON-blocking outcome (a real no-CI repo returns plain `none`).
+        if (authoredWorkflowGrace) {
+          return { outcome: "authored_workflow_never_registered", sha, waitedSeconds: Math.round(elapsedNone / 1000) };
+        }
+        return { outcome: "none" };
+      }
+      // pending: check the deadline, then sleep + re-poll.
+      const elapsed = now() - started;
+      if (elapsed + pollMs > waitMs) {
+        const waitedSeconds = Math.round(elapsed / 1000);
+        this.deps.state.audit("loop.ci_wait_timeout", { sessionId, sha, polls, waitedSeconds, waitTimeoutSeconds: cfg.wait_timeout_seconds }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "ci_wait_timeout", phase: "finalize", sha, waitedSeconds });
+        this.deps.logger.warn("[loop] CI still running after the wait timeout; surfacing a resumable checkpoint (NOT a hard fail)", { sessionId, sha, waitedSeconds });
+        return { outcome: "timeout", sha, waitedSeconds };
+      }
+      await sleep(pollMs);
+    }
+  }
+
+  /**
+   * beta.63 (convention-awareness Fix 2): run the repo's DECLARED check scripts
+   * (from package.json#scripts, gated by verify.check_script_allowlist) inline +
+   * blocking in the worktree at the end of a cycle's execution. Returns
+   * REVISE-worthy `ReviewFinding[]` for scripts that exited non-zero; unrunnable/
+   * timed-out scripts produce a NON-FATAL note (no finding). Never throws.
+   * Emits `loop.convention_check_ran` per run and `loop.convention_check_failed`
+   * per non-zero exit.
+   */
+  /**
+   * rc.5: the ClassifyCtx every gating site in the loop must use.
+   *
+   * `hasDeclaredGenerators` has to match what the adversary's own gate used, or
+   * the two disagree about whether a stale-bundle finding blocks: the adversary
+   * would file it `process` (non-blocking) while the loop counted it as a
+   * blocker, and the run would revise on a finding the reviewer had excused.
+   */
+  private get classifyCtx(): ClassifyCtx {
+    return {
+      repoHasTestScript: true,
+      hasDeclaredGenerators: !resolveGenerators(this.deps.config.verify?.generators).empty,
+    };
+  }
+
+  /**
+   * rc.5: report a broken `verify.generators` mapping as a blocking finding.
+   *
+   * Two failure modes, both of which used to be invisible until they surfaced
+   * as an unexplained contract miss on the generated file:
+   *
+   *   - a REJECTED mapping (ambiguous ownership, a path that escapes the repo,
+   *     a script name that is not a plain script name). The path ends up
+   *     unowned, so nothing regenerates it and nothing exempts it either.
+   *   - MISSING TOOLING: the mapping names a script the worktree's package.json
+   *     does not declare, so the worker cannot run it and the artifact can
+   *     never appear.
+   *
+   * Blocking (`high`) on purpose. This is a configuration fault that makes some
+   * contract unsatisfiable; shipping past it would mean merging a branch whose
+   * derived files are known-absent or known-stale.
+   */
+  private runGeneratorConfigCheck(sessionId: string, plan: LeadPlan, cycle: number): ReviewFinding[] {
+    const generators = resolveGenerators(this.deps.config.verify?.generators);
+    if (generators.empty && generators.errors.length === 0) return [];
+    const findings: ReviewFinding[] = [];
+
+    for (const e of generators.errors) {
+      this.deps.state.audit(
+        "loop.generator_config_invalid",
+        { sessionId, cycle, script: e.script, path: e.path, reason: e.reason },
+        sessionId,
+      );
+      findings.push({
+        dimension: "quality",
+        severity: "high",
+        title: `verify.generators rejected the mapping for '${e.script}'`,
+        detail:
+          `${e.path ? `Path '${e.path}': ` : ""}${e.reason}. No generator is authorized for the affected path(s), so ` +
+          `nothing will regenerate them -- and they are NOT exempt from their contract checks. Fix the harness ` +
+          `verify.generators config; this is not a defect in the branch's code.`,
+      });
+    }
+
+    // Missing tooling: read the worktree's manifest, not the harness's.
+    let scripts: Record<string, unknown> | undefined;
+    try {
+      if (plan.worktreePath) {
+        const pkg = JSON.parse(readFileSync(join(plan.worktreePath, "package.json"), "utf8")) as {
+          scripts?: Record<string, unknown>;
+        };
+        scripts = pkg.scripts ?? {};
+      }
+    } catch {
+      // Unreadable manifest is not evidence a script is missing. Stay silent
+      // rather than accuse the operator's config on the strength of an fs error.
+      scripts = undefined;
+    }
+    if (scripts !== undefined) {
+      for (const e of generators.entries) {
+        if (generatorScriptDeclared(scripts, e.script)) continue;
+        const owned = [...e.files, ...e.dirs].join(", ");
+        this.deps.state.audit(
+          "loop.generator_script_missing",
+          { sessionId, cycle, script: e.script, produces: [...e.files, ...e.dirs] },
+          sessionId,
+        );
+        findings.push({
+          dimension: "quality",
+          severity: "high",
+          title: `Generator script '${e.script}' is not declared by the repo`,
+          detail:
+            `verify.generators maps ${owned} to \`npm run ${e.script}\`, but this repo's package.json declares no ` +
+            `'${e.script}' script. MISSING TOOLING: the worker cannot run it, so those artifacts can never be ` +
+            `produced and any contract naming them is unsatisfiable. Add the script to the repo or correct the mapping.`,
+        });
+      }
+    }
+    return findings;
+  }
+
+  /**
+   * rc.5: the generated-artifact half of a sub-task's verification context.
+   *
+   * Shared by all three `verifySubTaskOutput` call sites so they cannot drift
+   * on which paths count as derived -- the first pass, the retry, and the
+   * re-verify must agree, or a contract could fail on one and pass on another.
+   *
+   * `generatorScriptDeclared` is resolved against the WORKTREE's package.json,
+   * not the harness's, and is cached per call because the same script is asked
+   * about once per contract. A worktree we cannot read package.json from
+   * reports every script as declared: that downgrades the failure text from
+   * "missing tooling" to "did not run", which is the claim we can still stand
+   * behind without having seen the manifest.
+   */
+  /**
+   * rc.7 (phase 2): give an unclaimed generated tree a standing owner.
+   *
+   * Returns the sub-task to append, or null when there is nothing to do -- the
+   * common case, and deliberately so. See `pendingGenerations` for the two
+   * conditions (declared inputs actually moved; no sub-task already claims the
+   * output) and for why both are required.
+   *
+   * It is a SUB-TASK, not orchestrator work. `verify.generators` "authorizes
+   * worker-side execution only; the harness never runs these scripts itself"
+   * (src/config.ts). Running the generator here would reverse that decision.
+   * Appending a turn gets the same outcome -- one owner, one commit, one known
+   * point in the plan -- without touching it.
+   *
+   * It runs LAST because a generator that runs before a later sub-task edits
+   * its sources produces a bundle that is stale by the time the PR opens. The
+   * freshness check catches that, correctly but late: a wasted cycle rather
+   * than a wrong merge.
+   */
+  private async appendGenerationSubTask(params: {
+    sessionId: string;
+    plan: LeadPlan;
+    cycle: number;
+    ordered: LeadPlanSubTask[];
+  }): Promise<LeadPlanSubTask | null> {
+    const { sessionId, plan, cycle, ordered } = params;
+    if (this.deps.config.verify?.append_generation_subtask !== true) return null;
+    const map = resolveGenerators(this.deps.config.verify?.generators);
+    if (map.empty) return null;
+    // The evidence has to be what the branch actually changed. `filesLikelyTouched`
+    // is a plan-time guess, and the whole point of deciding here is that the
+    // guess is no longer the best available fact.
+    // The branch's fork point, the same one final verification diffs against.
+    const baseSha = ((): string => {
+      try {
+        const r = this.deps.state.db
+          .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+          .get(sessionId) as { plan_base_sha: string | null } | undefined;
+        return r?.plan_base_sha ?? "";
+      } catch {
+        return "";
+      }
+    })();
+    if (!this.deps.worktreeCommittedFiles || !plan.worktreePath || !baseSha) return null;
+    const changedFiles = await this.deps.worktreeCommittedFiles(plan.worktreePath, baseSha).catch(() => [] as string[]);
+    if (changedFiles.length === 0) return null;
+
+    const pending = pendingGenerations({
+      map,
+      changedFiles,
+      claimedPaths: collectDeclaredScopeFiles({ ...plan, subTasks: ordered }),
+    });
+    if (pending.length === 0) return null;
+
+    const seq = Math.max(0, ...ordered.map((s) => s.seq)) + 1;
+    const scripts = pending.map((p) => p.script);
+    const produces = [...new Set(pending.flatMap((p) => p.produces))];
+    // Only concrete files become a contract. A directory produce has no single
+    // path to assert, and inventing one would fail a generator that correctly
+    // writes a different set of files this time.
+    const contractFiles = produces.filter((p) => !p.endsWith("/"));
+
+    const subTask: LeadPlanSubTask = {
+      seq,
+      title: `Regenerate derived artifacts (${scripts.join(", ")})`,
+      intent:
+        `Declared inputs of ${scripts.map((s) => `\`${s}\``).join(", ")} changed in this branch, and no other ` +
+        `sub-task owns the output. Run ${scripts.map((s) => `\`npm run ${s}\``).join(" and ")} and commit whatever ` +
+        `it writes.\n\n` +
+        `Changed inputs: ${pending.flatMap((p) => p.changedInputs).slice(0, 20).join(", ")}\n` +
+        `Owned output: ${produces.join(", ")}\n\n` +
+        `Do NOT hand-edit these paths and do NOT make any other change -- this turn exists only to bring the ` +
+        `derived artifacts back into agreement with their sources. If the generator is missing or fails, say so ` +
+        `plainly and end the turn; do not commit a hand-written substitute.`,
+      filesLikelyTouched: produces,
+      successCriteria: [
+        `\`npm run ${scripts.join("` and `npm run ")}\` ran to completion`,
+        "the regenerated artifacts are committed",
+        "no file outside the generator's declared output was changed",
+      ],
+      estimatedTokens: 0,
+      // Empty rather than the prior seqs: position already guarantees this runs
+      // last, and a dependency on a sub-task that revise-scoping skipped would
+      // read as an unresolved dependency and fail the run.
+      dependsOn: [],
+      verify: contractFiles.map((path) => ({ kind: "file_committed" as const, path })),
+    };
+
+    this.deps.state.audit(
+      "loop.generation_subtask_appended",
+      {
+        sessionId, cycle, seq, scripts, produces,
+        changedInputs: pending.flatMap((p) => p.changedInputs).slice(0, 50),
+        contractCount: contractFiles.length,
+      },
+      sessionId,
+    );
+    this.deps.logger.info(
+      "[loop] rc.7: appending a generation sub-task -- declared inputs moved and nothing in the plan owns the output",
+      { sessionId, cycle, seq, scripts },
+    );
+    return subTask;
+  }
+
+  private generatorVerifyCtx(
+    worktreePath: string | null | undefined,
+    /**
+     * rc.7: the contract about to be verified. Its paths are what decides
+     * whether THIS sub-task was authorized to write an excluded path, which is
+     * the difference between "the generator did not run" and "it ran and the
+     * output was reverted". Omitted, nothing is claimed authorized -- safe,
+     * because an unauthorized path is precisely the failing case.
+     */
+    contract?: readonly unknown[],
+  ) {
+    const generators = resolveGenerators(this.deps.config.verify?.generators);
+    if (generators.empty) return {};
+    let scripts: Record<string, unknown> | undefined;
+    let read = false;
+    const contractPaths = (contract ?? [])
+      .map((c) => (c && typeof c === "object" && "path" in c ? (c as { path?: unknown }).path : undefined))
+      .filter((p): p is string => typeof p === "string" && p.length > 0);
+    return {
+      generators,
+      neverCommitPaths: this.deps.config.repos?.never_commit_paths,
+      authorizedGeneratedPaths: authorizedGeneratedOutputs(generators, contractPaths),
+      generatorScriptDeclared: (script: string) => {
+        if (!read) {
+          read = true;
+          try {
+            if (worktreePath) {
+              const pkg = JSON.parse(readFileSync(join(worktreePath, "package.json"), "utf8")) as {
+                scripts?: Record<string, unknown>;
+              };
+              scripts = pkg.scripts ?? {};
+            }
+          } catch {
+            scripts = undefined;
+          }
+        }
+        return scripts === undefined ? true : generatorScriptDeclared(scripts, script);
+      },
+    };
+  }
+
+  private async runFinalVerifyChecks(sessionId: string, plan: LeadPlan, cycle: number): Promise<ReviewFinding[]> {
+    const vcfg = this.deps.config.verify;
+    if (!vcfg || vcfg.run_repo_check_scripts === false) return [];
+    const worktree = plan.worktreePath;
+    if (!worktree) return [];
+    let discovered;
+    try {
+      discovered = discoverCheckScripts(worktree);
+    } catch (err) {
+      this.deps.logger.warn("[loop] convention check discovery failed (non-fatal)", { sessionId, err: String(err) });
+      return [];
+    }
+    if (discovered.length === 0) return [];
+
+    let results: CheckScriptResult[];
+    try {
+      results = runCheckScripts({
+        repoRoot: worktree,
+        discovered,
+        allowlist: vcfg.check_script_allowlist ?? ["okf:check", "lint", "typecheck", "test"],
+        timeoutSeconds: vcfg.check_script_timeout_seconds ?? 600,
+        runScript: this.deps.runCheckScript,
+        // beta.70 (F4): larger heap for the OOM retry on Thanos-scale typechecks.
+        heapRetryMb: vcfg.check_script_heap_retry_mb ?? 8192,
+      });
+    } catch (err) {
+      this.deps.logger.warn("[loop] convention check run failed (non-fatal)", { sessionId, err: String(err) });
+      return [];
+    }
+
+    const findings: ReviewFinding[] = [];
+    for (const r of results) {
+      // beta.70 (F4): a heap OOM that PERSISTED after the larger-heap retry is a
+      // genuine blocking failure -- surface it distinctly (was a silent skip
+      // that shipped a false green in PR #870). It stays `fit`/`medium` so it
+      // folds into the review as revise-worthy, but with an explicit oom flag.
+      if (r.oom) {
+        this.deps.state.audit("loop.convention_check_oom", { sessionId, cycle, script: r.script, exitCode: r.exitCode, heapRetried: !!r.heapRetried }, sessionId);
+        this.deps.state.audit("loop.convention_check_failed", { sessionId, cycle, script: r.script, exitCode: r.exitCode, oom: true, outputTail: r.outputTail }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "convention_check_failed", phase: "review", cycle, script: r.script, exitCode: r.exitCode, oom: true });
+        findings.push({
+          dimension: "quality",
+          severity: "high",
+          title: `Repo check script '${r.script}' ran out of memory (heap OOM, exit ${r.exitCode})`,
+          detail:
+            `'${r.script}' died of a V8 heap OOM even after a retry with a larger heap. Types/checks are UNVERIFIED -- do NOT treat this as green. ` +
+            `Consider raising verify.check_script_heap_retry_mb or splitting the project. Output tail:\n${r.outputTail}`,
+        });
+        continue;
+      }
+      if (r.ran && r.exitCode === 0) {
+        this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode, heapRetried: !!r.heapRetried }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "convention_check_ran", phase: "review", cycle, script: r.script, exitCode: r.exitCode });
+      } else if (r.ran && r.exitCode !== 0) {
+        this.deps.state.audit("loop.convention_check_ran", { sessionId, cycle, script: r.script, exitCode: r.exitCode }, sessionId);
+        this.deps.state.audit("loop.convention_check_failed", { sessionId, cycle, script: r.script, exitCode: r.exitCode, outputTail: r.outputTail }, sessionId);
+        this.deps.interactionLog?.log(sessionId, { event: "convention_check_failed", phase: "review", cycle, script: r.script, exitCode: r.exitCode });
+        findings.push({
+          dimension: "fit",
+          severity: "medium",
+          title: `Repo check script '${r.script}' failed (exit ${r.exitCode})`,
+          detail:
+            `The repo declares '${r.script}' as a convention check but it exited non-zero in the final-verify sweep. ` +
+            `CI may not run it. Fix the violation (e.g. regenerate a stale bundle) or justify it. Output tail:\n${r.outputTail}`,
+        });
+      } else {
+        // Not run: either not on the allowlist, or unrunnable/timed-out.
+        this.deps.state.audit(
+          "loop.convention_check_skipped",
+          { sessionId, cycle, script: r.script, unrunnable: !!r.unrunnable, reason: r.skippedReason ?? "skipped" },
+          sessionId,
+        );
+        this.deps.interactionLog?.log(sessionId, { event: "convention_check_skipped", phase: "review", cycle, script: r.script, unrunnable: !!r.unrunnable, reason: r.skippedReason });
+      }
+    }
+    return findings;
+  }
+
+  /**
+   * beta.94 (Feature 1b): DETERMINISTIC FINAL SCOPE CHECK. Replaces the
+   * idle-prone LLM "final verification of scope boundaries" sub-task (elided in
+   * Feature 1a) with a harness-side git check: diff the files COMMITTED in
+   * `<plan_base_sha>..HEAD` against the UNION of every sub-task's declared
+   * per-file scope (collectDeclaredScopeFiles). A committed file OUTSIDE that
+   * union is out-of-scope. This does NOT hard-fail -- it returns a ReviewFinding
+   * (dimension `fit`, severity `medium`) so it folds into the adversary review,
+   * mirroring runFinalVerifyChecks. Gated by loop.deterministic_final_scope_check
+   * (default true). Best-effort, EXCEPT for the beta.110 blowout tripwire,
+   * which throws ScopeBlowoutError to stop the cycle before review.
+   *
+   * Emits `loop.final_scope_check_ran` per run and
+   * `loop.final_scope_check_out_of_scope` when out-of-scope files are found.
+   */
+  /**
+   * beta.111: run the repo's OWN typecheck script and block on errors in files
+   * this branch changed.
+   *
+   * Separate from runFinalVerifyChecks, which is gated behind
+   * verify.run_repo_check_scripts and stays off by default because running a
+   * repo's whole check suite per cycle is expensive. This runs exactly one
+   * script and only reports errors it can attribute to this branch, so it is
+   * safe to leave on. See typecheck-gate.ts for why the alternative -- diffing
+   * against a typecheck at the base commit -- is not worth a second full run.
+   *
+   * Never throws. A gate that cannot run is a note, not a failure; the one
+   * thing it must never do is invent a green.
+   */
+  private async runTypecheckGate(sessionId: string, plan: LeadPlan, cycle: number): Promise<ReviewFinding[]> {
+    const vcfg = this.deps.config.verify;
+    if (vcfg?.typecheck_gate === false) return [];
+    const worktree = plan.worktreePath;
+    if (!worktree || !this.deps.worktreeCommittedFiles) return [];
+
+    let script: string | undefined;
+    let discovered: CheckScript[] = [];
+    try {
+      discovered = discoverCheckScripts(worktree);
+      script = discovered.find((d) => /^(typecheck|type-check|types|tsc)$/i.test(d.name))?.name;
+    } catch (err) {
+      this.deps.state.audit("loop.typecheck_gate_discovery_failed", { sessionId, cycle, error: String(err) }, sessionId);
+    }
+    const hasTsProject =
+      existsSync(join(worktree, "tsconfig.json")) ||
+      existsSync(join(worktree, "node_modules", ".bin", "tsc"));
+    if (!script && !hasTsProject) {
+      this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: "no typecheck script in package.json" }, sessionId);
+      return [];
+    }
+    const scriptLabel = script ?? "local tsc";
+
+    let base: string | undefined;
+    try {
+      const r = this.deps.state.db
+        .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+        .get(sessionId) as { plan_base_sha: string | null } | undefined;
+      base = r?.plan_base_sha ?? undefined;
+    } catch {
+      base = undefined;
+    }
+    // Without a base we cannot tell this branch's errors from the repo's, and
+    // reporting the repo's would block every run on pre-existing breakage.
+    if (!base) {
+      this.deps.state.audit("loop.typecheck_gate_skipped", { sessionId, cycle, reason: "no plan_base_sha to scope errors to this branch" }, sessionId);
+      return [];
+    }
+
+    const startedAt = Date.now();
+    let r: CheckScriptResult | undefined;
+    if (script) {
+      try {
+        const results = runCheckScripts({
+          repoRoot: worktree,
+          discovered,
+          allowlist: [script],
+          timeoutSeconds: vcfg?.check_script_timeout_seconds ?? 600,
+          runScript: this.deps.runCheckScript,
+          heapRetryMb: vcfg?.check_script_heap_retry_mb ?? 8192,
+        });
+        r = results.find((x) => x.script === script);
+      } catch (err) {
+        this.deps.logger.warn("[loop] beta.111 typecheck script runner threw; trying the local compiler", { sessionId, err: String(err) });
+        this.deps.state.audit("loop.typecheck_gate_runner_failed", { sessionId, cycle, error: String(err) }, sessionId);
+      }
+    }
+    let durationMs = Date.now() - startedAt;
+    let usedDirect = false;
+    // beta.115: `npm run typecheck` exiting 127 does NOT mean the branch is
+    // clean, and until now a skip returned no findings, which reads as clean.
+    // PR #964 shipped one TS2551 that CI caught on the very same tree using
+    // `npx tsc --noEmit` -- so the compiler was reachable and only the npm
+    // indirection was broken. Try the compiler directly before giving up.
+    if (!r || !r.ran) {
+      const firstReason = r?.skippedReason ?? (script ? "did not run" : "no package script");
+      const direct = this.deps.runTypecheckDirect?.(worktree, (vcfg?.check_script_timeout_seconds ?? 600) * 1000);
+      if (direct) {
+        usedDirect = true;
+        this.deps.state.audit(
+          "loop.typecheck_gate_fallback",
+          { sessionId, cycle, script: scriptLabel, scriptReason: firstReason, via: direct.via, exitCode: direct.status },
+          sessionId,
+        );
+        r = {
+          script: scriptLabel,
+          ran: true,
+          exitCode: direct.status ?? null,
+          outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
+          // rc.6: the direct compiler run is analysed whole, like the script one.
+          output: `${direct.stdout}\n${direct.stderr}`,
+        };
+        durationMs = Date.now() - startedAt;
+      } else {
+        // No route to the compiler. Say so loudly: a gate that could not run is
+        // not a gate that passed. Classified `env` by finding-classify (the text
+        // names exit 127 / missing binary), so it blocks the merge
+        // recommendation without driving revise cycles a worker cannot fix --
+        // repairing the worktree is the bootstrap's job, not the diff's.
+        const diagnosis = this.deps.diagnoseCheckEnv?.(worktree);
+        this.deps.state.audit(
+          "loop.typecheck_gate_unavailable",
+          { sessionId, cycle, script: scriptLabel, reason: firstReason, diagnosis, durationMs: Date.now() - startedAt },
+          sessionId,
+        );
+        this.deps.logger.warn("[loop] beta.115 typecheck gate could not run by any route", { sessionId, cycle, script: scriptLabel, diagnosis });
+        return [
+          {
+            title: "Typecheck gate could not run: the branch is unverified, not verified",
+            detail:
+              `The TypeScript compiler (\`${scriptLabel}\`) could not be executed in the review worktree ` +
+              `(${firstReason}), and invoking the compiler directly did not work either. ` +
+              `No type errors were found because nothing looked for them -- do not read this as a clean branch. ` +
+              `Diagnosis: ${JSON.stringify(diagnosis ?? {})}. ` +
+              `This is worktree/tooling breakage (missing binary, command not found), not a defect in the diff, ` +
+              `so it cannot be fixed by changing code; a human should run the typecheck before merging.`,
+            severity: "high",
+            dimension: "runtime",
+            // rc.3: the harness authored this about its own tooling. Marked so
+            // the classifier files it as `env` structurally rather than by
+            // matching "command not found" in the prose above.
+            source: "harness_env",
+          } as ReviewFinding,
+        ];
+      }
+    }
+    if (r.exitCode === 0) {
+      this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script: scriptLabel, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs }, sessionId);
+      this.deps.interactionLog?.log(sessionId, { event: "typecheck_gate_ran", phase: "review", cycle, script: scriptLabel, clean: true });
+      return [];
+    }
+
+    // rc.6 (#1184): the full capture, not the 4,000-character display tail --
+    // see `diagnosticsFrom`, which is where that rule now lives.
+    let all = diagnosticsFrom(r);
+    // A wrapper can fail before invoking TypeScript. Retry with the pinned local
+    // compiler once; if that also produces a non-zero unparseable result, the
+    // gate is unavailable—not clean.
+    if (all.length === 0) {
+      if (!usedDirect) {
+        const direct = this.deps.runTypecheckDirect?.(worktree, (vcfg?.check_script_timeout_seconds ?? 600) * 1000);
+        if (direct) {
+          usedDirect = true;
+          r = {
+            script: scriptLabel,
+            ran: true,
+            exitCode: direct.status ?? null,
+            outputTail: `${direct.stdout}\n${direct.stderr}`.slice(-20_000),
+            // rc.6: the direct compiler run is analysed whole, like the script one.
+            output: `${direct.stdout}\n${direct.stderr}`,
+          };
+          durationMs = Date.now() - startedAt;
+          all = diagnosticsFrom(r);
+          if (r.exitCode === 0) {
+            this.deps.state.audit("loop.typecheck_gate_ran", { sessionId, cycle, script: scriptLabel, exitCode: 0, errorsTotal: 0, errorsInChangedFiles: 0, durationMs, via: direct.via }, sessionId);
+            return [];
+          }
+        }
+      }
+      if (all.length === 0) {
+        this.deps.state.audit("loop.typecheck_gate_unparsed", { sessionId, cycle, script: scriptLabel, exitCode: r.exitCode, oom: !!r.oom, outputTail: r.outputTail, durationMs }, sessionId);
+        return [{
+          source: "harness_env",
+          dimension: "runtime",
+          severity: "high",
+          title: "Typecheck failed without parseable compiler diagnostics",
+          detail:
+            `The typecheck exited ${r.exitCode ?? "without a status"}, but its output contained no parseable TypeScript diagnostics. ` +
+            `The branch is unverified, not clean. Output tail:\n${r.outputTail.slice(-4000)}`,
+        }];
+      }
+    }
+    let committed: string[];
+    try {
+      committed = await this.deps.worktreeCommittedFiles(worktree, base);
+    } catch {
+      return [];
+    }
+    const mine = errorsInChangedFiles(all, committed ?? []);
+    this.deps.state.audit(
+      "loop.typecheck_gate_ran",
+      { sessionId, cycle, script: scriptLabel, exitCode: r.exitCode, errorsTotal: all.length, errorsInChangedFiles: mine.length, durationMs },
+      sessionId,
+    );
+    if (mine.length === 0) {
+      this.deps.logger.info("[loop] beta.111 typecheck gate: errors exist but none in files this branch changed; pre-existing", {
+        sessionId, script: scriptLabel, errorsTotal: all.length,
+      });
+      return [];
+    }
+    this.deps.state.audit(
+      "loop.typecheck_gate_failed",
+      { sessionId, cycle, script: scriptLabel, errors: mine.slice(0, 20), errorsTotal: all.length },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, {
+      event: "typecheck_gate_failed", phase: "review", cycle, script: scriptLabel, errorsInChangedFiles: mine.length,
+    });
+    return [buildTypecheckFinding(mine, scriptLabel)];
+  }
+
+  /**
+   * rc.3: assemble the labelled brief sections a revise adversary needs.
+   *
+   * Reads only what `harness_revise` and plan-ready already pinned to the row.
+   * Returns undefined for an ordinary run, and for a revise session that
+   * predates the baseline columns -- in both cases the adversary keeps the
+   * single-brief prompt it has always had.
+   */
+  private async buildRevisionReviewContext(
+    sessionId: string,
+    plan: LeadPlan,
+  ): Promise<AdversaryRevisionContext | undefined> {
+    let row:
+      | {
+          original_feature_brief: string | null;
+          operator_revision_brief: string | null;
+          revision_start_sha: string | null;
+          original_pr_base_sha: string | null;
+          plan_base_sha: string | null;
+        }
+      | undefined;
+    try {
+      row = this.deps.state.db
+        .prepare(
+          `SELECT original_feature_brief, operator_revision_brief, revision_start_sha, original_pr_base_sha, plan_base_sha
+             FROM sessions WHERE id = ?`,
+        )
+        .get(sessionId) as typeof row;
+    } catch {
+      return undefined;
+    }
+    if (!row?.operator_revision_brief || !row.original_feature_brief) return undefined;
+
+    let contract: string;
+    try {
+      const parsed = JSON.parse(row.original_feature_brief) as CrystallisedBrief;
+      contract = [
+        `Title: ${parsed.title}`,
+        `Motivation: ${parsed.motivation}`,
+        "Acceptance criteria:",
+        ...(parsed.acceptanceCriteria ?? []).map((c) => `- ${c}`),
+        ...(parsed.outOfScope?.length ? ["Out of scope (as the FEATURE declared it):", ...parsed.outOfScope.map((c) => `- ${c}`)] : []),
+      ].join("\n");
+    } catch {
+      // Stored before it was JSON, or stored by a hand-written row. The text is
+      // still the best contract we have; better a plain brief than none.
+      contract = row.original_feature_brief;
+    }
+
+    let directives: string[] = [];
+    let guidance: string | undefined;
+    try {
+      const parsed = JSON.parse(row.operator_revision_brief) as { directives?: string[]; guidance?: string | null };
+      directives = Array.isArray(parsed.directives) ? parsed.directives : [];
+      guidance = parsed.guidance ?? undefined;
+    } catch {
+      /* leave the section empty rather than fail the review */
+    }
+
+    const revisionStartSha = row.revision_start_sha ?? undefined;
+    let deltaFiles: string[] = [];
+    if (revisionStartSha && plan.worktreePath && this.deps.worktreeCommittedFiles) {
+      deltaFiles = await this.deps.worktreeCommittedFiles(plan.worktreePath, revisionStartSha).catch(() => [] as string[]);
+    }
+
+    return {
+      originalFeatureContract: contract,
+      directives,
+      guidance,
+      // The revision's own exclusions live on the revise brief, not the feature
+      // brief -- that separation is the whole point of the section.
+      outOfScopeRules: this.reviseOnlyOutOfScope(sessionId),
+      deltaFiles,
+      revisionStartSha,
+      originalPrBaseSha: row.original_pr_base_sha ?? row.plan_base_sha ?? undefined,
+    };
+  }
+
+  /**
+   * The `outOfScope` lines this REVISION declared, minus the ones the feature
+   * already declared. What is left is what the operator added this time round,
+   * and it is the only part that must not be read retroactively.
+   */
+  private reviseOnlyOutOfScope(sessionId: string): string[] {
+    try {
+      const row = this.deps.state.db
+        .prepare(`SELECT crystallised_prompt, original_feature_brief FROM sessions WHERE id = ?`)
+        .get(sessionId) as { crystallised_prompt: string | null; original_feature_brief: string | null } | undefined;
+      if (!row?.crystallised_prompt) return [];
+      const current = (JSON.parse(row.crystallised_prompt) as CrystallisedBrief).outOfScope ?? [];
+      const original = row.original_feature_brief
+        ? ((JSON.parse(row.original_feature_brief) as CrystallisedBrief).outOfScope ?? [])
+        : [];
+      return current.filter((c) => !original.includes(c));
+    } catch {
+      return [];
+    }
+  }
+
+  private async runFinalScopeCheck(sessionId: string, plan: LeadPlan, cycle: number): Promise<ReviewFinding[]> {
+    if (this.deps.config.loop.deterministic_final_scope_check === false) return [];
+    const worktree = plan.worktreePath;
+    if (!worktree || !this.deps.worktreeCommittedFiles) return [];
+    // Base = the persisted branch fork-point (same base the adversary diffs
+    // against). Without it we cannot scope committed files to THIS branch's own
+    // commits, so we conservatively skip (no finding) rather than diff against a
+    // wrong base and hallucinate out-of-scope files.
+    //
+    // rc.3: on a REVISE the fork point is the wrong base for this question.
+    // The adversary still diffs the whole PR, because correctness is a property
+    // of the finished feature -- but "did this revision stay in its lane" can
+    // only be asked of what the revision itself committed. Judged from the fork
+    // point, a two-file StitchGuard revision was told that the Prisma models,
+    // the migration, the feature APIs, the UI pages, the tests and the
+    // generated OpenAPI documents it never touched were all scope violations.
+    //
+    // Files committed before `revision_start_sha` are grandfathered: they are
+    // the feature, and the operator asked for a change to it, not for its
+    // removal. Editing one AFTER that sha still lands inside this window and is
+    // still reported.
+    let base: string | undefined;
+    let featureBase: string | undefined;
+    try {
+      const r = this.deps.state.db
+        .prepare(`SELECT plan_base_sha, revision_start_sha FROM sessions WHERE id = ?`)
+        .get(sessionId) as { plan_base_sha: string | null; revision_start_sha: string | null } | undefined;
+      featureBase = r?.plan_base_sha ?? undefined;
+      base = r?.revision_start_sha ?? featureBase;
+    } catch {
+      base = undefined;
+      featureBase = undefined;
+    }
+    if (!base) return [];
+    const revisionScoped = Boolean(featureBase && base !== featureBase);
+
+    let committed: string[];
+    try {
+      committed = await this.deps.worktreeCommittedFiles(worktree, base);
+    } catch (err) {
+      this.deps.logger.warn("[loop] beta.94 final-scope check: committed-files probe failed (non-fatal)", { sessionId, err: String(err) });
+      return [];
+    }
+    if (revisionScoped) {
+      this.deps.state.audit(
+        "loop.review_diff_windows_selected",
+        {
+          sessionId,
+          cycle,
+          correctnessBase: featureBase,
+          scopeBase: base,
+          scopedCommittedCount: committed.length,
+        },
+        sessionId,
+      );
+      // Name what the narrower window spared, so a reader can tell a correct
+      // grandfathering from a scope check that silently stopped running.
+      const featureCommitted = await this.deps
+        .worktreeCommittedFiles(worktree, featureBase!)
+        .catch(() => [] as string[]);
+      const grandfathered = featureCommitted.filter((f) => !committed.includes(f));
+      if (grandfathered.length > 0) {
+        this.deps.state.audit(
+          "loop.revision_scope_grandfathered",
+          {
+            sessionId,
+            cycle,
+            revisionStartSha: base,
+            count: grandfathered.length,
+            files: grandfathered.slice(0, 100),
+          },
+          sessionId,
+        );
+      }
+    }
+    if (!Array.isArray(committed) || committed.length === 0) return [];
+
+    const declared = collectDeclaredScopeFiles(plan);
+    /*
+     * rc.7: a DECLARED generator output is in scope for the script that owns it.
+     *
+     * This check reads the plan and nothing else, so a generated artifact was
+     * only ever in scope when a sub-task happened to name it. That was harmless
+     * while such trees were also in `repos.never_commit_paths` -- the commit was
+     * reverted, so nothing reached this filter. rc.6 made that pairing a
+     * configuration error, which means the correct configuration is now the one
+     * where generated artifacts ARE committed, and a bundle regeneration lands
+     * every file it rewrites in front of this check as scope creep.
+     *
+     * On the StitchGuard OKF tree that is 1,663 files against a 500-file
+     * `scope_blowout_file_threshold`: not a `fit` finding but a thrown
+     * ScopeBlowoutError that abandons the cycle before review. Resolving the
+     * rc.6 contradiction would have bought an abandoned run in place of an
+     * unwinnable contract.
+     *
+     * Ownership is the operator's explicit declaration of which script writes
+     * which paths, so this is narrow and never inferred. It deliberately reads
+     * `ownerOf`, which is null for any path whose mapping was REJECTED -- an
+     * unparseable script name, a path that escapes the repository, a tree two
+     * scripts both claim. A config the harness refused to resolve authorizes
+     * nothing here either.
+     */
+    const generatorOwned = resolveGenerators(this.deps.config.verify?.generators);
+    // A committed file is IN-SCOPE if it matches ANY declared contract path via
+    // the shared tolerant path matcher (route-group / suffix / basename-dir) --
+    // the same normalisation every per-file verifier uses, so we don't
+    // false-flag a route-group-normalised path the worker legitimately wrote.
+    const inDeclaredScope = (f: string) => declared.some((d) => declaredCovers(f, d));
+    const generated = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) !== null);
+    const outOfScope = committed.filter((f) => !inDeclaredScope(f) && generatorOwned.ownerOf(f) === null);
+
+    if (generated.length > 0) {
+      // Named, not silent. "The scope check stopped firing" and "the scope check
+      // excused 1,663 files it can name the owner of" are different events, and
+      // only one of them is this fix working.
+      this.deps.state.audit(
+        "loop.final_scope_check_generated",
+        {
+          sessionId,
+          cycle,
+          count: generated.length,
+          owners: [...new Set(generated.map((f) => generatorOwned.ownerOf(f)?.script).filter(Boolean))],
+          sample: generated.slice(0, 20),
+        },
+        sessionId,
+      );
+    }
+
+    this.deps.state.audit(
+      "loop.final_scope_check_ran",
+      {
+        sessionId, cycle, committedCount: committed.length, declaredCount: declared.length,
+        outOfScopeCount: outOfScope.length, generatedCount: generated.length,
+      },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "final_scope_check_ran", phase: "review", cycle, committedCount: committed.length, outOfScopeCount: outOfScope.length });
+
+    if (outOfScope.length === 0) return [];
+
+    // beta.110: a BLOWOUT is not scope creep, and must not become a finding.
+    //
+    // On PR #932 session `9217236c` this check fired with committedCount 12432
+    // / declaredCount 9 / outOfScopeCount 12423 -- an npm cache swept in by
+    // commit()'s `add -A` -- and then returned a `medium` finding and let the
+    // run continue. The adversary was handed a 12,432-file diff, hit
+    // adversary_timeout_seconds at 900s with no result, and the session died
+    // as `review_crash` having pushed nothing. Eight good commits were sitting
+    // in that worktree and never reached the PR.
+    //
+    // Reviewing a diff that size was never going to work, so spending fifteen
+    // minutes discovering that is pure loss. Stop here instead, with a reason
+    // that names the paths -- the worktree is preserved either way, so the good
+    // commits stay recoverable.
+    const blowoutAt = this.deps.config.loop.scope_blowout_file_threshold ?? 500;
+    if (blowoutAt > 0 && outOfScope.length >= blowoutAt) {
+      this.deps.state.audit(
+        "loop.scope_blowout",
+        {
+          sessionId, cycle,
+          committedCount: committed.length,
+          declaredCount: declared.length,
+          outOfScopeCount: outOfScope.length,
+          threshold: blowoutAt,
+          sample: outOfScope.slice(0, 20),
+        },
+        sessionId,
+      );
+      throw new ScopeBlowoutError(outOfScope.length, blowoutAt, outOfScope.slice(0, 20));
+    }
+
+    this.deps.state.audit(
+      "loop.final_scope_check_out_of_scope",
+      { sessionId, cycle, outOfScope, declared },
+      sessionId,
+    );
+    this.deps.logger.warn("[loop] beta.94 final-scope check: committed file(s) outside the declared sub-task scope union", { sessionId, cycle, outOfScope });
+    return outOfScope.map((file) => {
+      const relatedFiles = outOfScope.filter((candidate) => candidate !== file);
+      return {
+        source: "deterministic_scope" as const,
+        dimension: "fit",
+        severity: "medium",
+        title: `Out-of-scope file write: ${file}`,
+        detail:
+          `The deterministic final-scope check compared the files committed in this branch (\`git diff ${base.slice(0, 12)}..HEAD\`) ` +
+          `against the UNION of every sub-task's declared file scope (verify paths + filesLikelyTouched). ` +
+          `This file was not declared or explicitly authorized by a revision and may be unintended scope creep:\n  - ${file}` +
+          `\n\nDeclared scope union:\n` +
+          (declared.length ? declared.map((f) => `  - ${f}`).join("\n") : "  (none declared)") +
+          `\n\nEither confirm these edits are intended (and the plan under-declared its scope) or revert the out-of-scope changes.`,
+        file,
+        relatedFiles: relatedFiles.length > 0 ? relatedFiles : null,
+      };
+    });
+  }
+
+  /**
+   * beta.78 (Feature 2): the configured per-user daily hard cap, or 0 when
+   * unset/misconfigured. 0 => no daily gate (back-compat: pre-beta.78 configs
+   * and test doubles without a `budgets` block behave as before). Defensive.
+   */
+  private dailyMaxUsd(): number {
+    const dm = this.deps.config.budgets?.daily_max_usd;
+    return typeof dm === "number" && dm > 0 ? dm : 0;
+  }
+
+  /**
+   * beta.78 (Feature 2): a user's spend TODAY from the persistent ledger, or 0
+   * if the budget enforcer double doesn't expose getDailySpend (test doubles).
+   * Never throws.
+   */
+  private safeDailySpend(user: string): number {
+    try {
+      const fn = (this.deps.budget as { getDailySpend?: (u: string) => number }).getDailySpend;
+      return typeof fn === "function" ? fn.call(this.deps.budget, user) : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * rc.6: the operator-configured walls, on their own.
+   *
+   * Split out of the gate below because repair now has to consult these
+   * WITHOUT the session-budget comparison that used to sit beside them --
+   * repair is funded from its own reserve, and folding the two together is what
+   * made implementation's overspend refuse it. `overridden` is the `:moneybag:`
+   * reaction or an answered budget question, which are the same authority.
+   *
+   * The per-user MONTHLY cap is deliberately absent: it lives in
+   * `BudgetEnforcer.check` at session admission and is the one limit nothing in
+   * the loop may spend past.
+   */
+  private hardCapsAllow(requester: string, spentUsd: number, cyclesRan: number, overridden: boolean): boolean {
+    try {
+      if (overridden) return true;
+      const projected = projectCycleCostUsd(spentUsd, cyclesRan);
+      const ceiling = this.deps.config.budgets?.session_hard_ceiling_usd;
+      if (typeof ceiling === "number" && ceiling > 0 && spentUsd + projected > ceiling) return false;
+      const daily = this.dailyMaxUsd();
+      if (daily > 0 && this.safeDailySpend(requester) + projected > daily) return false;
+      // With no ceiling configured at all we have nothing to measure against,
+      // so decline rather than extend into an unbounded spend.
+      return typeof ceiling === "number" && ceiling > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * beta.119: can this run genuinely afford one more execute+review cycle?
+   *
+   * Gate for the converging-trend cycle extension. "Converging" says another
+   * cycle would HELP; this says we can PAY for it, and the two together are
+   * what make an automatic extension safe. The estimate comes from this run's
+   * own average cycle cost rather than a guess, and is padded, because the
+   * failure mode to avoid is an extension that runs a session out of money
+   * mid-cycle -- strictly worse than shipping on the ceiling, which at least
+   * leaves a reviewable PR.
+   *
+   * Checked against BOTH the session ceiling and the per-user daily cap, since
+   * either can be the binding constraint. Never throws; on any doubt it
+   * returns false and the run ships as it did pre-b119.
+   */
+  private hasBudgetHeadroomForAnotherCycle(
+    requester: string,
+    spentUsd: number,
+    cyclesRan: number,
+    /**
+     * rc.6: the IMPLEMENTATION TARGET, not the whole approved figure. An
+     * extension is the harness buying itself more implementation, so it may not
+     * reach into the repair reserve to do it -- that reserve is the only thing
+     * standing between a red build and a do-not-merge PR. Strictly tighter than
+     * b120's rule, which measured against the undivided budget.
+     */
+    sessionBudgetUsd?: number,
+    /** `:moneybag:`, or an answered budget question. */
+    overridden = false,
+  ): boolean {
+    try {
+      if (overridden) return true;
+      if (cyclesRan < 1 || !(spentUsd > 0)) return false;
+      const projected = projectCycleCostUsd(spentUsd, cyclesRan);
+      // beta.120 (fix 6): respect the budget the REQUESTER set for this run.
+      //
+      // b119 checked only the global ceiling and the daily cap. Those are
+      // operator limits; `budget_usd` is the number the human typed for this
+      // session. An ordinary cycle crossing it is deliberate (beta.78 made the
+      // session budget soft: it warns, it does not stop). But an EXTENSION is
+      // the harness electing to buy itself more work, and doing that with money
+      // the requester did not authorise is a different act. The b119 take-2 run
+      // finished at $18.46 against an $18 session budget -- with a converging
+      // trend it would have qualified for another cycle on ceiling/daily alone.
+      if (typeof sessionBudgetUsd === "number" && sessionBudgetUsd > 0 && spentUsd + projected > sessionBudgetUsd) return false;
+      const ceiling = this.deps.config.budgets?.session_hard_ceiling_usd;
+      if (typeof ceiling === "number" && ceiling > 0 && spentUsd + projected > ceiling) return false;
+      const daily = this.dailyMaxUsd();
+      if (daily > 0 && this.safeDailySpend(requester) + projected > daily) return false;
+      // With no ceiling configured at all we have nothing to measure against,
+      // so decline rather than extend into an unbounded spend.
+      return typeof ceiling === "number" && ceiling > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * beta.78 (Feature 1+2): daily-AWARE soft session-budget warning. When a
+   * run crosses its SOFT session budget, warn the user via Slack (best-effort,
+   * direct-post) and FACTOR IN remaining daily headroom -- Carel's ask: "If
+   * the user has used 80% of their daily, the soft limit should be aware that
+   * there is only 20% left for the day, and notify the user if this might be a
+   * bit low and ask for a budget increase." Never throws.
+   */
+  private warnSessionBudgetSoft(
+    sessionId: string,
+    user: string,
+    totalCost: number,
+    sessionBudget: number,
+  ): void {
+    try {
+      const dailyMax = this.dailyMaxUsd();
+      const dailySoFar = this.safeDailySpend(user);
+      // rc.6: "budget" here is a TARGET, and calling it anything firmer is the
+      // naming fault RC-2 of the #1184 postmortem is about -- an operator told
+      // they had passed a "cap" while the run carried on had no way to predict
+      // either behaviour. Say which number this is and what actually stops the
+      // run.
+      let text =
+        `:warning: This run passed its session budget TARGET ` +
+        `($${totalCost.toFixed(2)} / $${sessionBudget.toFixed(2)}). It will keep going ` +
+        `— the hard stop is your daily cap. The CI repair reserve is held separately, ` +
+        `so this does not cost the run its chance to fix a red build.`;
+      if (typeof dailyMax === "number" && dailyMax > 0) {
+        const remaining = Math.max(0, dailyMax - dailySoFar);
+        const pct = Math.min(100, Math.round((dailySoFar / dailyMax) * 100));
+        text +=
+          ` You've used ${pct}% of today's budget ` +
+          `($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}), ~$${remaining.toFixed(2)} left.`;
+        // Nudge for a budget increase when the remaining daily headroom looks
+        // low relative to what this run has already spent.
+        if (remaining < totalCost) {
+          text += ` That may be low to finish this — reply with a higher budget or drop :moneybag: to override the cap.`;
+        }
+      }
+      this.deps.postWarning?.(sessionId, text);
+    } catch {
+      /* best-effort; a warning must never fail the run */
+    }
+  }
+
+  /**
+   * beta.78 (Feature 2): hard daily-cap notification. Posted when the run is
+   * aborted because the user's daily_max_usd would be exceeded. Never throws.
+   */
+  private warnDailyMaxHit(sessionId: string, user: string, dailySoFar: number, dailyMax: number): void {
+    try {
+      this.deps.postWarning?.(
+        sessionId,
+        `:octagonal_sign: Daily budget reached for <@${user}> ` +
+          `($${dailySoFar.toFixed(2)} / $${dailyMax.toFixed(2)}). This run is stopping. ` +
+          `Drop :moneybag: to override the cap, or resume tomorrow when the daily budget resets (UTC).`,
+      );
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * rc.2: cancel a session from ANY state, immediately and idempotently.
+   *
+   * WHAT HAPPENED. An operator cancelled a session sitting in
+   * `awaiting_clarification`. `harness_cancel` did the only thing it has ever
+   * done -- set `reactions_json.abort = true` -- on the documented promise that
+   * "the loop reads it on its next checkpoint". There was no next checkpoint.
+   * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
+   * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
+   * idle waiting for `harness_answer`. Nothing was left to read the flag. The
+   * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
+   * queries only `executing|planning|reviewing`, and recovery excludes it on
+   * purpose. So the cancel was recorded, acknowledged, and never happened.
+   *
+   * THE RULE. Cancellation is the operator's, not the loop's. Where a loop is
+   * running we still have to ask it to stop -- an in-flight model call cannot be
+   * torn out from under itself -- but where there is NO loop, there is nothing
+   * to cooperate with and the harness must simply end the session itself.
+   *
+   * Idempotent in both directions: cancelling a terminal session succeeds
+   * without writing anything, and two concurrent cancels cannot both terminate.
+   */
+  async cancelSession(
+    sessionId: string,
+    opts: { reason?: string; requester?: string; classification?: "failed_smoke_test" | "operator_cancelled" } = {},
+  ): Promise<{
+    ok: boolean;
+    notFound?: boolean;
+    status?: string;
+    alreadyTerminal?: boolean;
+    terminatedNow?: boolean;
+    loopRunning?: boolean;
+  }> {
+    const row = this.deps.state.db
+      .prepare(`SELECT status, reactions_json, cycles_ran, cost_usd FROM sessions WHERE id = ?`)
+      .get(sessionId) as
+      | { status: string; reactions_json: string | null; cycles_ran: number; cost_usd: number }
+      | undefined;
+    if (!row) return { ok: false, notFound: true };
+
+    // Already finished. Report success: the caller asked for this session to be
+    // over, and it is. Returning a failure here made the natural "cancel it
+    // again to be sure" read as though the cancel had not worked.
+    if (TERMINAL_STATUSES.includes(row.status)) {
+      return { ok: true, alreadyTerminal: true, status: row.status, terminatedNow: false };
+    }
+    if (cancellingSessions.has(sessionId)) {
+      return { ok: true, status: row.status, terminatedNow: false };
+    }
+
+    const reason = (opts.reason ?? "").trim() || "user_cancel";
+    const classification = opts.classification ?? "operator_cancelled";
+    // The flag goes down first and unconditionally, so a live loop stops at its
+    // next checkpoint even if everything below fails.
+    let reactions: Record<string, unknown> = {};
+    try {
+      reactions = row.reactions_json ? (JSON.parse(row.reactions_json) as Record<string, unknown>) : {};
+    } catch {
+      reactions = {}; // a corrupt blob must not block a cancel
+    }
+    reactions.abort = true;
+    this.deps.state.db
+      .prepare(
+        `UPDATE sessions SET reactions_json = ?, terminal_cause = 'user_cancel',
+                             terminal_classification = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(JSON.stringify(reactions), classification, Date.now(), sessionId);
+
+    const loopRunning = isSessionLoopRunning(sessionId);
+    this.deps.state.audit(
+      "loop.cancel_requested",
+      { sessionId, reason, classification, requester: opts.requester ?? null, status: row.status, loopRunning },
+      sessionId,
+    );
+
+    if (loopRunning) {
+      // Cooperative, and honestly so: the loop owns its worktree and its
+      // in-flight call, and reaping it from underneath would race its own
+      // finalisers. It reads the flag at its next checkpoint.
+      return { ok: true, status: row.status, terminatedNow: false, loopRunning: true };
+    }
+
+    cancellingSessions.add(sessionId);
+    try {
+      // A paused session is not waiting for an answer any more.
+      if (row.status === "awaiting_clarification") {
+        this.deps.state.db
+          .prepare(
+            `UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL,
+                    clarification_subtask = NULL, updated_at = ? WHERE id = ?`,
+          )
+          .run(Date.now(), sessionId);
+      }
+      // Salvaging, not raw: a cancelled session may be holding commits, and a
+      // cancel means "stop spending", not "throw away what I already paid for".
+      // `user_cancel` is deliberately absent from ABORT_REASONS_WORTH_SHIPPING,
+      // so this preserves the worktree rather than opening a PR nobody asked for.
+      const outcome = await this.finaliseAbortSalvaging(
+        sessionId,
+        reason,
+        row.cycles_ran ?? 0,
+        row.cost_usd ?? 0,
+      );
+      this.deps.state.audit(
+        "loop.cancel_terminated",
+        { sessionId, reason, classification, requester: opts.requester ?? null, fromStatus: row.status, finalStatus: outcome.status },
+        sessionId,
+      );
+      this.deps.interactionLog?.log(sessionId, {
+        event: "cancel_terminated",
+        phase: mapPhase(row.status as LoopStatus),
+        reason: `${reason} (from ${row.status})`,
+      });
+      this.deps.logger.warn("[loop] cancelled a session with no running loop; terminated it directly", {
+        sessionId, fromStatus: row.status, finalStatus: outcome.status,
+      });
+      return { ok: true, status: outcome.status, terminatedNow: true, loopRunning: false };
+    } finally {
+      cancellingSessions.delete(sessionId);
+    }
+  }
+
+  private terminalCauseFor(reason: string, fallback: "failed" | "aborted"): string {
+    if (reason === "budget_exhausted" || reason === "daily_max_exhausted") return "budget_exhausted";
+    if (reason === "hard_timeout") return "hard_timeout";
+    if (reason === "user_abort_reaction" || reason.startsWith("user_cancel")) return "user_cancel";
+    if (reason.startsWith("accounting_incomplete")) return "accounting_incomplete";
+    return fallback;
+  }
+
+  private persistTerminalCause(sessionId: string, reason: string, fallback: "failed" | "aborted"): void {
+    this.deps.state.db.prepare(
+      `UPDATE sessions SET terminal_cause = COALESCE(terminal_cause, ?), updated_at = ? WHERE id = ?`,
+    ).run(this.terminalCauseFor(reason, fallback), Date.now(), sessionId);
+  }
+
+  private finaliseAbort(sessionId: string, reason: string, cycles: number, totalCostUsd: number): LoopOutcome {
+    this.persistTerminalCause(sessionId, reason, "aborted");
+    this.setStatus(sessionId, "aborted");
+    this.deps.state.audit("loop.aborted", { sessionId, reason }, sessionId);
+    // beta.16 fix #3: release worktree on abort too. Best-effort; we don't
+    // await inside the return path because callers assume finaliseAbort is
+    // synchronous. Instead, kick off the release and let it settle on the
+    // event loop; the failure path is logged and audited inside
+    // tryReleaseWorktree.
+    //
+    // beta.120: this raw form is now reserved for aborts with NOTHING to lose.
+    // Every caller that could be holding commits goes through
+    // `finaliseAbortSalvaging`, which ships or preserves first. See the b119
+    // take-2 smoke: a hard timeout landed here holding 27 commits and a clean
+    // typecheck, and deleted all of it.
+    this.scheduleWorktreeReleaseForSession(sessionId, "aborted");
+    return { status: "aborted", sessionId, reason, cycles, totalCostUsd };
+  }
+
+  /**
+   * beta.120 (fix 1, CRITICAL): an abort must never destroy work.
+   *
+   * WHAT HAPPENED. The b119 take-2 smoke ran 121.6 minutes against a 120-minute
+   * `session_hard_timeout_seconds`. At the cycle-3 review boundary the deadline
+   * had passed, `advance` returned `aborted/hard_timeout`, and `finaliseAbort`
+   * scheduled a worktree release. Gone: 27 commits, 15 files, ~1,900 lines, a
+   * clean typecheck and a converging review (14 -> 10 -> 8 findings). The work
+   * was recoverable only because git had not yet GC'd the objects in a cached
+   * clone. Nothing about that was by design.
+   *
+   * THE RULE. A resource ceiling is not a verdict on the code. Hitting one means
+   * "stop spending", not "throw it away". So:
+   *
+   *   - resource aborts (timeout / budget / daily cap) SHIP what they have, as
+   *     a needs_human_review PR -- exactly what `finaliseStalled` has always
+   *     done for a stalled-but-committed branch;
+   *   - a USER abort does not open a PR (they said stop), but still preserves
+   *     the worktree when commits exist;
+   *   - only an abort with genuinely nothing committed releases the worktree,
+   *     and it says so in the audit.
+   *
+   * Never throws: on any failure the worktree is preserved, which is the safe
+   * direction.
+   */
+  private async finaliseAbortSalvaging(
+    sessionId: string,
+    reason: string,
+    cycles: number,
+    totalCostUsd: number,
+  ): Promise<LoopOutcome> {
+    this.persistTerminalCause(sessionId, reason, "aborted");
+    const row = this.deps.state.db
+      .prepare(`SELECT repo, branch, worktree_path, requester, crystallised_prompt, terminal_classification FROM sessions WHERE id = ?`)
+      .get(sessionId) as
+      | {
+          repo: string | null;
+          branch: string | null;
+          worktree_path: string | null;
+          requester: string;
+          crystallised_prompt: string | null;
+          terminal_classification: string | null;
+        }
+      | undefined;
+
+    const hasCommits = await this.abortHasSalvageableCommits(sessionId, row);
+
+    if (!hasCommits) {
+      // Nothing committed: the pre-beta.120 path is correct here, but say so
+      // explicitly so "the worktree vanished" is never again unexplained.
+      this.deps.state.audit(
+        "loop.abort_nothing_to_salvage",
+        { sessionId, reason, worktreePath: row?.worktree_path ?? null },
+        sessionId,
+      );
+      return this.finaliseAbort(sessionId, reason, cycles, totalCostUsd);
+    }
+
+    const salvageEligible =
+      ABORT_REASONS_WORTH_SHIPPING.has(reason) &&
+      this.deps.config.loop.abort_salvage_pr !== false &&
+      // rc.3: an abort that never got as far as a review has no adversary
+      // sign-off to ship behind. Fall through to the preserve tail below, which
+      // keeps every commit and tells the operator where they are.
+      !this.refuseUnreviewedSalvage(sessionId, "abort_salvage", { abortReason: reason, cycles });
+
+    if (salvageEligible && row?.repo && row?.worktree_path) {
+      const planJson = this.getPlanJson(sessionId);
+      if (planJson) {
+        try {
+          const plan = JSON.parse(planJson) as LeadPlan;
+          const brief: CrystallisedBrief = row.crystallised_prompt
+            ? (JSON.parse(row.crystallised_prompt) as CrystallisedBrief)
+            : {
+                title: `aborted session ${sessionId}`,
+                motivation: "Recovered from a harness session that hit a resource ceiling.",
+                acceptanceCriteria: ["(recovered)"],
+                filesLikelyTouched: [],
+                outOfScope: [],
+                riskLevel: "low",
+              };
+          const lastReview = this.getLastReview(sessionId);
+          const reviewReport: ReviewReport = lastReview ?? {
+            verdict: "revise",
+            findings: [],
+            summary: `Session hit ${reason} before a final adversary verdict; opened so the work is not lost.`,
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+          };
+          // rc.5 (#2): the salvage releases the worktree on success, so an
+          // unverified "salvaged" is the same loss as #1168 with a different
+          // label. Prove the remote has it, or fall through to the preserve
+          // tail below, which keeps every commit.
+          const published = await this.publishCandidate({
+            sessionId, plan, brief, reviewReport, requester: row.requester,
+            cycle: cycles, stage: "abort_salvage", existing: null,
+          });
+          if (!published.ok) {
+            if (published.kind === "push_failed") throw published.pushError;
+            this.deps.state.audit(
+              "loop.abort_salvage_unpublished",
+              {
+                sessionId, abortReason: reason, failureKind: published.kind,
+                candidateSha: published.candidateSha || "(unresolved)",
+                observedSha: published.observedSha ?? null, detail: published.message,
+              },
+              sessionId,
+            );
+            // Deliberately NOT a throw: fall through to the preserve tail, which
+            // is the correct outcome for commits that exist only on disk.
+            throw new Error(`abort_salvage_unpublished (${published.kind}): ${published.message}`);
+          }
+          const prUrl = published.prUrl;
+          const recReason = describeAbortSalvage(reason, cycles, lastReview);
+          const prNumber = parsePrNumber(prUrl);
+          this.setStatus(sessionId, "done");
+          this.deps.state.db
+            .prepare(
+              `UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`,
+            )
+            .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+          this.recordPublicationEvidence(sessionId, published.evidence);
+          this.deps.state.audit(
+            "loop.shipped",
+            {
+              sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaAbortSalvage: true, abortReason: reason,
+              publishedSha: published.evidence?.sha ?? null, publicationVerified: !!published.evidence,
+            },
+            sessionId,
+          );
+          this.deps.state.audit("loop.abort_salvaged_to_pr", { sessionId, abortReason: reason, prUrl, prNumber, cycles }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "abort_salvage_pr", phase: "finalize", prUrl, prNumber, reason });
+          await this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, "shipped");
+          return { status: "shipped", sessionId, prUrl, cycles, totalCostUsd };
+        } catch (pushErr) {
+          this.deps.state.audit(
+            "loop.abort_salvage_pr_failed",
+            { sessionId, abortReason: reason, error: String((pushErr as Error)?.message ?? pushErr) },
+            sessionId,
+          );
+          // fall through to preserve
+        }
+      } else {
+        this.deps.state.audit("loop.abort_salvage_skipped", { sessionId, abortReason: reason, why: "no lead plan persisted" }, sessionId);
+      }
+    }
+
+    // Could not (or must not) open a PR, but there ARE commits: keep every one
+    // of them on disk and tell the operator how to get at them.
+    this.setStatus(sessionId, "aborted");
+    // beta.129: mark the row so the startup self-heal leaves this directory
+    // alone. It reaps every worktree whose session is terminal, and `aborted`
+    // is terminal, so the preserved commits only survived until the next
+    // restart -- a promise with an uptime-shaped expiry date.
+    try {
+      this.deps.state.db.prepare(`UPDATE sessions SET worktree_preserved = 1 WHERE id = ?`).run(sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not mark worktree as preserved", { sessionId, err: String(err) });
+    }
+    this.deps.state.audit("loop.aborted", { sessionId, reason, worktreePreserved: true }, sessionId);
+    this.deps.state.audit(
+      "loop.abort_worktree_preserved",
+      { sessionId, reason, worktreePath: row?.worktree_path ?? null, branch: row?.branch ?? null, repo: row?.repo ?? null },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "abort_worktree_preserved", phase: "finalize", reason });
+    return {
+      status: "aborted",
+      sessionId,
+      reason:
+        row?.terminal_classification === "failed_smoke_test"
+          ? `${reason} (FAILED SMOKE TEST; worktree PRESERVED as evidence at ${row?.worktree_path ?? "unknown path"}; do not resume automatically)`
+          : `${reason} (worktree PRESERVED at ${row?.worktree_path ?? "unknown path"} on branch ${row?.branch ?? "unknown"} -- commits are intact; push them or re-run harness_revise rather than re-doing the work)`,
+      cycles,
+      totalCostUsd,
+    };
+  }
+
+  /**
+   * rc.3: the uncommitted files in a worktree, or [] when there are none.
+   *
+   * Returns [] only when git answered and said the tree is clean. A probe that
+   * is unwired returns [] too -- an older embedder that never injected it keeps
+   * its previous behaviour rather than having every no-change exit blocked --
+   * but a probe that THREW returns nothing-known, and the callers here treat
+   * that as "do not claim the tree is clean" by their own logic.
+   */
+  private async worktreeDirtyFiles(sessionId: string, worktreePath: string | null | undefined): Promise<string[]> {
+    if (!worktreePath || !this.deps.worktreeStatusPorcelain) return [];
+    try {
+      return await this.deps.worktreeStatusPorcelain(worktreePath);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not read the working tree status", { sessionId, worktreePath, err: String(err) });
+      this.deps.state.audit(
+        "loop.worktree_status_probe_indeterminate",
+        { sessionId, worktreePath, error: String((err as Error)?.message ?? err).slice(0, 500) },
+        sessionId,
+      );
+      // A sentinel the callers can see: we could not confirm the tree is clean,
+      // so no-change and release decisions must not be taken.
+      return ["<status probe failed>"];
+    }
+  }
+
+  /**
+   * beta.120: does this aborting session have commits worth protecting? Mirrors
+   * the stall path's probe. Fails CLOSED -- any doubt reports "yes", because a
+   * false positive costs a preserved directory and a false negative costs the
+   * work.
+   *
+   * rc.3: "commits" was too narrow. A worktree whose HEAD never moved can still
+   * hold every edit the run made, and this probe answering "nothing to salvage"
+   * sent it to `finaliseAbort`, which force-removes the directory. Uncommitted
+   * files now count as work worth protecting.
+   */
+  private async abortHasSalvageableCommits(
+    sessionId: string,
+    row: { repo: string | null; branch: string | null; worktree_path: string | null; requester: string } | undefined,
+  ): Promise<boolean> {
+    if (!row?.worktree_path || !row?.repo) return false;
+    if (!this.deps.worktreeHeadSha) return true;
+    try {
+      // Distinguish "HEAD says there are no commits" from "we could not ask".
+      // Collapsing a throw into "" would read as nothing-to-salvage and delete
+      // the worktree -- fail-OPEN, and precisely the b119 outcome this whole
+      // path exists to prevent.
+      let head: string;
+      try {
+        head = await this.deps.worktreeHeadSha(row.worktree_path);
+      } catch (probeErr) {
+        this.deps.logger.warn("[loop] abort HEAD probe threw; assuming there IS work to protect", { sessionId, err: String(probeErr) });
+        this.deps.state.audit(
+          "loop.abort_commit_probe_indeterminate",
+          { sessionId, worktreePath: row.worktree_path, probe: "worktreeHeadSha", error: String((probeErr as Error)?.message ?? probeErr) },
+          sessionId,
+        );
+        return true;
+      }
+      // beta.129: an unreadable HEAD is "we could not ask", NOT "no commits".
+      // b120 shipped the opposite reading, and b128's wiring
+      // (`git.baseSha(...).catch(() => "")` in index.ts) fed it an empty string
+      // for every failure mode there is, so the throw-handler above was
+      // unreachable. Both halves deleted work; both are fixed.
+      if (!head) {
+        this.deps.state.audit(
+          "loop.abort_commit_probe_indeterminate",
+          { sessionId, worktreePath: row.worktree_path, probe: "worktreeHeadSha", error: "empty sha" },
+          sessionId,
+        );
+        return true;
+      }
+      // beta.129: compare HEAD against the BRANCH FORK-POINT persisted at
+      // plan_ready. b120 asked the commit probe with an EMPTY base, and that
+      // probe computes `!!base && head !== base` -- against an empty base it
+      // can only ever answer false, so EVERY session holding a plan reported
+      // "nothing to salvage" and had its worktree deleted. That is the
+      // d48ba433 loss: six commits, a passing adversary verdict, and
+      // `loop.abort_nothing_to_salvage`.
+      const baseSha = this.planBaseSha(sessionId);
+      if (!baseSha) return true;
+      if (head !== baseSha) return true;
+      // rc.3: HEAD never moved. Before concluding there is nothing here, look at
+      // the working tree -- the whole run's output can be sitting in it
+      // uncommitted, and `finaliseAbort` deletes the directory.
+      const dirty = await this.worktreeDirtyFiles(sessionId, row.worktree_path);
+      if (dirty.length > 0) {
+        this.deps.state.audit(
+          "loop.abort_dirty_worktree_salvageable",
+          { sessionId, worktreePath: row.worktree_path, headSha: head, dirtyFiles: dirty.slice(0, 100), dirtyCount: dirty.length },
+          sessionId,
+        );
+        return true;
+      }
+      return false;
+    } catch (err) {
+      this.deps.logger.warn("[loop] abort commit probe failed; assuming there IS work to protect", { sessionId, err: String(err) });
+      return true;
+    }
+  }
+
+  /**
+   * beta.129: pause at the review boundary, ask the operator to buy more wall
+   * clock, and wait IN PLACE for the answer. Returns the seconds granted, or 0
+   * for a decline, an unreadable reply, or silence.
+   *
+   * Waiting in place rather than returning through `finaliseAwaitingClarification`
+   * is the whole trick. That path resumes via a fresh `loop.run`, which re-plans
+   * from scratch -- another lead call, and a plan that need not match the one
+   * the existing commits were written against. Polling the answer column keeps
+   * the cycle counter, the findings history, the worktree and the deadline
+   * arithmetic exactly where they are.
+   *
+   * beta.132: the price of waiting in place is that the question dies with the
+   * process holding it, and b129 had no way to notice -- `harness_answer` read
+   * the wait window as proof of life and told session 2b4c1d33's operator the
+   * run would pick their answer up. It had already exited. Hence the
+   * heartbeat: every tick below stamps the row, and an answer arriving to a
+   * stale one finishes the ship rather than being promised to nobody.
+   */
+  private async askForTimeExtension(p: {
+    sessionId: string;
+    cycle: number;
+    blockingFindings: number;
+    spentUsd: number;
+    budgetUsd: number;
+    remainingMs: number;
+    observedCycleMs: number;
+    /** beta.130: which shortfall prompted the ask. Defaults to the b129 case. */
+    trigger?: TimeExtensionTrigger;
+    ciSummary?: string;
+    /**
+     * beta.130: the status to restore when the question closes. The b129 call
+     * site asks from the review boundary; the CI-repair one asks from the ship
+     * path, and parking that session in `reviewing` afterwards would describe
+     * a phase it is no longer in.
+     */
+    resumeStatus?: LoopStatus;
+  }): Promise<number> {
+    const waitSeconds = Math.max(0, this.deps.config.loop.time_extension_wait_seconds ?? 300);
+    const defaultSeconds = Math.max(0, this.deps.config.loop.time_extension_default_seconds ?? 1800);
+    if (waitSeconds <= 0 || defaultSeconds <= 0) return 0;
+
+    const waitUntilMs = Date.now() + waitSeconds * 1000;
+    const question = renderTimeExtensionQuestion({
+      cycle: p.cycle,
+      blockingFindings: p.blockingFindings,
+      spentUsd: p.spentUsd,
+      budgetUsd: p.budgetUsd,
+      remainingSeconds: Math.round(p.remainingMs / 1000),
+      observedCycleSeconds: Math.round(p.observedCycleMs / 1000),
+      defaultSeconds,
+      waitSeconds,
+      trigger: p.trigger,
+      ciSummary: p.ciSummary,
+    });
+
+    try {
+      const now = Date.now();
+      const clarificationId = randomUUID();
+      this.deps.state.db.exec("BEGIN IMMEDIATE");
+      pauseActiveDeadline(this.deps.state.db, p.sessionId, now);
+      this.deps.state.db
+        .prepare(
+          `UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
+                               clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
+                               clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(question, TIME_EXTENSION_SEQ, clarificationId, renderTimeExtensionMarker(waitUntilMs), now, now, p.sessionId);
+      this.deps.state.db.exec("COMMIT");
+    } catch (err) {
+      try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      this.deps.logger.warn("[loop] could not post the time-extension question; shipping instead", { sessionId: p.sessionId, err: String(err) });
+      return 0;
+    }
+
+    this.deps.state.audit(
+      "loop.time_extension_requested",
+      {
+        sessionId: p.sessionId, cycle: p.cycle, blockingFindings: p.blockingFindings,
+        spentUsd: Number(p.spentUsd.toFixed(4)), budgetUsd: p.budgetUsd,
+        remainingMs: p.remainingMs, observedCycleMs: p.observedCycleMs,
+        waitSeconds, defaultSeconds, trigger: p.trigger ?? "review",
+      },
+      p.sessionId,
+    );
+    this.deps.interactionLog?.log(p.sessionId, { event: "time_extension_requested", phase: "review", question });
+    // Drives the progress snapshot and the Slack post, which is how the
+    // operator finds out there is a question at all.
+    this.deps.interactionLog?.log(p.sessionId, { event: "state_transition", phase: "unknown", status: "awaiting_clarification" });
+    try { this.deps.deliverProgress?.(p.sessionId, "awaiting_clarification"); } catch { /* best effort */ }
+
+    const clearPause = () => {
+      try {
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_id = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
+          .run(Date.now(), p.sessionId);
+      } catch (err) {
+        this.deps.logger.warn("[loop] could not clear the time-extension pause", { sessionId: p.sessionId, err: String(err) });
+      }
+    };
+
+    // beta.132: proof of life, stamped before the first sleep so an answer that
+    // arrives in the first few seconds -- which is what a watching operator
+    // does -- is not mistaken for one shouted at an empty room.
+    this.stampClarificationHeartbeat(p.sessionId);
+
+    let answer = "";
+    while (Date.now() < waitUntilMs) {
+      const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
+      await new Promise((r) => setTimeout(r, sliceMs));
+      this.stampClarificationHeartbeat(p.sessionId);
+      // The session is resting on a question, not wedged. Without this the
+      // stall watchdog reads a silent five minutes as a hang and fails it.
+      this.markProgress(p.sessionId, "time_extension_wait", "review", {
+        cycle: p.cycle,
+        remainingMs: Math.max(0, waitUntilMs - Date.now()),
+      });
+      try {
+        const r = this.deps.state.db
+          .prepare(`SELECT clarification_answer AS a FROM sessions WHERE id = ?`)
+          .get(p.sessionId) as { a: string | null } | undefined;
+        if (r?.a && String(r.a).trim()) {
+          answer = String(r.a).trim();
+          break;
+        }
+      } catch (err) {
+        this.deps.logger.warn("[loop] time-extension poll failed", { sessionId: p.sessionId, err: String(err) });
+      }
+      // An operator who reaches for :x: rather than answering has answered.
+      const reactions = await this.deps.readReactions(p.sessionId).catch(() => null);
+      if (reactions?.abort) break;
+    }
+
+    clearPause();
+    this.setStatus(p.sessionId, p.resumeStatus ?? "reviewing");
+
+    if (!answer) {
+      this.deps.state.audit(
+        "loop.time_extension_timeout",
+        { sessionId: p.sessionId, cycle: p.cycle, waitSeconds, trigger: p.trigger ?? "review" },
+        p.sessionId,
+      );
+      return 0;
+    }
+
+    const parsed = parseTimeExtensionReply(answer, { defaultSeconds });
+    this.deps.state.audit(
+      parsed.approved ? "loop.time_extension_granted" : "loop.time_extension_declined",
+      {
+        sessionId: p.sessionId, cycle: p.cycle,
+        seconds: parsed.seconds, interpretation: parsed.interpretation,
+        trigger: p.trigger ?? "review",
+        answer: answer.slice(0, 300),
+      },
+      p.sessionId,
+    );
+    return parsed.approved ? parsed.seconds : 0;
+  }
+
+  /**
+   * rc.6: ask the operator to fund a stop the loop is about to make on money.
+   *
+   * Deliberately the same shape as `askForTimeExtension`, down to the bounded
+   * wait, the heartbeat and the resume status, because it is the same act: the
+   * loop has run out of one resource, a human can supply more, and the only
+   * thing standing between them is that nobody thought to ask. Divergence
+   * between the two would be a maintenance trap, not a feature.
+   *
+   * Returns dollars granted, or 0 for declined / unanswered / disabled. Never
+   * throws: a question that cannot be posted must not be worse than not asking,
+   * so every failure path returns 0 and the caller proceeds as it always did.
+   */
+  private async askForBudgetExtension(p: {
+    sessionId: string;
+    cycle: number;
+    trigger: BudgetExtensionTrigger;
+    spentUsd: number;
+    policy: BudgetPolicy;
+    /** Roughly how far short the next step is, when it can be estimated. */
+    shortfallUsd: number;
+    /** A measured cycle, which is what a bare "yes" grants. */
+    observedCycleCostUsd: number;
+    dailyCapUsd?: number;
+    ciSummary?: string;
+    subTaskTitle?: string;
+    resumeStatus?: LoopStatus;
+  }): Promise<number> {
+    if (this.deps.config.loop.budget_extension_ask_enabled === false) return 0;
+    const waitSeconds = Math.max(0, this.deps.config.loop.budget_extension_wait_seconds ?? 300);
+    if (waitSeconds <= 0) return 0;
+
+    // A bare "yes" buys one more cycle of whatever this run has actually been
+    // costing. With nothing measured yet there is no honest figure, so fall
+    // back to a fraction of the approved budget rather than inventing one.
+    const defaultUsd =
+      p.observedCycleCostUsd > 0
+        ? Math.round(p.observedCycleCostUsd * 100) / 100
+        : Math.max(5, Math.round(p.policy.authorizedMaximumUsd * 0.2 * 100) / 100);
+    const maxUsd = maxExtensionUsd(p.policy.authorizedMaximumUsd);
+    if (defaultUsd <= 0 || maxUsd <= 0) return 0;
+
+    const waitUntilMs = Date.now() + waitSeconds * 1000;
+    const question = renderBudgetExtensionQuestion({
+      trigger: p.trigger,
+      cycle: p.cycle,
+      spentUsd: p.spentUsd,
+      authorizedMaximumUsd: p.policy.authorizedMaximumUsd,
+      shortfallUsd: p.shortfallUsd,
+      defaultUsd,
+      waitSeconds,
+      dailyCapUsd: p.dailyCapUsd,
+      ciSummary: p.ciSummary,
+      subTaskTitle: p.subTaskTitle,
+    });
+
+    try {
+      const now = Date.now();
+      const clarificationId = randomUUID();
+      this.deps.state.db.exec("BEGIN IMMEDIATE");
+      pauseActiveDeadline(this.deps.state.db, p.sessionId, now);
+      this.deps.state.db
+        .prepare(
+          `UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
+                               clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
+                               clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(question, BUDGET_EXTENSION_SEQ, clarificationId, renderBudgetExtensionMarker(waitUntilMs), now, now, p.sessionId);
+      this.deps.state.db.exec("COMMIT");
+    } catch (err) {
+      try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      this.deps.logger.warn("[loop] could not post the budget question; proceeding as if unasked", {
+        sessionId: p.sessionId,
+        err: String(err),
+      });
+      return 0;
+    }
+
+    this.deps.state.audit(
+      "loop.budget_extension_requested",
+      {
+        sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger,
+        spentUsd: Number(p.spentUsd.toFixed(4)),
+        authorizedMaximumUsd: p.policy.authorizedMaximumUsd,
+        repairReserveUsd: p.policy.repairReserveUsd,
+        shortfallUsd: Number(p.shortfallUsd.toFixed(4)),
+        waitSeconds, defaultUsd, maxUsd,
+      },
+      p.sessionId,
+    );
+    this.deps.interactionLog?.log(p.sessionId, { event: "budget_extension_requested", phase: "review", question });
+    this.deps.interactionLog?.log(p.sessionId, { event: "state_transition", phase: "unknown", status: "awaiting_clarification" });
+    try { this.deps.deliverProgress?.(p.sessionId, "awaiting_clarification"); } catch { /* best effort */ }
+
+    const clearPause = () => {
+      try {
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_id = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
+          .run(Date.now(), p.sessionId);
+      } catch (err) {
+        this.deps.logger.warn("[loop] could not clear the budget pause", { sessionId: p.sessionId, err: String(err) });
+      }
+    };
+
+    // beta.132's reasoning, unchanged: stamp before the first sleep so an
+    // answer that arrives in the first few seconds is not read as shouted at
+    // an empty room.
+    this.stampClarificationHeartbeat(p.sessionId);
+
+    let answer = "";
+    while (Date.now() < waitUntilMs) {
+      const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
+      await new Promise((r) => setTimeout(r, sliceMs));
+      this.stampClarificationHeartbeat(p.sessionId);
+      this.markProgress(p.sessionId, "budget_extension_wait", "review", {
+        cycle: p.cycle,
+        remainingMs: Math.max(0, waitUntilMs - Date.now()),
+      });
+      try {
+        const r = this.deps.state.db
+          .prepare(`SELECT clarification_answer AS a FROM sessions WHERE id = ?`)
+          .get(p.sessionId) as { a: string | null } | undefined;
+        if (r?.a && String(r.a).trim()) {
+          answer = String(r.a).trim();
+          break;
+        }
+      } catch (err) {
+        this.deps.logger.warn("[loop] budget-extension poll failed", { sessionId: p.sessionId, err: String(err) });
+      }
+      const reactions = await this.deps.readReactions(p.sessionId).catch(() => null);
+      // Either reaction answers the question without typing: :moneybag: IS the
+      // yes this is asking for, and :x: is the no.
+      if (reactions?.abort) break;
+      if (reactions?.budgetBump) {
+        answer = `yes (:moneybag:)`;
+        break;
+      }
+    }
+
+    clearPause();
+    this.setStatus(p.sessionId, p.resumeStatus ?? "reviewing");
+
+    if (!answer) {
+      this.deps.state.audit(
+        "loop.budget_extension_timeout",
+        { sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger, waitSeconds },
+        p.sessionId,
+      );
+      return 0;
+    }
+
+    const parsed = parseBudgetExtensionReply(answer, { defaultUsd, maxUsd });
+    this.deps.state.audit(
+      parsed.approved ? "loop.budget_extension_granted" : "loop.budget_extension_declined",
+      {
+        sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger,
+        usd: parsed.usd, interpretation: parsed.interpretation,
+        clamped: parsed.clamped === true, maxUsd,
+        answer: answer.slice(0, 300),
+      },
+      p.sessionId,
+    );
+    return parsed.approved ? parsed.usd : 0;
+  }
+
+  /**
+   * rc.6: apply a granted budget extension to the run and to the row.
+   *
+   * Persisted, for the reason beta.130 persisted an extended deadline: a
+   * crash-recovery or a later resume that reverted to the original figure would
+   * stop the run a second time for a reason the operator has already overruled.
+   */
+  private applyBudgetGrant(sessionId: string, previous: BudgetPolicy, grantedUsd: number): BudgetPolicy {
+    const raised = Math.round((previous.authorizedMaximumUsd + grantedUsd) * 100) / 100;
+    try {
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET budget_usd = ?, updated_at = ? WHERE id = ?`)
+        .run(raised, Date.now(), sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist the granted budget; honouring it for this run only", {
+        sessionId,
+        err: String(err),
+      });
+    }
+    const policy = resolveBudgetPolicy({
+      authorizedMaximumUsd: raised,
+      repairReserveRatio: this.deps.config.loop.repair_reserve_ratio,
+    });
+    this.deps.state.audit(
+      "loop.budget_extension_applied",
+      { sessionId, grantedUsd, authorizedMaximumUsd: raised, policy: describeBudgetPolicy(policy) },
+      sessionId,
+    );
+    return policy;
+  }
+
+  /**
+   * beta.130: persist an extended wall clock so a crash-recovery or a later
+   * resume honours what the operator granted instead of reverting to the
+   * default and guillotining the run a second time.
+   */
+  /**
+   * beta.132: say "I am still here" on the row the operator's answer lands on.
+   *
+   * Best-effort by design. A failed stamp reads as a dead listener, which
+   * costs the run its time extension and ships an honest do-not-merge PR --
+   * where the alternative, assuming life, strands the work. This is the safe
+   * direction to fail in.
+   */
+  private stampClarificationHeartbeat(sessionId: string): void {
+    try {
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET clarification_heartbeat_at = ? WHERE id = ?`)
+        .run(Date.now(), sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not stamp the clarification heartbeat", { sessionId, err: String(err) });
+    }
+  }
+
+  private persistExtendedDeadline(sessionId: string, totalSeconds: number): void {
+    try {
+      const current = activeDeadlineSnapshot(this.deps.state.db, sessionId);
+      const wantedMs = totalSeconds * 1000;
+      const extraSeconds = Math.max(0, Math.round((wantedMs - current.limitMs) / 1000));
+      if (extraSeconds > 0) extendActiveDeadline(this.deps.state.db, sessionId, extraSeconds);
+      else {
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
+          .run(totalSeconds, Date.now(), sessionId);
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist the extended wall clock", { sessionId, err: String(err) });
+    }
+  }
+
+  /**
+   * beta.131: give an unroutable CI failure somebody to belong to.
+   *
+   * b127 folds CI findings into the review and lets the deterministic router
+   * hand each one to whoever owns its file. That is the right design and it
+   * works -- when the finding HAS a file. When it does not, the finding becomes
+   * a mapping miss and is broadcast to every sub-task as context, which sounds
+   * like the safe default and is not: session 03a8a7b6 bought a repair cycle
+   * for `file: null, adoptedBySeq: null`, re-ran all seven sub-tasks against
+   * the adversary's opinions for about $3, and left CI red on the same
+   * assertion. The audit said "1 CI finding(s), unrouted" twice and spent the
+   * cycle anyway.
+   *
+   * So an unroutable failure gets its own sub-task instead of everyone's
+   * peripheral vision. It carries the raw failing output and declares no file
+   * scope, which is what "may touch any file" means here -- there is no
+   * pre-commit contract gate, and an empty `filesLikelyTouched` is the one
+   * value revise-scoping will never skip.
+   *
+   * Only for findings with no file. One that names a path already has an owner
+   * with the context to fix it, and a fresh worker starting cold is worse.
+   */
+  private addCiRepairSubTask(
+    sessionId: string,
+    cycle: number,
+    plan: LeadPlan,
+    ciFindings: ReviewFinding[],
+  ): void {
+    if (this.deps.config.ci.repair_subtask_enabled === false) return;
+    if (ciFindings.length === 0) return;
+    // Any finding that named a file is routable; leave the whole set to the
+    // existing router rather than splitting the failure across two mechanisms.
+    if (ciFindings.some((f) => (f.file ?? "").trim())) return;
+
+    const detail = ciFindings
+      .map((f) => f.detail ?? f.title)
+      .join("\n\n")
+      .slice(0, 6000);
+
+    // A second repair cycle refreshes the brief rather than stacking a second
+    // sub-task; the failure is the same failure.
+    const existing = plan.subTasks.find((s) => s.title === CI_REPAIR_SUBTASK_TITLE);
+    if (existing) {
+      existing.intent = renderCiRepairIntent(detail);
+      this.deps.state.audit(
+        "loop.ci_repair_subtask_refreshed",
+        { sessionId, cycle, seq: existing.seq },
+        sessionId,
+      );
+      return;
+    }
+
+    const seq = plan.subTasks.reduce((m, s) => Math.max(m, s.seq), 0) + 1;
+    plan.subTasks.push({
+      seq,
+      title: CI_REPAIR_SUBTASK_TITLE,
+      intent: renderCiRepairIntent(detail),
+      // Deliberately empty. The failing output named no repo path -- that is
+      // the whole reason this sub-task exists -- so there is nothing honest to
+      // put here, and an empty scope is never skipped by revise-scoping.
+      filesLikelyTouched: [],
+      successCriteria: [
+        "The check that GitHub CI reported as failing now passes when run locally.",
+        "The cause is fixed. No test is deleted, skipped, renamed or weakened to make it pass.",
+      ],
+      estimatedTokens: 40_000,
+      taskMode: "mutate",
+    });
+
+    // The plan on the row is what the progress UI and the smoke report read; a
+    // sub-task that exists only in memory is one nobody can see running.
+    try {
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                     minimum_runtime_version = '2.0.0-rc.13' WHERE id = ?`)
+        .run(JSON.stringify(plan), sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist the CI repair sub-task", { sessionId, err: String(err) });
+    }
+
+    this.deps.state.audit(
+      "loop.ci_repair_subtask_added",
+      { sessionId, cycle, seq, findings: ciFindings.length, detailChars: detail.length },
+      sessionId,
+    );
+    this.deps.logger.info(
+      "[loop] beta.131: the CI failure named no file, so it gets its own sub-task rather than being broadcast to everyone",
+      { sessionId, cycle, seq },
+    );
+  }
+
+  /**
+   * rc.3: give an unowned finding a sub-task that is allowed to fix it.
+   *
+   * b131 established the shape for an unroutable CI failure; this is the same
+   * argument for a reviewer finding. A finding whose file no sub-task declared
+   * became a mapping miss and was broadcast to every sub-task as context, which
+   * reads as safe and is not. On StitchGuard PR #1168 findings about the
+   * integration UI, credentials, authorization, OpenAPI, help content, the
+   * schema and the migration were routed into tasks like "Declare SAST workflow
+   * routes", whose workers correctly refused to edit files they did not own --
+   * so the finding survived, was re-raised, and was re-routed to the same
+   * people the next cycle.
+   *
+   * The grant is explicit and narrow: the finding's own file plus the co-fix
+   * files it names, nothing else, with a verification contract generated from
+   * exactly those paths. Findings that share a file land in one sub-task, so
+   * two workers are never editing the same file in the same cycle.
+   *
+   * Returns the seqs it created or refreshed, so the caller can re-map.
+   */
+  private addFindingRepairSubTasks(
+    sessionId: string,
+    cycle: number,
+    plan: LeadPlan,
+    mapping: ReviseMappingResult,
+  ): number[] {
+    if (this.deps.config.loop.finding_repair_subtasks_enabled === false) return [];
+    // An orphan the nearest sub-task already adopted has an owner with context;
+    // a fresh worker starting cold on the same file is worse.
+    const adopted = new Set(mapping.orphanAdoptions.map((a) => a.finding));
+    const unowned = mapping.mappingMisses.filter((f) => !adopted.has(f));
+    const groups = groupUnownedFindingsForRepair(unowned);
+    if (groups.length === 0) return [];
+
+    const touched: number[] = [];
+    for (const group of groups) {
+      const title = repairSubTaskTitle(group);
+      const existing = plan.subTasks.find((s) => s.title === title);
+      if (existing) {
+        existing.intent = renderRepairIntent(group);
+        existing.filesLikelyTouched = [...new Set([...(existing.filesLikelyTouched ?? []), ...group.files])];
+        touched.push(existing.seq);
+        this.deps.state.audit(
+          "loop.repair_subtask_refreshed",
+          { sessionId, cycle, seq: existing.seq, files: group.files, findings: group.findings.length },
+          sessionId,
+        );
+        continue;
+      }
+      const seq = plan.subTasks.reduce((m, s) => Math.max(m, s.seq), 0) + 1;
+      plan.subTasks.push({
+        seq,
+        title,
+        intent: renderRepairIntent(group),
+        filesLikelyTouched: [...group.files],
+        successCriteria: group.findings.map((f) => `Resolved: ${f.title ?? "(untitled finding)"}`),
+        estimatedTokens: 40_000,
+        taskMode: "mutate",
+        // The contract is generated from the granted files themselves, which is
+        // the only honest one available: these are the paths the repair was
+        // authorised for, so they are the paths it has to land in.
+        verify: group.files.map((path) => ({ kind: "file_committed", path }) as SubTaskVerify),
+      });
+      touched.push(seq);
+      this.deps.state.audit(
+        "loop.repair_subtask_created",
+        {
+          sessionId, cycle, seq, files: group.files,
+          findings: group.findings.map((f) => ({
+            fingerprint: (f as { fingerprint?: string }).fingerprint ?? null,
+            title: f.title ?? null,
+            severity: f.severity,
+            dimension: f.dimension,
+          })),
+        },
+        sessionId,
+      );
+      this.deps.logger.info(
+        "[loop] rc.3: a reviewer finding named files no sub-task owned, so it gets its own repair sub-task with those files granted",
+        { sessionId, cycle, seq, files: group.files },
+      );
+    }
+
+    // The plan on the row is what the progress UI and the smoke report read.
+    try {
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
+                                     minimum_runtime_version = '2.0.0-rc.13' WHERE id = ?`)
+        .run(JSON.stringify(plan), sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not persist the finding repair sub-task(s)", { sessionId, err: String(err) });
+    }
+    return touched;
+  }
+
+  /** beta.129: the branch fork-point captured at plan_ready, or "" when absent. */
+  private planBaseSha(sessionId: string): string {
+    try {
+      const r = this.deps.state.db
+        .prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`)
+        .get(sessionId) as { plan_base_sha: string | null } | undefined;
+      return r?.plan_base_sha ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * beta.16 fix #3 + beta.17 correctness: schedule a best-effort worktree
+   * release for a session that has already reached a terminal status.
+   * Looks up both `repo` and `worktree_path` from the sessions row so the
+   * release call gets the actual on-disk path (not a reconstruction).
+   * Never throws.
+   */
+  private scheduleWorktreeReleaseForSession(sessionId: string, reason: "shipped" | "aborted" | "failed"): void {
+    if (!this.deps.releaseWorktree) {
+      // beta.120 (fix 5): see tryReleaseWorktree -- no path exits unrecorded.
+      this.deps.state.audit(
+        "loop.worktree_release_skipped",
+        { sessionId, reason, reason_skipped: "no releaseWorktree dependency wired" },
+        sessionId,
+      );
+      return;
+    }
+    try {
+      const row = this.deps.state.db
+        .prepare(`SELECT repo, worktree_path FROM sessions WHERE id = ?`)
+        .get(sessionId) as { repo: string | null; worktree_path: string | null } | undefined;
+      if (row?.repo && row?.worktree_path) {
+        void this.tryReleaseWorktree(sessionId, row.repo, row.worktree_path, reason);
+      } else if (!row) {
+        // beta.120 (fix 5): previously fell through in silence.
+        this.deps.state.audit(
+          "loop.worktree_release_skipped",
+          { sessionId, reason, reason_skipped: "no session row found" },
+          sessionId,
+        );
+      } else if (!row.repo) {
+        // beta.120 (fix 5): a row with a path but no repo also fell through in
+        // silence, and a path with no repo is exactly the state a half-allocated
+        // session dies in.
+        this.deps.state.audit(
+          "loop.worktree_release_skipped",
+          { sessionId, reason, reason_skipped: "session row has no repo", path: row.worktree_path ?? null },
+          sessionId,
+        );
+      } else if (row?.repo) {
+        // No worktree_path yet (session died before allocation completed):
+        // there's nothing to release, but audit the skip so the stream
+        // stays self-describing.
+        this.deps.state.audit(
+          "loop.worktree_release_skipped",
+          { sessionId, reason, reason_skipped: "no worktree_path on session row (likely died pre-allocation)" },
+          sessionId,
+        );
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] scheduleWorktreeReleaseForSession failed to look up session row", { sessionId, err: String(err) });
+    }
+  }
+
+  /**
+   * beta.16 fix #3: build a `LoopOutcome` for a hard-failed session and
+   * release the worktree. Centralises the six failure-return sites so we
+   * cannot forget to release the worktree on new failure paths.
+   */
+  private async finaliseFailed(sessionId: string, reason: string, cycles: number, totalCostUsd: number): Promise<LoopOutcome> {
+    this.persistTerminalCause(sessionId, reason, "failed");
+    // rc.3: a failure that has something to lose keeps its worktree.
+    //
+    // This path releases the directory, which is right for a session that died
+    // before it produced anything and wrong for one holding commits or a tree
+    // full of uncommitted edits. `finaliseFailedPreserveWorktree` already exists
+    // for the second case and was only ever reached from the review-crash
+    // routes, so a verification failure over a dirty tree -- the state
+    // StitchGuard PR #1168 cycle 4 ended in -- deleted the work on the way out.
+    const recoverable = await this.failureHasRecoverableWork(sessionId);
+    if (recoverable) {
+      this.deps.state.audit(
+        "loop.failed_recoverable_work_detected",
+        { sessionId, reason, cycles, ...recoverable },
+        sessionId,
+      );
+      return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycles, totalCostUsd);
+    }
+    // beta.73 (D3): ALWAYS audit the failure reason (greppable terminal).
+    // beta.96: audit the reason BEFORE setStatus -- setStatus -> deliverProgress
+    // (native Slack terminal post) reads this reason to build the headline; the
+    // pre-b96 order (audit AFTER setStatus) meant a plan-phase death posted an
+    // empty headline and was silently dropped (session 1b267b86, 2h no feedback).
+    this.deps.state.audit("loop.failed", { sessionId, reason, cycles }, sessionId);
+    this.deps.interactionLog?.log(sessionId, { event: "failed", phase: "finalize", reason });
+    this.setStatus(sessionId, "failed");
+    this.scheduleWorktreeReleaseForSession(sessionId, "failed");
+    return { status: "failed", sessionId, reason, cycles, totalCostUsd };
+  }
+
+  /**
+   * rc.3: is there anything in this failing session's worktree worth keeping?
+   *
+   * Returns the evidence when there is (so the audit can say what saved the
+   * directory) and null when the session genuinely produced nothing. Fails
+   * OPEN in the safe direction only where it can: an unreadable status probe
+   * counts as "something might be there", the same reading beta.129 settled on
+   * for the HEAD probe.
+   */
+  private async failureHasRecoverableWork(
+    sessionId: string,
+  ): Promise<{ headSha: string; commitsAhead: boolean; dirtyCount: number } | null> {
+    const row = this.deps.state.db
+      .prepare(`SELECT worktree_path FROM sessions WHERE id = ?`)
+      .get(sessionId) as { worktree_path: string | null } | undefined;
+    if (!row?.worktree_path) return null;
+    const planBase = this.planBaseSha(sessionId);
+    const headSha = this.deps.worktreeHeadSha
+      ? await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "")
+      : "";
+    const commitsAhead = Boolean(headSha && planBase && headSha !== planBase);
+    const dirty = await this.worktreeDirtyFiles(sessionId, row.worktree_path);
+    if (!commitsAhead && dirty.length === 0) return null;
+    return { headSha, commitsAhead, dirtyCount: dirty.length };
+  }
+
+  /**
+   * beta.62 (fix #3): terminal-fail a session WITHOUT releasing the worktree,
+   * so the on-disk commit chain stays inspectable. Used for a review CRASH
+   * that could NOT be salvaged into a graceful PR (e.g. a cycle-1 crash with
+   * no prior review, a non-green self-verify, or the graceful push itself
+   * failed). The b60-attempt-2 failure discarded 8 good commits precisely
+   * because the crash path released the worktree; preserving it means a human
+   * can `git log`/push the branch manually even when the harness couldn't.
+   */
+  /**
+   * rc.4: the recovery instruction on a preserved-worktree failure.
+   *
+   * This used to say "run harness_resume to continue". `harness_resume` refuses
+   * a terminal session and replies "it is terminal (failed). Use harness_revise
+   * to start a fresh revise" -- and `harness_revise` refuses a row with no PR.
+   * So the one message written specifically to tell an operator how to recover
+   * named a tool that sent them to a second tool that refused them, in exactly
+   * the situation the message exists for.
+   *
+   * The route depends on what the failure left behind, so the instruction does
+   * too: a session that got as far as opening a PR can be revised directly, one
+   * whose PR exists but was never recorded needs linking first, and one that
+   * never pushed has only its worktree.
+   */
+  private preservedWorktreeRecoveryAction(
+    sessionId: string,
+    row: { branch: string | null; worktree_path: string | null } | undefined,
+  ): string {
+    if (!row?.worktree_path) return "No worktree path is recorded for this session.";
+    const where = `Inspect ${row.worktree_path} (branch ${row.branch ?? "unknown"}). Nothing here has been deleted.`;
+    let pr: { pr_number: number | null; repo: string | null } | undefined;
+    try {
+      pr = this.deps.state.db
+        .prepare(`SELECT pr_number, repo FROM sessions WHERE id = ?`)
+        .get(sessionId) as { pr_number: number | null; repo: string | null } | undefined;
+    } catch {
+      /* the instruction is still worth emitting without it */
+    }
+    if (pr?.pr_number) {
+      return `${where} The PR is recorded, so harness_revise (sessionId ${sessionId}) will build on this branch and update PR #${pr.pr_number}.`;
+    }
+    return (
+      `${where} harness_resume will refuse this session -- it is terminal. If a PR was already opened for ` +
+      `branch ${row.branch ?? "this branch"}, recover the association with harness_link_pr ` +
+      `(sessionId ${sessionId}, repo ${pr?.repo || "<owner/name>"}, the PR number) and then harness_revise it; ` +
+      `harness_link_pr is a dry run until you pass apply. Otherwise push the branch by hand.`
+    );
+  }
+
+  /**
+   * rc.5 (#2): can this run PROVE publication at all?
+   *
+   * True whenever the remote probe is wired. Production wires it
+   * unconditionally; a loop test double that never reaches a ship does not.
+   * Kept as a named getter rather than an inline `!!this.deps.remoteBranchSha`
+   * so the distinction between "verified" and "unverifiable" is a thing the
+   * code says out loud, and so the two branches are separately pinned.
+   */
+  private get publicationVerificationRequired(): boolean {
+    return typeof this.deps.remoteBranchSha === "function";
+  }
+
+  /**
+   * The commit we are about to claim as published. Empty string when the probe
+   * is missing or the read fails -- callers MUST treat that as
+   * `candidate_unknown` and never as "nothing changed".
+   */
+  private async resolveCandidateSha(worktreePath: string): Promise<string> {
+    if (!this.deps.worktreeHeadSha) return "";
+    const head = await this.deps.worktreeHeadSha(worktreePath).catch(() => "");
+    return head?.trim() ?? "";
+  }
+
+  /**
+   * Read the remote back and decide whether `expectedSha` is really there.
+   * Bounded and cancellable; see `verifyRemoteSha` for why the retry exists
+   * (observed provider metadata lag during the #1168 recovery, NOT a hope that
+   * a failed push will spontaneously succeed).
+   */
+  private async verifyPublication(params: {
+    sessionId: string;
+    plan: LeadPlan;
+    requester?: string;
+    expectedSha: string;
+    cycle: number;
+    stage: string;
+    /** Epoch ms after which revalidation stops early. The run's hard deadline. */
+    deadlineMs?: number;
+  }): Promise<RemoteVerifyResult> {
+    const probe = this.deps.remoteBranchSha;
+    if (!probe) {
+      return {
+        ok: false,
+        kind: "verification_unavailable",
+        attempts: 0,
+        detail: "no remote-SHA probe is wired, so publication cannot be verified",
+      };
+    }
+    const result = await verifyRemoteSha({
+      expectedSha: params.expectedSha,
+      branch: params.plan.branch,
+      repo: params.plan.repo,
+      readRemoteSha: () =>
+        probe({ plan: params.plan, branch: params.plan.branch, requester: params.requester }),
+      attempts: this.deps.config.ci?.publication_verify_attempts,
+      delayMs: this.deps.config.ci?.publication_verify_delay_ms,
+      sleep: this.deps.sleep,
+      // Bounded by attempts AND by the run's own clock, so a session being
+      // torn down does not sit here re-reading a remote nobody will act on.
+      signal: params.deadlineMs === undefined
+        ? undefined
+        : { get aborted(): boolean { return Date.now() > params.deadlineMs!; } },
+    });
+    this.deps.state.audit(
+      result.ok ? "loop.publication_verified" : "loop.publication_unverified",
+      {
+        sessionId: params.sessionId,
+        cycle: params.cycle,
+        stage: params.stage,
+        branch: params.plan.branch,
+        repo: params.plan.repo,
+        expectedSha: params.expectedSha,
+        observedSha: result.ok ? result.observedSha : result.observedSha,
+        attempts: result.attempts,
+        ...(result.ok ? {} : { failureKind: result.kind, detail: result.detail }),
+      },
+      params.sessionId,
+    );
+    return result;
+  }
+
+  /**
+   * rc.5 (#2): PUBLISH THE CANDIDATE, THEN PROVE IT.
+   *
+   * The single door every ship path goes through. It exists because #1168's
+   * finalisation chose its callback from `previewVerificationEnabled` -- a fact
+   * about CONFIGURATION -- and then reported the result as publication. The
+   * choice here is made from `existing` evidence about THIS EXACT SHA instead:
+   *
+   *   - evidence covers the candidate, and the remote still agrees
+   *       -> the commit is already on the remote. Open/update the PR only.
+   *          (This is what keeps a passing preview run from pushing twice.)
+   *   - anything else -- no evidence, evidence for a DIFFERENT sha (the CI
+   *     workflow got authored after the preview push), or a remote that no
+   *     longer matches
+   *       -> push. A PR-only adapter is never a substitute for a push.
+   *
+   * Then the remote is read back regardless of which branch ran, because a
+   * resolved callback is not evidence. Only a confirmed read mints
+   * {@link PublicationEvidence}.
+   */
+  private async publishCandidate(params: {
+    sessionId: string;
+    plan: LeadPlan;
+    brief: CrystallisedBrief;
+    reviewReport: ReviewReport;
+    requester?: string;
+    cycle: number;
+    stage: string;
+    existing: PublicationEvidence | null;
+  }): Promise<
+    | {
+        ok: true;
+        prUrl: string;
+        evidence: PublicationEvidence | null;
+        reusedPush: boolean;
+        verified: boolean;
+        candidateSha: string;
+      }
+    | {
+        ok: false;
+        kind: PublicationFailureKind | "push_failed";
+        candidateSha: string;
+        observedSha?: string;
+        message: string;
+        pushError?: unknown;
+        /**
+         * The PR the call produced or found, when it produced one. It exists
+         * and it does NOT describe the candidate -- exactly the #1168 picture.
+         * Reported so the association survives (a session that loses its PR
+         * link stops being revisable) and so an operator is not sent hunting
+         * for a PR that is sitting right there.
+         */
+        prUrl?: string;
+      }
+  > {
+    const { sessionId, plan, brief, reviewReport, requester, cycle, stage } = params;
+    const candidateSha = await this.resolveCandidateSha(plan.worktreePath);
+
+    // Does prior evidence cover THIS commit? Branch-scoped and SHA-scoped:
+    // evidence for the pre-workflow-authoring HEAD must not carry the commit
+    // that replaced it.
+    let reuse = evidenceCoversCandidate(params.existing, candidateSha, plan.branch);
+    if (params.existing && !reuse) {
+      this.deps.state.audit(
+        "loop.publication_evidence_invalidated",
+        {
+          sessionId, cycle, stage, branch: plan.branch,
+          publishedSha: params.existing.sha,
+          candidateSha: candidateSha || "(unresolved)",
+          reason: candidateSha ? "head_moved_after_publication" : "candidate_sha_unresolved",
+        },
+        sessionId,
+      );
+    }
+    let reuseRevalidatedAt = 0;
+    if (reuse && this.publicationVerificationRequired) {
+      // Evidence ages. Re-read before trusting it, so a branch deleted or
+      // advanced between the preview push and here cannot be reported as ours.
+      // Skipped entirely when no probe is wired: the evidence we hold was
+      // itself minted from a verified push, and re-pushing on the strength of
+      // a check we cannot run would be exactly the unconditional push the
+      // brief rules out.
+      const recheck = await this.verifyPublication({ sessionId, plan, requester, expectedSha: candidateSha, cycle, stage: `${stage}_reuse_recheck` });
+      if (recheck.ok) {
+        reuseRevalidatedAt = Date.now();
+      } else if (recheck.kind === "remote_mismatch") {
+        // The tip is a commit we did not publish. Re-pushing would either be
+        // rejected as non-fast-forward or, with force, destroy it. Refuse.
+        return {
+          ok: false,
+          kind: "remote_mismatch",
+          candidateSha,
+          observedSha: recheck.observedSha,
+          message: recheck.detail,
+        };
+      } else {
+        // Branch gone, or unreadable. Publishing again is the correct move --
+        // and if the remote genuinely cannot be reached, the push fails loudly.
+        reuse = false;
+      }
+    }
+
+    let prUrl: string;
+    try {
+      if (reuse && this.deps.openPullRequest) {
+        this.deps.state.audit("loop.publication_reused_push", { sessionId, cycle, stage, branch: plan.branch, sha: candidateSha }, sessionId);
+        prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester });
+      } else {
+        this.deps.state.audit("loop.publication_push_started", { sessionId, cycle, stage, branch: plan.branch, candidateSha: candidateSha || "(unresolved)" }, sessionId);
+        prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester });
+      }
+    } catch (err) {
+      return { ok: false, kind: "push_failed", candidateSha, message: String(err), pushError: err };
+    }
+
+    if (reuse) {
+      // Nothing was pushed, because the commit was already there and proven to
+      // be. Carry the original evidence forward rather than re-minting it: its
+      // `verifiedAt` is when the remote was last actually read.
+      return {
+        ok: true,
+        prUrl,
+        evidence: { ...params.existing!, verifiedAt: reuseRevalidatedAt || params.existing!.verifiedAt },
+        reusedPush: true,
+        verified: true,
+        candidateSha,
+      };
+    }
+
+    if (!this.publicationVerificationRequired) {
+      // Unverifiable, and said so. The run continues on the pre-rc.5 contract
+      // (the push callback resolved), but nothing downstream may call this
+      // VERIFIED publication -- `evidence` is null, so no CI result and no
+      // terminal claim can attach itself to a SHA nobody confirmed.
+      this.deps.state.audit(
+        "loop.publication_unverifiable",
+        { sessionId, cycle, stage, branch: plan.branch, candidateSha: candidateSha || "(unresolved)", reason: "no remoteBranchSha probe wired" },
+        sessionId,
+      );
+      return { ok: true, prUrl, evidence: null, reusedPush: false, verified: false, candidateSha };
+    }
+
+    const verified = await this.verifyPublication({ sessionId, plan, requester, expectedSha: candidateSha, cycle, stage });
+    if (!verified.ok) {
+      return {
+        ok: false,
+        kind: verified.kind,
+        candidateSha,
+        observedSha: verified.observedSha,
+        message: verified.detail,
+        prUrl,
+      };
+    }
+
+    return {
+      ok: true,
+      prUrl,
+      evidence: {
+        sha: verified.observedSha,
+        branch: plan.branch,
+        repo: plan.repo,
+        verifiedAt: Date.now(),
+        via: reuse ? "already_present" : "pushed",
+      },
+      reusedPush: reuse,
+      verified: true,
+      candidateSha,
+    };
+  }
+
+  /**
+   * rc.5 (#2): persist the proof, so resume/recovery and an operator reading
+   * the row can tell a shipped session from a #1168 one without re-deriving it.
+   *
+   * Writes ONLY on positive evidence. A null publication leaves the columns
+   * NULL, which reads as "never verified" -- deliberately not as "verified
+   * absent", and deliberately not overwriting an earlier verified SHA with a
+   * blank on some later unverifiable pass.
+   */
+  private recordPublicationEvidence(sessionId: string, evidence: PublicationEvidence | null): void {
+    if (!evidence) return;
+    try {
+      this.deps.state.db
+        .prepare(`UPDATE sessions SET published_sha = ?, published_at = ?, published_branch = ?, updated_at = ? WHERE id = ?`)
+        .run(evidence.sha, evidence.verifiedAt, evidence.branch, Date.now(), sessionId);
+    } catch (err) {
+      // The audit trail already carries it; a column that failed to write must
+      // not take down a run that genuinely published.
+      this.deps.logger.warn("[loop] could not persist publication evidence", { sessionId, err: String(err) });
+    }
+  }
+
+  /**
+   * rc.5 (#2): terminal for a run whose work is NOT on the remote.
+   *
+   * Distinct from a push failure only in what it knows: here the push (or the
+   * PR-only call) RESOLVED and the remote still does not hold the candidate.
+   * That is the #1168 shape exactly, and pre-rc.5 it was reported as shipped.
+   * Preserves the worktree, because it is now provably the only copy.
+   */
+  private async finaliseUnpublished(params: {
+    sessionId: string;
+    plan: LeadPlan;
+    cycle: number;
+    totalCost: number;
+    kind: PublicationFailureKind;
+    candidateSha: string;
+    observedSha?: string;
+    detail: string;
+    prUrl?: string;
+  }): Promise<LoopOutcome> {
+    this.deps.state.audit(
+      "loop.unpublished",
+      {
+        sessionId: params.sessionId,
+        cycle: params.cycle,
+        branch: params.plan.branch,
+        repo: params.plan.repo,
+        failureKind: params.kind,
+        candidateSha: params.candidateSha || "(unresolved)",
+        observedSha: params.observedSha ?? null,
+        prUrl: params.prUrl ?? null,
+        worktreePreserved: true,
+        worktreePath: params.plan.worktreePath,
+      },
+      params.sessionId,
+    );
+    // Keep the PR association even though the PR does not describe this work:
+    // losing it is how a recoverable session becomes an orphan (beta.129).
+    if (params.prUrl) {
+      try {
+        this.deps.state.db
+          .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, updated_at = ? WHERE id = ?`)
+          .run(params.prUrl, parsePrNumber(params.prUrl) ?? null, Date.now(), params.sessionId);
+      } catch { /* the terminal message still names it */ }
+    }
+    return await this.finaliseFailedPreserveWorktree(
+      params.sessionId,
+      `publication_unverified (${params.kind}): ${describeUnpublished({
+        kind: params.kind,
+        expectedSha: params.candidateSha,
+        observedSha: params.observedSha,
+        branch: params.plan.branch,
+        repo: params.plan.repo,
+        worktreePath: params.plan.worktreePath,
+        prUrl: params.prUrl,
+        detail: params.detail,
+      })}`,
+      params.cycle,
+      params.totalCost,
+    );
+  }
+
+  private async finaliseFailedPreserveWorktree(
+    sessionId: string,
+    reason: string,
+    cycles: number,
+    totalCostUsd: number,
+  ): Promise<LoopOutcome> {
+    this.persistTerminalCause(sessionId, reason, "failed");
+    // beta.96: audit the reason BEFORE setStatus so the native terminal post
+    // (deliverProgress) sees it (see finaliseFailed for the full rationale).
+    // beta.74 (D3 nit): also emit the canonical `loop.failed{reason}` event so
+    // there is ONE terminal-fail event across BOTH terminal paths (this
+    // preserve-worktree variant AND finaliseFailed). Pre-beta.74 a review crash
+    // routed through here and emitted ONLY `loop.failed_worktree_preserved`, so
+    // a `harness_progress` consumer greppping for `loop.failed` missed the
+    // review-crash terminals (session 666fc103). The reason string is preserved
+    // on both events; this just unifies the event name.
+    this.deps.state.audit("loop.failed", { sessionId, reason, cycles, worktreePreserved: true }, sessionId);
+    // rc.3: say WHERE the preserved work is and WHAT is in it. "Worktree
+    // preserved" without a path, a HEAD and a dirty-file list is not a recovery
+    // action -- the operator still has to go and find the directory, and an
+    // uncommitted tree looks identical to an empty one until someone looks.
+    //
+    // rc.4: and say something the operator can actually DO. See
+    // `preservedWorktreeRecoveryAction`.
+    const row = this.deps.state.db
+      .prepare(`SELECT branch, worktree_path FROM sessions WHERE id = ?`)
+      .get(sessionId) as { branch: string | null; worktree_path: string | null } | undefined;
+    const headSha =
+      row?.worktree_path && this.deps.worktreeHeadSha
+        ? await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "")
+        : "";
+    const dirty = await this.worktreeDirtyFiles(sessionId, row?.worktree_path);
+    this.deps.state.audit(
+      "loop.failed_worktree_preserved",
+      {
+        sessionId,
+        reason,
+        cycles,
+        worktreePath: row?.worktree_path ?? null,
+        branch: row?.branch ?? null,
+        headSha: headSha || null,
+        dirtyFiles: dirty.slice(0, 100),
+        dirtyCount: dirty.length,
+        recoveryAction: this.preservedWorktreeRecoveryAction(sessionId, row),
+      },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, {
+      event: "failed_worktree_preserved",
+      phase: "finalize",
+      reason,
+      recoveryAction: this.preservedWorktreeRecoveryAction(sessionId, row),
+    });
+    // rc.3: mark the row so the startup self-heal leaves the directory alone.
+    // beta.129 did this for the abort path and this path was missed, so the
+    // function whose name is a promise to preserve the worktree kept it only
+    // until the next restart -- `failed` is terminal, and worktree-heal reaps
+    // every terminal session's directory unless this flag is set. The rc.3
+    // no-review push gate routes here, so the promise has to be real.
+    try {
+      this.deps.state.db.prepare(`UPDATE sessions SET worktree_preserved = 1 WHERE id = ?`).run(sessionId);
+    } catch (err) {
+      this.deps.logger.warn("[loop] could not mark worktree as preserved", { sessionId, err: String(err) });
+    }
+    this.setStatus(sessionId, "failed");
+    return { status: "failed", sessionId, reason, cycles, totalCostUsd };
+  }
+
+  /**
+   * beta.63 (Part A): the LATE-STAGE STALL WATCHDOG.
+   *
+   * Origin: the b60 record-depth run got ~7 sub-tasks deep, hit a live
+   * env-wait-retry, then the loop STOPPED EMITTING with the session still
+   * `executing` and no terminal event -- for ~2 days -- until a container
+   * restart cleared it. beta.42 bound the re-entrancy guard, beta.60 bound the
+   * whole `runOne`; this binds the SESSION as a whole (and the finalize phase
+   * specifically), which those two do not cover.
+   *
+   * For every non-terminal executing/reviewing session whose last_progress_at
+   * froze past `loop.session_stall_seconds`, it:
+   *   1. emits a LOUD `loop.session_stalled {phase, msSinceProgress}` (logger +
+   *      audit + interaction log);
+   *   2. attempts bounded self-recovery -- if NO live loop-runner owns the
+   *      session (dead executor), re-tick the loop-runner (reuse resume
+   *      machinery: re-drive `run()` from the crystallised brief); if a live
+   *      runner IS present the session is genuinely busy -> leave it alone;
+   *   3. if unrecoverable AND `stall_auto_terminal` is on, transition to a
+   *      terminal `failed`(reason=stalled_no_progress) PRESERVING the worktree,
+   *      and -- when the branch already has commits and `stall_graceful_pr` is
+   *      on -- attempt a graceful push+PR flagged needs_human_review (beta.62
+   *      pattern) so a 95%-done deliverable is not evaporated the way b60 was.
+   *
+   * Idempotent + never throws. Safe to call from a gateway tick / maintenance
+   * cycle / interval. Returns the list of stalls handled (for tests + telemetry).
+   */
+  async checkStalls(now = Date.now()): Promise<Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }>> {
+    const stallSeconds = this.deps.config.loop.session_stall_seconds ?? 1800;
+    const thresholdMs = Math.max(300, stallSeconds) * 1000;
+    const handled: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }> = [];
+
+    // Only NON-TERMINAL, actively-working phases can stall. `planning` is
+    // bounded by lead_timeout; `crystallising` happens pre-loop;
+    // `awaiting_clarification` is a resting pause (must NOT be reaped).
+    let rows: Array<{ id: string; status: string; last_progress_at: number | null; updated_at: number | null; crystallised_prompt: string | null; repo: string | null; branch: string | null; worktree_path: string | null; requester: string; cycles_ran: number; cost_usd: number }>;
+    try {
+      rows = this.deps.state.db
+        .prepare(
+          `SELECT id, status, last_progress_at, updated_at, crystallised_prompt, repo, branch,
+                  worktree_path, requester, cycles_ran, cost_usd
+             FROM sessions
+            WHERE status IN ('executing', 'reviewing')`,
+        )
+        .all() as typeof rows;
+    } catch (err) {
+      this.deps.logger.warn("[loop] checkStalls query failed", { err: String(err) });
+      return handled;
+    }
+
+    for (const row of rows) {
+      const lastProgress = Math.max(row.last_progress_at ?? 0, row.updated_at ?? 0);
+      if (lastProgress <= 0) continue; // never made progress -- not our case
+      const msSinceProgress = now - lastProgress;
+      if (msSinceProgress <= thresholdMs) continue; // still within a legit phase
+
+      const phase = row.status;
+      // 1. LOUD stall event (logger + audit + interaction log).
+      this.deps.logger.error("[loop] SESSION STALLED (no forward progress)", {
+        sessionId: row.id, phase, msSinceProgress, stallSeconds,
+      });
+      this.deps.state.audit("loop.session_stalled", { sessionId: row.id, phase, msSinceProgress }, row.id);
+      this.deps.interactionLog?.log(row.id, { event: "session_stalled", phase: mapPhase(row.status as LoopStatus), status: phase, msSinceProgress });
+
+      // 2. Bounded self-recovery: only if NO live loop-runner owns the session
+      //    (a live runner means it is genuinely busy, not wedged).
+      const liveRunners = runningSessionIds();
+      if (liveRunners.includes(row.id)) {
+        this.deps.state.audit("loop.session_stall_live_runner", { sessionId: row.id, phase, msSinceProgress }, row.id);
+        this.deps.interactionLog?.log(row.id, { event: "stall_live_runner", phase: mapPhase(row.status as LoopStatus), msSinceProgress });
+        handled.push({ sessionId: row.id, phase, msSinceProgress, action: "skipped_live_runner" });
+        continue;
+      }
+
+      // Dead executor. Re-tick the loop-runner (reuse resume machinery) IF we
+      // have a crystallised brief to drive from.
+      if (row.crystallised_prompt) {
+        try {
+          const brief = JSON.parse(row.crystallised_prompt) as CrystallisedBrief;
+          this.deps.state.audit("loop.session_stall_recovery", { sessionId: row.id, phase, action: "re_tick_loop_runner" }, row.id);
+          this.deps.interactionLog?.log(row.id, { event: "stall_recovery", phase: mapPhase(row.status as LoopStatus), action: "re_tick_loop_runner" });
+          // Reset to planning so run() re-drives the phase (same as harness_
+          // resume force). Bump last_progress_at so a second watchdog tick in
+          // the recovery window does not double-fire.
+          this.setStatus(row.id, "planning");
+          void this.run(row.id, brief).catch((err) => {
+            this.deps.logger.error("[loop] stall self-recovery re-tick failed", { sessionId: row.id, err: String(err) });
+          });
+          handled.push({ sessionId: row.id, phase, msSinceProgress, action: "re_ticked" });
+          continue;
+        } catch (err) {
+          this.deps.logger.warn("[loop] stall recovery could not parse brief; falling through to terminal", { sessionId: row.id, err: String(err) });
+        }
+      }
+
+      // 3. Unrecoverable. Auto-terminal transition is behind its own sub-flag
+      //    so detection+logging can stay ON while auto-transition is toggled
+      //    OFF separately (per Carel).
+      if (this.deps.config.loop.stall_auto_terminal === false) {
+        this.deps.state.audit("loop.session_stall_no_auto_terminal", { sessionId: row.id, phase, msSinceProgress }, row.id);
+        this.deps.interactionLog?.log(row.id, { event: "stall_no_auto_terminal", phase: mapPhase(row.status as LoopStatus), msSinceProgress });
+        handled.push({ sessionId: row.id, phase, msSinceProgress, action: "detected_only" });
+        continue;
+      }
+
+      const outcome = await this.finaliseStalled(row);
+      handled.push({ sessionId: row.id, phase, msSinceProgress, action: outcome });
+    }
+    return handled;
+  }
+
+  /**
+   * beta.67 (Bug A): EXTERNAL stall-sweep entry point.
+   *
+   * Origin: beta.66 smoke #4 -- the loop-runner PROCESS died between a
+   * worker's sdk_response and the next handler step. The session record stayed
+   * `status=executing` forever; `ps` showed no live process. beta.63's
+   * in-process `checkStalls` watchdog CANNOT fire in this case: a dead process
+   * cannot watchdog its own death. Also `harness_cancel` set a `reactions_json.
+   * abort` flag that the dead loop never consumed, so the session never
+   * reached a terminal status.
+   *
+   * This method is meant to be called by the EXTERNAL periodic `stall-sweep`
+   * service (registered in src/index.ts like pr-watcher / retention-nightly),
+   * which runs INDEPENDENT of any loop-runner process. On each tick it:
+   *
+   *   1. runs the EXISTING {@link checkStalls} fast path (detection + bounded
+   *      re-tick recovery + auto-terminal transition) -- the external process
+   *      is the safety net, checkStalls is still the in-process fast path;
+   *   2. ADDITIONALLY reaps sessions that have a pending cancel flag
+   *      (`reactions_json.abort`) set but are STILL non-terminal because their
+   *      loop is dead (no live loop-runner) -- transitions those to a terminal
+   *      `failed` (reason `cancelled_dead_loop`) PRESERVING the worktree
+   *      (beta.62 pattern), consuming the cancel the dead loop never did.
+   *
+   * Covers `executing`, `planning`, and `reviewing` (checkStalls covers only
+   * executing/reviewing; a planning session whose loop dies must also be
+   * reaped by the cancel path). Idempotent + never throws. Returns a summary
+   * for tests + telemetry.
+   */
+  async sweepStalls(now = Date.now()): Promise<{
+    ran: boolean;
+    recovered: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }>;
+    terminated: Array<{ sessionId: string; phase: string; reason: string }>;
+  }> {
+    this.deps.state.audit("loop.stall_sweep_ran", { at: now }, undefined);
+    const recovered: Array<{ sessionId: string; phase: string; msSinceProgress: number; action: string }> = [];
+    const terminated: Array<{ sessionId: string; phase: string; reason: string }> = [];
+
+    // 1. Fast path: run the EXISTING in-process watchdog logic. From the
+    //    external process this is the actual safety net for a dead executor.
+    try {
+      const handled = await this.checkStalls(now);
+      for (const h of handled) recovered.push(h);
+      if (handled.length > 0) {
+        this.deps.state.audit("loop.stall_sweep_recovered", { count: handled.length, handled }, undefined);
+      }
+    } catch (err) {
+      this.deps.logger.warn("[loop] sweepStalls checkStalls failed", { err: String(err) });
+    }
+
+    // 2. Pending-cancel + dead-loop reaping. A `harness_cancel` set
+    //    reactions_json.abort but the loop-runner is dead, so the abort was
+    //    never consumed and the session sits non-terminal forever.
+    let rows: Array<{ id: string; status: string; reactions_json: string | null; cycles_ran: number; cost_usd: number }>;
+    try {
+      rows = this.deps.state.db
+        .prepare(
+          // rc.2: `awaiting_clarification` joins the list. A cancel on a paused
+          // session is terminated inline by `cancelSession`, but a restart
+          // between setting the flag and consuming it would otherwise leave it
+          // stuck exactly as before -- no loop to read the flag, and no sweep
+          // looking at the status.
+          `SELECT id, status, reactions_json, cycles_ran, cost_usd
+             FROM sessions
+            WHERE status IN ('executing', 'planning', 'reviewing', 'awaiting_clarification')`,
+        )
+        .all() as typeof rows;
+    } catch (err) {
+      this.deps.logger.warn("[loop] sweepStalls cancel query failed", { err: String(err) });
+      return { ran: true, recovered, terminated };
+    }
+
+    const liveRunners = runningSessionIds();
+    for (const row of rows) {
+      let aborted = false;
+      try {
+        aborted = !!(row.reactions_json ? (JSON.parse(row.reactions_json) as { abort?: boolean }).abort : false);
+      } catch { aborted = false; }
+      if (!aborted) continue;
+      // A live runner will consume the abort at its next checkpoint (beta.55
+      // path at loop.ts ~866); do NOT double-reap it here.
+      if (liveRunners.includes(row.id)) continue;
+
+      // rc.2: a paused session has no dead loop -- it has no loop at all, by
+      // design. Cancelling one is an ordinary cancel that lost its process, so
+      // it ends `aborted` like every other cancel, not `failed`.
+      if (row.status === "awaiting_clarification") {
+        this.deps.logger.warn("[loop] stall-sweep completing a cancel left pending on a paused session", { sessionId: row.id });
+        await this.cancelSession(row.id, { reason: "user_cancel_swept" });
+        terminated.push({ sessionId: row.id, phase: row.status, reason: "user_cancel_swept" });
+        continue;
+      }
+
+      // Dead loop with a pending cancel -> consume it: terminal failed,
+      // PRESERVING the worktree (beta.62 pattern) so the branch stays
+      // inspectable on disk.
+      const reason = "cancelled_dead_loop";
+      this.deps.logger.error("[loop] stall-sweep reaping cancelled session with a dead loop", { sessionId: row.id, phase: row.status });
+      await this.finaliseFailedPreserveWorktree(row.id, reason, row.cycles_ran ?? 0, row.cost_usd ?? 0);
+      this.deps.state.audit("loop.stall_sweep_terminated", { sessionId: row.id, phase: row.status, reason }, row.id);
+      this.deps.interactionLog?.log(row.id, { event: "stall_sweep_terminated", phase: mapPhase(row.status as LoopStatus), reason });
+      terminated.push({ sessionId: row.id, phase: row.status, reason });
+    }
+
+    return { ran: true, recovered, terminated };
+  }
+
+  /**
+   * beta.63 (Part A): terminal handling of an UNRECOVERABLE stall. Never
+   * evaporate a near-done deliverable: if the branch has commits and
+   * `stall_graceful_pr` is on, attempt a graceful push+PR flagged
+   * needs_human_review (beta.62 pattern); otherwise fail terminally PRESERVING
+   * the worktree so the commit chain stays inspectable on disk. Never throws.
+   * Returns a short action string for telemetry.
+   */
+  private async finaliseStalled(row: {
+    id: string; status: string; repo: string | null; branch: string | null; worktree_path: string | null;
+    requester: string; cycles_ran: number; cost_usd: number; crystallised_prompt: string | null;
+  }): Promise<string> {
+    const sessionId = row.id;
+    const cycles = row.cycles_ran ?? 0;
+    const totalCost = row.cost_usd ?? 0;
+    const gracefulEnabled = this.deps.config.loop.stall_graceful_pr !== false;
+
+    // Does the branch have commits worth salvaging? Use the commit probe from
+    // buildVerifyProbes (commitMadeSince against an empty base = "any commit").
+    let hasCommits = false;
+    if (gracefulEnabled && row.repo && row.branch && row.worktree_path && this.deps.buildVerifyProbes && this.deps.worktreeHeadSha) {
+      try {
+        const head = await this.deps.worktreeHeadSha(row.worktree_path).catch(() => "");
+        const plan: LeadPlan = JSON.parse(this.getPlanJson(sessionId) ?? "{}") as LeadPlan;
+        const probes = this.deps.buildVerifyProbes({ plan, requester: row.requester, worktreePath: row.worktree_path, baseSha: "" });
+        const made = await probes.commitMadeSince("").catch(() => ({ made: false, detail: "" }));
+        hasCommits = !!made.made && !!head;
+      } catch (err) {
+        this.deps.logger.warn("[loop] stall commit probe failed", { sessionId, err: String(err) });
+      }
+    }
+
+    if (gracefulEnabled && hasCommits) {
+      const planJson = this.getPlanJson(sessionId);
+      if (planJson) {
+        try {
+          const plan = JSON.parse(planJson) as LeadPlan;
+          // Prefer the crystallised brief; synthesise a minimal one from the
+          // plan when it is missing so a near-done deliverable is still salvaged
+          // into a PR rather than evaporated.
+          const brief: CrystallisedBrief = row.crystallised_prompt
+            ? (JSON.parse(row.crystallised_prompt) as CrystallisedBrief)
+            : { title: `stalled session ${sessionId}`, motivation: "Recovered from a stalled harness session.", acceptanceCriteria: ["(recovered)"], filesLikelyTouched: [], outOfScope: [], riskLevel: "low" };
+          const lastReview = this.getLastReview(sessionId);
+          const reviewReport: ReviewReport = lastReview ?? {
+            verdict: "revise",
+            findings: [],
+            summary: "Session stalled before a final adversary verdict; opened for manual human review.",
+            costUsd: 0,
+            tokensIn: 0,
+            tokensOut: 0,
+          };
+          // rc.5 (#2): a stall salvage is the LAST place that may claim to have
+          // rescued work it did not actually publish -- the whole point of the
+          // path is that the commits are otherwise lost, and it releases the
+          // worktree on success. Verify the remote before doing that.
+          const published = await this.publishCandidate({
+            sessionId, plan, brief, reviewReport, requester: row.requester,
+            cycle: cycles, stage: "stall_recovery", existing: null,
+          });
+          if (!published.ok) {
+            if (published.kind === "push_failed") throw published.pushError;
+            await this.finaliseUnpublished({
+              sessionId, plan, cycle: cycles, totalCost,
+              kind: published.kind, candidateSha: published.candidateSha,
+              observedSha: published.observedSha, detail: published.message, prUrl: published.prUrl,
+            });
+            return "failed_preserved";
+          }
+          const prUrl = published.prUrl;
+          const recReason =
+            `The session STALLED (no forward progress past the watchdog window) before a final verdict, but the branch has commits. ` +
+            `Opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`;
+          const prNumber = parsePrNumber(prUrl);
+          this.setStatus(sessionId, "done");
+          this.deps.state.db
+            .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
+            .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+          this.recordPublicationEvidence(sessionId, published.evidence);
+          this.deps.state.audit(
+            "loop.shipped",
+            {
+              sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaStallRecovery: true,
+              publishedSha: published.evidence?.sha ?? null, publicationVerified: !!published.evidence,
+            },
+            sessionId,
+          );
+          this.deps.interactionLog?.log(sessionId, { event: "stall_graceful_pr", phase: "finalize", prUrl, prNumber });
+          await this.tryReleaseWorktree(sessionId, row.repo!, row.worktree_path!, "shipped");
+          return "graceful_pr";
+        } catch (pushErr) {
+          this.deps.state.audit("loop.stall_graceful_pr_failed", { sessionId, error: String((pushErr as Error)?.message ?? pushErr) }, sessionId);
+          this.deps.interactionLog?.log(sessionId, { event: "stall_graceful_pr_failed", phase: "finalize", error: String(pushErr) });
+          // fall through to preserve-worktree fail
+        }
+      }
+    }
+
+    // Not salvageable into a PR -- fail terminally but PRESERVE the worktree.
+    await this.finaliseFailedPreserveWorktree(sessionId, "stalled_no_progress", cycles, totalCost);
+    return "failed_preserved";
+  }
+
+  /** beta.63: read the persisted lead plan JSON for a session (or null). */
+  /**
+   * beta.101 / beta.105: is every commit this session recorded still reachable
+   * from the worktree's HEAD?
+   *
+   * b101 built this and ran it in ONE place: immediately before the adversary
+   * SDK call. The b103 smoke (session b8ece861) showed why that is not enough.
+   * A clarification resume moved the branch ref off the run's own work -- eight
+   * of ten ledger commits stopped being ancestors of the tip -- and the run then
+   * stalled at a second clarification and was aborted. The guard never ran once,
+   * because the session never reached review. The loss was found four hours
+   * later, by hand, in a post-mortem.
+   *
+   * So this is now a shared probe with two call sites: at RESUME (right after a
+   * re-plan re-allocates the worktree, which is the operation that loses
+   * commits) and before REVIEW (unchanged). Extracted rather than duplicated so
+   * the two can never drift apart.
+   *
+   * Fails OPEN on a probe error: an unreachable-commit check that cannot run
+   * must not block an otherwise sound run.
+   */
+  /**
+   * beta.108: emit `loop.phase_timing` so every phase of a run is attributable.
+   *
+   * Deliberately one event shape rather than a bespoke field per phase, so a
+   * report can sum `durationMs` grouped by `phase` and have the total match the
+   * wall clock. Never throws -- timing must not be able to fail a run.
+   */
+  private emitPhaseTiming(
+    sessionId: string,
+    phase: "planning" | "executing" | "review" | "preview" | "ship",
+    cycle: number,
+    startedAtMs: number,
+    extra: Record<string, unknown> = {},
+  ): void {
+    try {
+      this.deps.state.audit(
+        "loop.phase_timing",
+        { sessionId, phase, cycle, durationMs: Math.max(0, Date.now() - startedAtMs), ...extra },
+        sessionId,
+      );
+    } catch {
+      /* observability only */
+    }
+  }
+
+  /**
+   * beta.109: how many of a review's findings would justify another cycle.
+   *
+   * Uses isBlockingFinding -- diff-addressable AND medium or above -- so this
+   * agrees with the convention-finding gate rather than inventing a second,
+   * looser notion of "serious" alongside merge-recommendation's high-and-above
+   * BLOCKING_SEVERITIES.
+   */
+  private countBlockingFindings(findings: ReviewFinding[] | undefined): number {
+    if (!findings) return 0;
+    return findings.filter((f) => isBlockingFinding(f, classifyFinding(f, this.classifyCtx))).length;
+  }
+
+  /**
+   * rc.5: the findings that should stop a MERGE -- a real unfixed defect, or the
+   * harness reporting it could not verify something. Distinct from
+   * `countBlockingFindings`, which asks whether another cycle is worth running.
+   * See `blocksMerge`.
+   */
+  private mergeBlockingFindings(findings: ReviewFinding[] | undefined): ReviewFinding[] {
+    if (!findings) return [];
+    return findings.filter((f) => blocksMerge(f, classifyFinding(f, this.classifyCtx)));
+  }
+
+  /**
+   * beta.122: the most recent commit this session is known to have made, or
+   * undefined when it has made none.
+   *
+   * Feeds the allocator's re-attach path. The b121 smoke lost two commits
+   * because a resume could not find the branch by name and reset to base; the
+   * ledger knew the tip the whole time, so a rename can no longer cost the
+   * work even when it happens.
+   */
+  lastLedgerCommitSha(sessionId: string): string | undefined {
+    try {
+      const ledger = this.readLedgerCommits(sessionId);
+      return ledger.length > 0 ? ledger[ledger.length - 1]!.commitSha : undefined;
+    } catch {
+      // Never block an allocation on a bookkeeping read.
+      return undefined;
+    }
+  }
+
+  /**
+   * The commits this session has recorded, oldest first. Shared by the
+   * reachability guard and the allocator's re-attach so the two can never
+   * disagree about what "this session's work" means.
+   */
+  private readLedgerCommits(sessionId: string): LedgerCommit[] {
+    const rows = this.deps.state.db
+      .prepare(`SELECT seq, commit_sha, description FROM sub_tasks WHERE session_id = ? AND commit_sha IS NOT NULL AND commit_sha != '' ORDER BY cycle, seq`)
+      .all(sessionId) as Array<{ seq: number; commit_sha: string; description: string | null }>;
+    // beta.102: union with the append-only audit log. sub_tasks rows are
+    // keyed by (cycle, seq) and REPLACED, so a clarification re-plan -- which
+    // restarts at cycle 1 -- erases the commit_sha of any row whose seq the
+    // new plan reuses. Reading only that table would blind this guard on
+    // precisely the runs it exists to protect. See mergeLedgerCommits.
+    const auditRows = this.deps.state.db
+      .prepare(`SELECT payload FROM audit_log WHERE session_id = ? AND event = 'loop.worker_end_turn' ORDER BY created_at`)
+      .all(sessionId) as Array<{ payload: string }>;
+    const fromAudit: LedgerCommit[] = [];
+    for (const a of auditRows) {
+      try {
+        const p = JSON.parse(a.payload) as { seq?: number; commitSha?: string | null; commitShas?: unknown };
+        const seq = Number(p?.seq ?? -1);
+        // beta.103: prefer the full per-turn tip list; fall back to the single
+        // `commitSha` for turns recorded before b103.
+        const many = Array.isArray(p?.commitShas) ? p.commitShas : [];
+        for (const s of many) {
+          if (typeof s === "string" && s.trim()) fromAudit.push({ seq, commitSha: s.trim() });
+        }
+        if (many.length === 0 && p?.commitSha) fromAudit.push({ seq, commitSha: String(p.commitSha) });
+      } catch { /* a malformed payload must not break the guard */ }
+    }
+    return mergeLedgerCommits(
+      rows.map((r) => ({ seq: r.seq, commitSha: r.commit_sha, title: r.description ?? undefined })),
+      fromAudit,
+    );
+  }
+
+  private async checkLedgerReachability(
+    sessionId: string,
+    worktreePath: string,
+    cycle: number,
+    phase: "resume" | "review",
+  ): Promise<{ failed: boolean; unreachable: string[]; headSha: string; detail: string }> {
+    const none = { failed: false, unreachable: [] as string[], headSha: "", detail: "" };
+    if (!this.deps.unreachableCommits) return none;
+    try {
+      const ledger = this.readLedgerCommits(sessionId);
+      // A fresh run has recorded nothing yet, so there is nothing to lose. This
+      // is what makes the resume call site safe to make unconditionally.
+      if (ledger.length === 0) return none;
+      const headSha = this.deps.worktreeHeadSha
+        ? await this.deps.worktreeHeadSha(worktreePath).catch(() => "")
+        : "";
+      const bad = await this.deps.unreachableCommits(worktreePath, headSha || "HEAD", ledger.map((e) => e.commitSha));
+      const integrity = buildLedgerIntegrityReport(ledger, bad);
+      this.deps.state.audit(
+        "loop.ledger_reachability_checked",
+        { sessionId, cycle, phase, headSha, checked: integrity.checked, unreachableCount: integrity.unreachable.length, ok: integrity.ok },
+        sessionId,
+      );
+      if (integrity.ok) return { ...none, headSha };
+      const detail = describeLedgerIntegrityFailure(integrity, headSha);
+      this.deps.state.audit(
+        "loop.ledger_commits_unreachable",
+        {
+          sessionId, cycle, phase, headSha,
+          checked: integrity.checked,
+          unreachable: integrity.unreachable.map((e) => ({ seq: e.seq, commitSha: e.commitSha })),
+        },
+        sessionId,
+      );
+      this.deps.interactionLog?.log(sessionId, {
+        event: "ledger_commits_unreachable", phase: phase === "resume" ? "plan" : "review", cycle,
+        unreachable: integrity.unreachable.map((e) => e.commitSha),
+      });
+      return { failed: true, unreachable: integrity.unreachable.map((e) => e.commitSha), headSha, detail };
+    } catch (err) {
+      this.deps.logger.warn("[loop] ledger reachability guard failed (non-fatal; continuing)", {
+        sessionId, cycle, phase, err: String(err),
+      });
+      return none;
+    }
+  }
+
+  private getPlanJson(sessionId: string): string | null {
+    try {
+      const r = this.deps.state.db.prepare(`SELECT lead_plan_json FROM sessions WHERE id = ?`).get(sessionId) as { lead_plan_json: string | null } | undefined;
+      return r?.lead_plan_json ?? null;
+    } catch { return null; }
+  }
+
+  /**
+   * rc.3: the one rule the three salvage paths share -- has an adversary ever
+   * reviewed this session's code at all?
+   *
+   * The harness advertises that nothing is pushed until the adversary passes.
+   * That was not strictly true. Three paths reached `pushBranchAndOpenPr` after
+   * synthesising a placeholder `revise` report for a session where no review had
+   * EVER run: `tryBestEffortVerify` (the verify sub-task timed out),
+   * `finaliseAbortSalvaging` (a budget or time ceiling), and
+   * `finaliseReviewCrash` (an infra error, which beta.90 deliberately let
+   * through on cycle 1). Each stamped the PR `needs_human_review`, which is a
+   * real mitigation but is body text on a PR -- it relies on a human reading it.
+   *
+   * Where a PRIOR review exists, shipping with that stamp is still a defensible
+   * trade: something adversarial did look at this code, and losing the work has
+   * a cost too. Where NOTHING has reviewed it, the trade is not available, so
+   * these paths now preserve the worktree instead. The commits survive on disk
+   * and stay resumable; only the push is refused.
+   */
+  private hasBeenReviewed(sessionId: string): boolean {
+    return this.getLastReview(sessionId) !== undefined;
+  }
+
+  /**
+   * rc.3: audit a refused salvage push. Returns true when the caller must NOT
+   * push, so every call site reads as `if (this.refuseUnreviewedSalvage(...))`.
+   */
+  private refuseUnreviewedSalvage(sessionId: string, path: string, detail: Record<string, unknown> = {}): boolean {
+    if (this.hasBeenReviewed(sessionId)) return false;
+    this.deps.state.audit(
+      "loop.salvage_refused_unreviewed",
+      { sessionId, path, why: "no adversary review has ever run for this session", ...detail },
+      sessionId,
+    );
+    this.deps.interactionLog?.log(sessionId, { event: "salvage_refused_unreviewed", phase: "finalize", path });
+    this.deps.logger.warn(
+      "[loop] refusing to push code no adversary has reviewed; preserving the worktree instead",
+      { sessionId, path },
+    );
+    return true;
+  }
+
+  /** beta.63: read the most recent completed review for a session (or undefined). */
+  private getLastReview(sessionId: string): ReviewReport | undefined {
+    try {
+      const r = this.deps.state.db
+        .prepare(`SELECT verdict, findings, summary, cost_usd AS costUsd, sdk_session_id AS sdkSessionId FROM reviews WHERE session_id = ? ORDER BY cycle DESC LIMIT 1`)
+        .get(sessionId) as { verdict: string; findings: string; summary: string; costUsd: number; sdkSessionId: string | null } | undefined;
+      if (!r) return undefined;
+      return {
+        verdict: r.verdict as ReviewReport["verdict"],
+        findings: JSON.parse(r.findings ?? "[]"),
+        summary: r.summary ?? "",
+        costUsd: r.costUsd ?? 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        sdkSessionId: r.sdkSessionId ?? undefined,
+      };
+    } catch { return undefined; }
+  }
+
+  /**
+   * beta.62 (fix #2/#3): handle an adversary-review CRASH. The completed,
+   * self-verified sub-task work must not be silently discarded (the
+   * b60-attempt-2 failure). GRACEFUL PATH -- when all of:
+   *   - `graceful_pr_on_review_crash` is not disabled, AND
+   *   - a PRIOR cycle already produced a completed adversary review
+   *     (`priorReview`), AND
+   *   - this cycle's own sub-task self-verification is fully GREEN (the latest
+   *     verification for every sub-task passed),
+   * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
+   * human can inspect the adversary-motivated commits. The harness_merge_pr
+   * hard gate refuses `needs_human_review` (never auto-overridable), so this
+   * cannot silently ship unverified code -- it just preserves the deliverable.
+   * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch
+   * remains inspectable on disk. Never throws.
+   *
+   * beta.90 (Feature 1): an INFRASTRUCTURE crash (out of disk / memory / IO /
+   * transport -- see infra-crash.ts) with GREEN self-verify is ALSO eligible,
+   * WITHOUT requiring cycle>=2 or a prior review, because it is an environment
+   * failure that says nothing about the code. When there is no prior review to
+   * ship, a minimal `revise` review is synthesized so the graceful PR still
+   * opens flagged needs_human_review.
+   */
+  private async finaliseReviewCrash(
+    sessionId: string,
+    err: unknown,
+    cycle: number,
+    totalCost: number,
+    ctx: { plan: LeadPlan; brief: CrystallisedBrief; lastReview: ReviewReport | undefined; row: { requester: string } },
+  ): Promise<LoopOutcome> {
+    const reason = `review_crash: ${String((err as Error)?.message ?? err)}`;
+    const gracefulEnabled = this.deps.config.loop.graceful_pr_on_review_crash !== false;
+    const priorReview = ctx.lastReview; // set only after a PRIOR cycle's review persisted
+    const selfVerify = this.readLocalVerification(sessionId);
+    const selfVerifyGreen = selfVerify.length > 0 && selfVerify.every((v) => v.ok);
+
+    // beta.90 (Feature 1): an INFRASTRUCTURE crash (ENOSPC/out-of-disk, ENOMEM,
+    // EMFILE, ECONNRESET/socket-hang-up, etc.) is an ENVIRONMENT failure, not a
+    // signal about the code under review. It must NOT sink a fully self-verified
+    // run just because it happened on cycle 1 (no prior review). When the crash
+    // is infra AND every sub-task self-verified green, recovery is eligible
+    // WITHOUT requiring cycle>=2 or a prior review -- we open a
+    // needs_human_review PR (never auto-mergeable) so the deliverable survives.
+    //
+    // rc.3: the infra path no longer waives the PRIOR-REVIEW requirement, only
+    // the cycle>=2 one. beta.90's reasoning holds -- an out-of-disk error says
+    // nothing about the code -- but the conclusion it drew was that a
+    // self-verified run may be pushed with no adversarial review at all, and
+    // self-verification is the worker checking its own work. The deliverable is
+    // still preserved: the commits stay in the worktree and the session stays
+    // resumable, so an operator can review and push them. Only the automatic
+    // push is withdrawn.
+    const infra = isInfraCrash(String((err as Error)?.message ?? err));
+    const eligible = gracefulEnabled && selfVerifyGreen && !!priorReview && (infra || cycle >= 2);
+    this.deps.state.audit(
+      "loop.review_crash_recovery",
+      {
+        sessionId,
+        cycle,
+        eligible,
+        gracefulEnabled,
+        infra,
+        hasPriorReview: !!priorReview,
+        selfVerifyGreen,
+        selfVerifySubtasks: selfVerify.length,
+        selfVerifyFailed: selfVerify.filter((v) => !v.ok).map((v) => v.seq),
+      },
+      sessionId,
+    );
+
+    if (!eligible) {
+      // Not salvageable into a PR -- fail, but keep the worktree (fix #3).
+      if (!priorReview) {
+        this.refuseUnreviewedSalvage(sessionId, "review_crash", { cycle, infra, selfVerifyGreen });
+        return await this.finaliseFailedPreserveWorktree(
+          sessionId,
+          `${reason}; no adversary review has ever run for this session, so the commits are preserved in the worktree rather than pushed -- run harness_resume to review and push them`,
+          cycle,
+          totalCost,
+        );
+      }
+      return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
+    }
+
+    // rc.3: `eligible` now implies a prior review exists, so the beta.90
+    // synthesized placeholder report is gone. It only ever existed to give the
+    // push something to attach when nothing had reviewed the code, which is the
+    // case this gate refuses.
+    const reviewForPr = priorReview;
+
+    // GRACEFUL PR: open the PR on the existing branch using the last COMPLETED
+    // review (the prior cycle's) or the synthesized infra-crash review, flagged
+    // needs_human_review.
+    let prUrl: string;
+    let crashPublication: PublicationEvidence | null = null;
+    try {
+      // rc.5 (#2): same rule as every other ship path -- the remote is read
+      // back before this is called a PR holding the run's commits.
+      const published = await this.publishCandidate({
+        sessionId, plan: ctx.plan, brief: ctx.brief, reviewReport: reviewForPr,
+        requester: ctx.row.requester, cycle, stage: "review_crash_recovery", existing: null,
+      });
+      if (!published.ok) {
+        if (published.kind === "push_failed") throw published.pushError;
+        return await this.finaliseUnpublished({
+          sessionId, plan: ctx.plan, cycle, totalCost,
+          kind: published.kind, candidateSha: published.candidateSha,
+          observedSha: published.observedSha, detail: published.message, prUrl: published.prUrl,
+        });
+      }
+      prUrl = published.prUrl;
+      crashPublication = published.evidence;
+    } catch (pushErr) {
+      this.deps.state.audit(
+        "loop.review_crash_pr_failed",
+        { sessionId, cycle, error: String((pushErr as Error)?.message ?? pushErr) },
+        sessionId,
+      );
+      // Push failed too -- preserve the worktree so the branch is still
+      // inspectable on disk.
+      return await this.finaliseFailedPreserveWorktree(sessionId, `${reason}; graceful_pr_failed: ${String(pushErr)}`, cycle, totalCost);
+    }
+
+    const recReason = infra
+      ? `The adversary review for cycle ${cycle} crashed on an INFRASTRUCTURE error (e.g. out of disk) before producing a verdict, but all ${selfVerify.length} sub-task(s) self-verified green. ` +
+        `The review attached to this PR is the last COMPLETED one, from an earlier cycle -- it is not a review of the final commits. ` +
+        `The commits are opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`
+      : `The adversary review for cycle ${cycle} crashed before producing a verdict, but all ${selfVerify.length} sub-task(s) self-verified green and the prior cycle's review was addressed. ` +
+        `The commits are opened for MANUAL human review -- there is no machine sign-off, so this is NOT auto-mergeable.`;
+    const prNumber = parsePrNumber(prUrl);
+    this.deps.state.db
+      .prepare(
+        `UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`,
+      )
+      .run(prUrl, prNumber ?? null, "needs_human_review", recReason, Date.now(), sessionId);
+    this.recordPublicationEvidence(sessionId, crashPublication);
+    this.deps.state.audit(
+      "loop.shipped",
+      {
+        sessionId, prUrl, prNumber, mergeRecommendation: "needs_human_review", reason: recReason, viaReviewCrashRecovery: true, viaInfraCrash: infra,
+        publishedSha: crashPublication?.sha ?? null, publicationVerified: !!crashPublication,
+      },
+      sessionId,
+    );
+    // The deliverable is safely on origin as a PR -- rc.5 (#2): now actually
+    // CONFIRMED to be, by reading the remote back. Releasing the local worktree
+    // is fine here (unlike the non-graceful path).
+    await this.tryReleaseWorktree(sessionId, ctx.plan.repo, ctx.plan.worktreePath, "shipped");
+    return { status: "shipped", sessionId, prUrl, cycles: cycle, totalCostUsd: totalCost };
+  }
+
+  /**
+   * beta.55 (B2): pause the session for a human decision. Persists the
+   * question + the paused sub-task seq and sets status `awaiting_clarification`.
+   * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so
+   * harness_answer can re-drive the loop from the paused seq in place. The
+   * worktree-heal protect set (beta.45) + recovery both treat
+   * `awaiting_clarification` as resumable, so a stray re-register or restart
+   * won't reap the worktree or auto-fail the pause.
+   */
+  private async finaliseAwaitingClarification(
+    sessionId: string,
+    question: string,
+    seq: number,
+    cycles: number,
+    totalCostUsd: number,
+    subtask?: {
+      title: string;
+      intent: string;
+      expectedPaths?: string[];
+      actualPaths?: string[];
+      expectedOriginalPaths?: string[];
+      task?: LeadPlanSubTask;
+      policyConflicts?: Array<{ path: string; rule: string }>;
+    } | null,
+  ): Promise<LoopOutcome> {
+    /*
+     * rc.9: checkpoint BEFORE blocking on a human.
+     *
+     * This is the longest-lived state the harness has -- it is designed to
+     * wait, potentially overnight -- and it is exactly where StitchGuard was
+     * standing when the container restarted. Nine commits, one tmpfs worktree,
+     * and a pause with no expiry. If there is a durable copy to be made, the
+     * moment before we hand control to a person is when to make it.
+     *
+     * Awaited, not fired and forgotten: the point of the checkpoint is that it
+     * exists before the wait begins.
+     */
+    try {
+      const row = this.deps.state.db
+        .prepare(`SELECT worktree_path, branch, current_cycle, repo, requester FROM sessions WHERE id = ?`)
+        .get(sessionId) as
+        | { worktree_path: string | null; branch: string | null; current_cycle: number; repo: string | null; requester: string | null }
+        | undefined;
+      if (row) {
+        await this.durableCheckpoint({
+          sessionId,
+          cycle: row.current_cycle ?? cycles,
+          subTaskId: null,
+          trigger: "human_gate",
+          worktreePath: row.worktree_path,
+          branch: (row.branch ?? "").trim() || null,
+          repo: row.repo, requester: row.requester,
+        });
+      }
+    } catch (err) {
+      this.deps.state.audit("loop.checkpoint_failed", { sessionId, trigger: "human_gate", error: String(err) }, sessionId);
+    }
+
+    const clarificationId = randomUUID();
+    const pausedAt = Date.now();
+    this.deps.state.db.exec("BEGIN IMMEDIATE");
+    try {
+      pauseActiveDeadline(this.deps.state.db, sessionId, pausedAt);
+      this.deps.state.db.prepare(
+        `UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
+                             clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
+                             clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`,
+      ).run(
+        question,
+        seq,
+        clarificationId,
+        subtask ? JSON.stringify(subtask) : null,
+        pausedAt,
+        pausedAt,
+        sessionId,
+      );
+      this.deps.state.db.exec("COMMIT");
+    } catch (err) {
+      try { this.deps.state.db.exec("ROLLBACK"); } catch { /* no transaction */ }
+      throw err;
+    }
+    this.deps.interactionLog?.log(sessionId, {
+      event: "state_transition",
+      phase: "unknown",
+      status: "awaiting_clarification",
+    });
+    try { this.deps.deliverProgress?.(sessionId, "awaiting_clarification"); } catch { /* best effort */ }
+    this.deps.state.audit(
+      "loop.clarification_requested",
+      { sessionId, seq, clarificationId, question: question.slice(0, 1000), cycle: cycles },
+      sessionId,
+    );
+    this.deps.logger.warn("[loop] paused for clarification (awaiting_clarification); worktree preserved", {
+      sessionId, seq, question: question.slice(0, 200),
+    });
+    // Deliberately NO scheduleWorktreeReleaseForSession -- the worktree must
+    // survive so the answered resume continues in place.
+    return { status: "awaiting_clarification", sessionId, question, seq, cycles, totalCostUsd };
+  }
+}
+
+/**
+ * beta.63 (Part A/B): map a loop status to the interaction-log phase
+ * classification. Kept a free function so it is importable by tests.
+ */
+export function mapPhase(status: LoopStatus): InteractionPhase {
+  switch (status) {
+    case "crystallising": return "classify";
+    case "planning": return "plan";
+    case "executing": return "worker";
+    case "reviewing": return "review";
+    case "done":
+    case "failed":
+    case "aborted": return "finalize";
+    default: return "unknown";
+  }
+}
+
+/** Median of a non-empty numeric array. */
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 0 ? (s[mid - 1]! + s[mid]!) / 2 : s[mid]!;
+}
+
+/**
+ * Kahn's-algorithm topological sort of sub-tasks by `dependsOn`.
+ * Stable: preserves original seq order among independent tasks.
+ * Throws on cycles.
+ */
+export function topoSortSubTasks(subTasks: LeadPlanSubTask[]): LeadPlanSubTask[] {
+  const bySeq = new Map(subTasks.map((s) => [s.seq, s] as const));
+  const remainingDeps = new Map<number, number>();
+  const dependents = new Map<number, number[]>();
+  for (const s of subTasks) {
+    const deps = (s.dependsOn ?? []).filter((d) => bySeq.has(d));
+    remainingDeps.set(s.seq, deps.length);
+    for (const d of deps) {
+      if (!dependents.has(d)) dependents.set(d, []);
+      dependents.get(d)!.push(s.seq);
+    }
+  }
+  const ready: number[] = subTasks
+    .filter((s) => (remainingDeps.get(s.seq) ?? 0) === 0)
+    .map((s) => s.seq)
+    .sort((a, b) => a - b);
+  const out: LeadPlanSubTask[] = [];
+  while (ready.length > 0) {
+    const next = ready.shift()!;
+    out.push(bySeq.get(next)!);
+    for (const dep of dependents.get(next) ?? []) {
+      const left = (remainingDeps.get(dep) ?? 0) - 1;
+      remainingDeps.set(dep, left);
+      if (left === 0) {
+        // Insert-in-order to keep stable ordering
+        const pos = ready.findIndex((r) => r > dep);
+        if (pos === -1) ready.push(dep);
+        else ready.splice(pos, 0, dep);
+      }
+    }
+  }
+  if (out.length !== subTasks.length) {
+    throw new Error(`sub-task dependency cycle detected (only sorted ${out.length}/${subTasks.length})`);
+  }
+  return out;
+}

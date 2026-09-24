@@ -324,7 +324,7 @@ test("relatedFiles survives the index.ts finding mapper", () => {
 });
 
 test("the loop detects stuck findings and surfaces the unresolvable ones", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /detectStuckFindings\(/);
   assert.match(src, /"loop\.finding_stuck"/);
   assert.match(src, /"loop\.finding_co_fix_routed"/);
@@ -336,7 +336,7 @@ test("co-fix routing recruits sub-tasks into revise SCOPE, not just the hint", (
   // b91 scoping keeps a sub-task only when its files intersect a finding file,
   // so a recruited owner that is not also given the path is skipped moments
   // later -- the exact trap b107 hit with orphan adoption.
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf('"loop.finding_co_fix_routed"');
   assert.ok(i > 0);
   const block = src.slice(i, i + 2000);
@@ -349,5 +349,5 @@ test("co-fix routing recruits sub-tasks into revise SCOPE, not just the hint", (
   assert.match(block, /if \(!st\.coFixGrantedFiles\.includes\(p\)\) st\.coFixGrantedFiles\.push\(p\);/);
   // And the grant must be threaded to the router, or the exclusion it powers
   // can never fire.
-  assert.match(S("src/orchestrator/loop.ts"), /coFixGrantedFiles: s\.coFixGrantedFiles,/);
+  assert.match(S("src/orchestrator/legacy-loop.ts"), /coFixGrantedFiles: s\.coFixGrantedFiles,/);
 });

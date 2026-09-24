@@ -236,7 +236,7 @@ test("beta.84 #2: manifest declares revise_spec_timeout_seconds (additionalPrope
 });
 
 test("beta.92 SUPERSEDES beta.84 #2: the timed revise-spec turn was DELETED (no withTimeout(reviseSpecCall), no revise_spec_timeout audit)", skip, () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   // beta.92 deleted the LLM revise-spec turn entirely -> none of the b84 timing
   // wiring exists in the loop anymore (the whole failure mode is gone).
   assert.ok(!/withTimeout\(reviseSpecCall/.test(src), "beta.92 removed the timed revise-spec call");
@@ -247,7 +247,7 @@ test("beta.92 SUPERSEDES beta.84 #2: the timed revise-spec turn was DELETED (no 
 });
 
 test("beta.84 #2: progress fallback detection includes the timeout event", skip, () => {
-  const src = readSrc("src/orchestrator/progress.ts");
+  const src = readSrc("src/orchestrator/legacy-progress.ts");
   assert.ok(
     src.includes("loop.revise_spec_timeout"),
     "reviseSpecFellBack detection must treat a timeout as a raw-findings fallback",

@@ -377,7 +377,7 @@ test("rc.10 (F1): a failed checkpoint manifest carries no secret", async () => {
 
 test("rc.10 (F1): the loop hands the authenticated runner to createCheckpoint", async () => {
   const { readFileSync: rf } = await import("node:fs");
-  const loop = rf(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loop = rf(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   assert.match(loop, /checkpointGitRunner/, "the dependency exists");
   assert.match(loop, /git: auth\?\.run/, "and is passed to createCheckpoint");
   assert.match(loop, /await auth\.dispose\(\)/, "and disposed");
@@ -453,7 +453,7 @@ test("rc.10 (F1): a real run routes its checkpoint through the authenticated run
 
 test("rc.10 (F1): credential resolution failing does not take the run down", async () => {
   const { readFileSync: rf } = await import("node:fs");
-  const loop = rf(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loop = rf(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const at = loop.indexOf("if (this.deps.checkpointGitRunner && repo && requester)");
   assert.ok(at > 0);
   const body = loop.slice(at, at + 600);

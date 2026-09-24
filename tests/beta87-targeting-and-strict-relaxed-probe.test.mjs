@@ -65,7 +65,7 @@ test("beta.87 [1]: a properly-pathed finding targets its file (and not the sibli
 // ---- wiring source-asserts ----
 
 test("beta.87 [1]: loop targets structurally via resolveContractPath strictContract (no bidirectional fuzzy)", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   assert.ok(
     /const isTargeted = \(p: string\): boolean =>\s*\n?\s*!!resolveContractPath\(targetedFiles, p, \{ strictContract: true \}\)/.test(src),
     "isTargeted must use resolveContractPath strictContract",
@@ -75,7 +75,7 @@ test("beta.87 [1]: loop targets structurally via resolveContractPath strictContr
 });
 
 test("beta.87 [2]: targeted set is per-sub-task when reviseSpecApplied (workerContext), review-wide fallback otherwise", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   assert.ok(/reviseSpecApplied\s*\?\s*\[/.test(src), "per-sub-task branch gated on reviseSpecApplied");
   assert.ok(/st\.filesLikelyTouched/.test(src) && /st\.workerContext\?\.codeExcerpts/.test(src),
     "per-sub-task files derived from filesLikelyTouched + codeExcerpts");

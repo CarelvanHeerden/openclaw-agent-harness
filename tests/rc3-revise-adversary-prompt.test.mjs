@@ -244,7 +244,7 @@ test("an ordinary session, and a pre-rc.3 revise, both build no context", skipDi
 });
 
 test("the review passes the revision context to BOTH adversary calls", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const calls = [...src.matchAll(/this\.deps\.runAdversary\(\{/g)];
   assert.equal(calls.length, 2, "the plain review and the runtime-enriched re-review");
   for (const c of calls) {

@@ -125,7 +125,7 @@ const runVault = (args, env) => {
 // ---------------------------------------------------------------------------
 
 test("the sub-task ledger is told what actually ran, not config.models.worker", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
 
   // The INSERT must not reach past the seam to the raw config value. That is
   // the whole defect: it ignored both the per-sub-task override and the route.

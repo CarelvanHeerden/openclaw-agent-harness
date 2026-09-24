@@ -266,7 +266,7 @@ test("rc2: cancel still requires authorisation", { skip }, async () => {
 });
 
 test("rc2: a running loop is asked to stop rather than reaped underneath itself", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const body = src.slice(src.indexOf("async cancelSession("), src.indexOf("private finaliseAbort("));
   assert.match(body, /isSessionLoopRunning\(sessionId\)/);
   assert.match(body, /loopRunning: true/);
@@ -279,7 +279,7 @@ test("rc2: a running loop is asked to stop rather than reaped underneath itself"
 });
 
 test("rc2: the stall sweep also finishes a cancel left pending on a paused session", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /WHERE status IN \('executing', 'planning', 'reviewing', 'awaiting_clarification'\)/);
   assert.match(src, /row\.status === "awaiting_clarification"[\s\S]{0,300}cancelSession\(row\.id/);
 });

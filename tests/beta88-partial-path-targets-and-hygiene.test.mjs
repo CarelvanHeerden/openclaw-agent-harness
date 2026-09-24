@@ -56,7 +56,7 @@ test("beta.88 [E1]: partial-path adversary shorthand does NOT structurally resol
 // [E1] wiring — the loop must gate relaxation on anyTargetResolvable, and audit
 // the unresolved case distinctly so it can't silently relax everything.
 test("beta.88 [E1]: loop gates relaxation on anyTargetResolvable + audits unresolved case", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   assert.ok(/const anyTargetResolvable\s*=/.test(src), "computes anyTargetResolvable");
   assert.ok(/if \(anyTargetResolvable\) \{/.test(src), "relaxation gated on anyTargetResolvable, not just length");
   assert.ok(

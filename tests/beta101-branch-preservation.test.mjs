@@ -365,7 +365,7 @@ test("beta101: a path mention outranks a bare deviation cue", () => {
 
 // --- 7. wiring ---------------------------------------------------------------
 
-const loopSrc = S("src/orchestrator/loop.ts");
+const loopSrc = S("src/orchestrator/legacy-loop.ts");
 const gitSrc = S("src/adapters/git-worktree.ts");
 const indexSrc = S("src/index.ts");
 const regSrc = S("src/tools/registration.ts");

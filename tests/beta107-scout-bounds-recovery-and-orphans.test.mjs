@@ -157,7 +157,7 @@ test("beta107: an untruncated report is NOT flagged", { skip }, async () => {
 });
 
 test("beta107: loop.lead_scout carries the truncation fields", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const evt = loop.slice(loop.indexOf('"loop.lead_scout"'), loop.indexOf('"loop.lead_scout"') + 1400);
   assert.match(evt, /truncated: plan\.scout\.truncated === true/);
   assert.match(evt, /reportCharsRaw: plan\.scout\.reportCharsRaw/);
@@ -372,7 +372,7 @@ test("beta107: the adopting sub-task survives b91 revise scoping", { skip }, () 
 });
 
 test("beta107: the loop adopts, audits, and widens the adopter's scope", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /adoptOrphans: this\.deps\.config\.loop\.revise_adopt_orphan_findings !== false/);
   assert.match(loop, /"loop\.orphan_finding_adopted"/);
   assert.match(loop, /adoptedBySeq: adopted\?\.seq \?\? null/);

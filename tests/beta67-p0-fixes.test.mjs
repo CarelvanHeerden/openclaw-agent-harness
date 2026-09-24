@@ -232,7 +232,7 @@ test("beta67-A: stall-sweep service registered like pr-watcher/retention-nightly
 });
 
 test("beta67-A: sweepStalls keeps the in-process checkStalls fast path (does NOT rip it out)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /async checkStalls\(/, "checkStalls still present (fast path)");
   assert.match(src, /async sweepStalls\(/, "sweepStalls present (safety net)");
   assert.match(src, /await this\.checkStalls\(now\)/, "sweepStalls runs checkStalls");
@@ -259,7 +259,7 @@ test("beta67-B: adversary diff is generated from the session's plan_base_sha, no
   // unchanged.
   assert.match(src, /let diffText = await git\.diff\(plan\.worktreePath, diffBase, adversaryGhToken\);/);
   // the loop threads the persisted plan_base_sha as baseSha
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /SELECT plan_base_sha FROM sessions WHERE id = \?/);
   // rc.3 appends `revision` for a revise session; the base sha it diffs
   // against is unchanged, which is the thing this test is here to hold.
@@ -267,7 +267,7 @@ test("beta67-B: adversary diff is generated from the session's plan_base_sha, no
 });
 
 test("beta67-B: fork-point captured at plan_ready via worktreeMergeBase (loop.ts source)", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /worktreeMergeBase\(plan\.worktreePath, this\.deps\.config\.repos\.default_base_branch\)/);
   assert.match(loop, /UPDATE sessions SET plan_base_sha = \? WHERE id = \?/);
   assert.match(loop, /loop\.plan_base_sha_captured/);
@@ -304,7 +304,7 @@ test("beta67-B: adversary sees ONLY the branch's own commits (behavioural): diff
   });
 
 test("beta67-B: loop.adversary_diff_base audit fires and warns on a suspiciously high commit count", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /loop\.adversary_diff_base/);
   assert.match(loop, /commitCount > Math\.max\(subTaskCount \* 3, subTaskCount \+ 5\)/);
   assert.match(loop, /suspiciously high vs sub-task count/);
@@ -365,7 +365,7 @@ test("beta67-C: beta.15 semantics preserved — explicit verify wins with plan-t
   });
 
 test("beta67-C: contract selection consults effectiveTaskMode (loop.ts + verify-contract.ts source)", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   // effectiveTaskMode computed from the revise-no-change condition
   // rc.3 added the clean-tree condition: uncommitted edits are not "no change".
   assert.match(loop, /cycle > 1 && st\.taskMode === "mutate" && !result\.commitSha && !workerDirty\s*\n?\s*\? "observe"\s*\n?\s*: st\.taskMode/);

@@ -23,7 +23,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const loopSrc = readFileSync(resolve(repoRoot, "src/orchestrator/loop.ts"), "utf8");
+const loopSrc = readFileSync(resolve(repoRoot, "src/orchestrator/legacy-loop.ts"), "utf8");
 const indexSrc = readFileSync(resolve(repoRoot, "src/index.ts"), "utf8");
 
 let OrchestratorLoop = null;

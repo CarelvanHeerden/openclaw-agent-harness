@@ -124,7 +124,7 @@ test("beta81/A: registration emits UNCONDITIONAL tool.run.budget_estimate + surf
 });
 
 test("beta81/A: progress snapshot carries estimatedUsd + pctOfCap", () => {
-  const src = S("src/orchestrator/progress.ts");
+  const src = S("src/orchestrator/legacy-progress.ts");
   assert.match(src, /estimatedUsd/);
   assert.match(src, /pctOfCap/);
 });
@@ -137,7 +137,7 @@ test("beta81/B: worker prompt forbids running tests/build/lint locally to green 
 });
 
 test("beta81/B: loop polls CI after push and branches on success/failure/none/timeout", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /pollCiStatus/);
   assert.match(src, /loop\.ci_success/);
   assert.match(src, /loop\.ci_failure/);
@@ -153,7 +153,7 @@ test("beta81/B: github adapter can fetch failing check logs to drive revise", ()
 });
 
 test("beta81/C1+C2: worker-timeout retry re-fires or fails, bounded by the subtask deadline", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // retry must actually re-invoke the worker (not log-then-noop) and the outer
   // deadline must cover the retry path.
   assert.match(src, /worker_timeout_retry|worker_timed out; retrying/i);
@@ -162,7 +162,7 @@ test("beta81/C1+C2: worker-timeout retry re-fires or fails, bounded by the subta
 
 test("beta81/C3: recovery resumes at the failed sub-task instead of full re-plan", () => {
   const rec = S("src/state/recovery.ts");
-  const src = S("src/orchestrator/loop.ts") + rec;
+  const src = S("src/orchestrator/legacy-loop.ts") + rec;
   assert.match(src + S("src/config.ts"), /recovery_resume_at_subtask/);
 });
 

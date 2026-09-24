@@ -193,7 +193,7 @@ test("beta65/P0: sdk_stream_opened + sdk_first_token diagnostics still emitted (
   const log = S("src/state/interaction-log.ts");
   assert.match(log, /event: "sdk_stream_opened"/);
   assert.match(log, /event: "sdk_first_token"/);
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /logSdkStreamOpened\(/);
   assert.match(loop, /logSdkFirstToken\(/);
 });
@@ -243,7 +243,7 @@ test("beta65/P0: runWorkerSdk threads streamOpenTimeoutSeconds into consumeWorke
 });
 
 test("beta65/P0: loop audits split-phase attribution on first_token_timeout (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /phase1_stream_open/);
   assert.match(src, /phase2_first_token/);
   assert.match(src, /sdk_stream_open_timeout_seconds: this\.deps\.config\.loop\.sdk_stream_open_timeout_seconds/);

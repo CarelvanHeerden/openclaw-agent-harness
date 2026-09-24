@@ -170,7 +170,7 @@ test("beta.95: verify.ts routes targeted revise-cycle files to the plan-base win
 });
 
 test("beta.95: both loop.ts verify call sites thread cycle + kill-switch (incl. the retry path)", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   const hits = src.match(/reviseTargetedPlanbaseWindow: this\.deps\.config\.loop\.revise_targeted_planbase_window !== false/g) ?? [];
   assert.ok(hits.length >= 2, `both verify call sites must pass the flag (found ${hits.length})`);
   // the retry call previously dropped branchBaseSha -- assert it is restored.

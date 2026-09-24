@@ -79,7 +79,7 @@ test("beta48 P5: a disallowed base command is still rejected", { skip: !guard },
 // ----------------------------------------------------------------------------
 const sdkSrc = read("src/adapters/claude-code.ts");
 const workerSrc = read("src/orchestrator/worker.ts");
-const loopSrc = read("src/orchestrator/loop.ts");
+const loopSrc = read("src/orchestrator/legacy-loop.ts");
 
 test("beta48 C1: SDK adapter captures the worker's final assistant message", () => {
   assert.match(sdkSrc, /finalMessage: string;/);

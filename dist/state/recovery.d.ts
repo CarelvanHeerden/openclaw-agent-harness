@@ -23,6 +23,7 @@
  * 'interrupted' -- they're too old to safely auto-resume.
  */
 import type { StateStore } from "./store.js";
+import type { ControlRepository, RunLease } from "../control/repository.js";
 export interface RecoveryOptions {
     staleAfterSeconds: number;
     notify?: (session: RecoveredSession) => Promise<void>;
@@ -101,5 +102,30 @@ export declare function findInterruptedSessions(state: StateStore, staleAfterSec
 export declare function recoverSessions(state: StateStore, opts: RecoveryOptions): Promise<{
     interrupted: number;
     resumable: number;
+}>;
+export interface AutonomousRecoveryCandidate {
+    readonly runId: string;
+    readonly version: number;
+    readonly authorityHash: string;
+    readonly checkpointSha?: string;
+    readonly checkpointPayloadDigest?: string;
+}
+export interface AutonomousRecoveryOptions {
+    readonly ownerId: string;
+    readonly leaseTtlMs: number;
+    readonly now?: number;
+    readonly resume: (candidate: AutonomousRecoveryCandidate, lease: RunLease) => Promise<void>;
+    readonly logger: RecoveryOptions["logger"];
+}
+/**
+ * Recover only confirmed autonomous runs. Drafts, confirmation waits, merge
+ * waits, terminal runs and all legacy session pauses are deliberately absent
+ * from this scan. The durable authority hash and monotonically increasing
+ * lease fence bind every resumed writer to the same confirmed envelope.
+ */
+export declare function recoverAutonomousControlRuns(repository: ControlRepository, state: StateStore, options: AutonomousRecoveryOptions): Promise<{
+    resumed: number;
+    leasedElsewhere: number;
+    rejected: number;
 }>;
 //# sourceMappingURL=recovery.d.ts.map

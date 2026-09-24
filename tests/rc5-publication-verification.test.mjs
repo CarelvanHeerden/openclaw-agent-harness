@@ -795,7 +795,7 @@ test("rc5 integration: a real bare remote distinguishes a true push from a resol
 // ---------------------------------------------------------------------------
 
 test("rc5: finalisation no longer chooses its callback from the preview CONFIG FLAG", { skip }, () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.ok(
     !/previewVerificationEnabled === true && this\.deps\.openPullRequest\s*\n?\s*\?\s*await this\.deps\.openPullRequest/.test(src),
     "this exact ternary is the #1168 defect: a config flag standing in for a fact about the remote",

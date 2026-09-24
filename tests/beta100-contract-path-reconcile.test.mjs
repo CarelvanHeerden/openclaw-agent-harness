@@ -177,7 +177,7 @@ test("beta100: reconciliation is repo-agnostic (pytest / Go conventions, not jus
 
 // --- 5. loop wiring -----------------------------------------------------------
 
-const loopSrc = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+const loopSrc = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
 
 test("beta100: the loop calls reconcileTestContractPaths, gated by its own config key", () => {
   assert.match(loopSrc, /import \{ rederiveContractPath, reconcileTestContractPaths \}/);

@@ -206,7 +206,7 @@ test("36: an ordinary non-revision run is judged exactly as before", skipDist, a
 });
 
 test("the adversary keeps the whole-PR window even while scope is narrowed", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // The adversary base is read from plan_base_sha and nothing else. If it ever
   // starts reading revision_start_sha, a revision stops being reviewed against
   // the feature it is changing.

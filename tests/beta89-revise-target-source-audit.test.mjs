@@ -28,7 +28,7 @@ test("beta.89: version >= beta.89", () => {
 });
 
 test("beta.89 [F3]: loop audits loop.revise_target_source naming the source", () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   assert.ok(src.includes('"loop.revise_target_source"'), "emits loop.revise_target_source");
   assert.ok(
     /source: perSubTaskFiles\.length > 0 \? "revise_spec_worker_context" : "raw_findings"/.test(src),

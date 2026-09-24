@@ -394,7 +394,7 @@ test("reconciliation never fails a review that it cannot complete", skipDist, as
 });
 
 test("the loop reconciles before it persists, and feeds the reconciler real changed files", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const reconcileAt = src.indexOf("report = this.reconcileCycleFindings(sessionId, cycle, report, changedThisCycle)");
   const saveAt = src.indexOf("this.saveReview(sessionId, cycle, report)");
   assert.ok(reconcileAt > 0 && saveAt > reconcileAt, "the reviews table must record the reconciled findings, not the raw ones");

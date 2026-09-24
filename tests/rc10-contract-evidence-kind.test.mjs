@@ -221,7 +221,7 @@ test("rc.10 (5592): a refused rewrite never reaches the stored plan", () => {
 
 test("rc.10: the loop's suggestion branch still cannot push a correction", async () => {
   const { readFileSync } = await import("node:fs");
-  const loop = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loop = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const start = loop.indexOf("if (rd.suggestion) {");
   const end = loop.indexOf("if (!rd.remapped) return v;", start);
   assert.ok(start >= 0 && end > start);
@@ -230,7 +230,7 @@ test("rc.10: the loop's suggestion branch still cannot push a correction", async
 
 test("rc.10: the loop passes the repository inventory into re-derivation", async () => {
   const { readFileSync } = await import("node:fs");
-  const loop = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loop = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   assert.match(loop, /rederiveContractPath\(v\.path, \[\.\.\.discoveredRealPaths\], \{ repoFiles: repoInventory \}\)/);
   // And it must degrade to empty rather than throwing the sub-task.
   assert.match(loop, /listRepoFiles\(workerWorktree\)\.catch\(\(\) => \[\] as string\[\]\)/);

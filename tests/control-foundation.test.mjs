@@ -160,7 +160,7 @@ test("migration ledger applies control schema transactionally and idempotently",
   const db = new DatabaseSync(":memory:");
   applyStateMigrations(db);
   applyStateMigrations(db);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, 2);
   for (const table of ["control_runs", "control_state_events", "automation_decisions", "run_leases"]) {
     assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name=?").get(table).n, 1);
   }
@@ -173,7 +173,7 @@ test("migration ledger applies control schema transactionally and idempotently",
 test("store migration is backward-compatible with legacy session columns", () => withStore(({ db }) => {
   const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all().map((row) => row.name);
   for (const legacy of ["crystallised_prompt", "lead_plan_json", "clarification_id", "published_sha"]) assert.ok(sessionColumns.includes(legacy));
-  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, 2);
 }));
 
 test("run leases use monotonically increasing fences and reject stale owners", () => withStore(({ db }) => {

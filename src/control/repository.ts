@@ -4,6 +4,8 @@ import type { AuthorityNonceStore } from "./authority.js";
 import { authorityEnvelopeDigest, createAuthorityEnvelope } from "./authority.js";
 import { assertControlTransition, ControlCasConflictError } from "./state-machine.js";
 import type { AuthorityDecision, AuthorityEnvelope, ControlRun, ControlState, ControlStateEvent } from "./types.js";
+import type { EngineAuthorityDecision } from "./engine.js";
+import type { PrReadinessResult } from "./readiness.js";
 
 interface ControlRunRow {
   id: string;
@@ -45,6 +47,11 @@ export interface RunLease {
   readonly fence: number;
   readonly acquiredAt: number;
   readonly expiresAt: number;
+  readonly authorityHash?: string;
+}
+
+export interface FencedTransitionControlRunInput extends TransitionControlRunInput {
+  readonly lease: RunLease;
 }
 
 function mapRun(row: ControlRunRow): ControlRun {
@@ -154,24 +161,25 @@ export class ControlRepository implements AuthorityNonceStore {
       .run(runId, envelope.nonce, authorityEnvelopeDigest(envelope), decision.outcome, decision.reason, at);
   }
 
-  acquireLease(runId: string, ownerId: string, ttlMs: number, now = Date.now()): RunLease | null {
+  acquireLease(runId: string, ownerId: string, ttlMs: number, now = Date.now(), authorityHash?: string): RunLease | null {
     if (!ownerId || !Number.isSafeInteger(ttlMs) || ttlMs <= 0) throw new Error("Lease owner and positive integer TTL are required");
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const current = this.db.prepare("SELECT owner_id, fence, acquired_at, expires_at FROM run_leases WHERE run_id = ?").get(runId) as { owner_id: string | null; fence: number; acquired_at: number; expires_at: number } | undefined;
+      const current = this.db.prepare("SELECT owner_id, fence, acquired_at, expires_at, authority_hash FROM run_leases WHERE run_id = ?").get(runId) as { owner_id: string | null; fence: number; acquired_at: number; expires_at: number; authority_hash: string | null } | undefined;
       if (current && current.owner_id !== ownerId && current.expires_at > now) {
         this.db.exec("COMMIT");
         return null;
       }
       const fence = (current?.fence ?? 0) + 1;
       const expiresAt = now + ttlMs;
-      this.db.prepare(`INSERT INTO run_leases (run_id, owner_id, fence, acquired_at, expires_at)
-        VALUES (?, ?, ?, ?, ?)
+      this.db.prepare(`INSERT INTO run_leases (run_id, owner_id, fence, acquired_at, expires_at, authority_hash)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(run_id) DO UPDATE SET owner_id=excluded.owner_id, fence=excluded.fence,
-          acquired_at=excluded.acquired_at, expires_at=excluded.expires_at`)
-        .run(runId, ownerId, fence, now, expiresAt);
+          acquired_at=excluded.acquired_at, expires_at=excluded.expires_at,
+          authority_hash=excluded.authority_hash`)
+        .run(runId, ownerId, fence, now, expiresAt, authorityHash ?? current?.authority_hash ?? null);
       this.db.exec("COMMIT");
-      return Object.freeze({ runId, ownerId, fence, acquiredAt: now, expiresAt });
+      return Object.freeze({ runId, ownerId, fence, acquiredAt: now, expiresAt, ...(authorityHash ? { authorityHash } : {}) });
     } catch (error) {
       try { this.db.exec("ROLLBACK"); } catch { /* preserve original error */ }
       throw error;
@@ -190,5 +198,86 @@ export class ControlRepository implements AuthorityNonceStore {
       WHERE run_id = ? AND owner_id = ? AND fence = ?`)
       .run(now, runId, ownerId, fence);
     return Number(result.changes) === 1;
+  }
+
+  validateLease(lease: RunLease, now = Date.now()): boolean {
+    const row = this.db.prepare(`SELECT owner_id, fence, expires_at, authority_hash FROM run_leases WHERE run_id = ?`).get(lease.runId) as
+      { owner_id: string | null; fence: number; expires_at: number; authority_hash: string | null } | undefined;
+    return Boolean(row && row.owner_id === lease.ownerId && row.fence === lease.fence && row.expires_at > now &&
+      (!lease.authorityHash || row.authority_hash === lease.authorityHash));
+  }
+
+  transitionFenced(input: FencedTransitionControlRunInput): ControlRun {
+    const at = input.at ?? Date.now();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const lease = this.db.prepare(`SELECT owner_id, fence, expires_at, authority_hash FROM run_leases WHERE run_id = ?`).get(input.runId) as
+        { owner_id: string | null; fence: number; expires_at: number; authority_hash: string | null } | undefined;
+      if (!lease || lease.owner_id !== input.lease.ownerId || lease.fence !== input.lease.fence || lease.expires_at <= at ||
+          (input.lease.authorityHash && lease.authority_hash !== input.lease.authorityHash)) {
+        throw new Error(`stale_write:${input.runId}`);
+      }
+      const current = this.db.prepare("SELECT state, version FROM control_runs WHERE id = ?").get(input.runId) as { state: ControlState; version: number } | undefined;
+      if (!current || current.version !== input.expectedVersion) throw new ControlCasConflictError(input.runId, input.expectedVersion);
+      assertControlTransition(current.state, input.to);
+      const changed = this.db.prepare(`UPDATE control_runs
+        SET state = ?, version = version + 1, updated_at = ?, terminal_code = COALESCE(?, terminal_code),
+            pull_request_url = COALESCE(?, pull_request_url)
+        WHERE id = ? AND version = ? AND state = ?
+          AND EXISTS (SELECT 1 FROM run_leases WHERE run_id = ? AND owner_id = ? AND fence = ?
+            AND expires_at > ? AND (? IS NULL OR authority_hash = ?))`)
+        .run(input.to, at, input.terminalCode ?? null, input.pullRequestUrl ?? null,
+          input.runId, input.expectedVersion, current.state, input.runId, input.lease.ownerId,
+          input.lease.fence, at, input.lease.authorityHash ?? null, input.lease.authorityHash ?? null);
+      if (Number(changed.changes) !== 1) throw new Error(`stale_write:${input.runId}`);
+      this.db.prepare(`INSERT INTO control_state_events
+        (run_id, from_state, to_state, from_version, to_version, actor, reason, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.runId, current.state, input.to, current.version, current.version + 1, input.actor, input.reason, at);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      try { this.db.exec("ROLLBACK"); } catch { /* preserve original error */ }
+      throw error;
+    }
+    return this.getRun(input.runId)!;
+  }
+
+  recordEngineDecision(runId: string, lease: RunLease, decision: EngineAuthorityDecision, at = Date.now()): void {
+    const code = decision.outcome === "continue" ? decision.kind : decision.code;
+    const detail = decision.outcome === "continue" ? decision.auditCode : decision.reason;
+    const result = this.db.prepare(`INSERT INTO control_engine_decisions
+      (run_id, lease_fence, outcome, decision_code, detail, created_at)
+      SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (
+        SELECT 1 FROM run_leases WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?
+          AND (? IS NULL OR authority_hash = ?)
+      )`).run(runId, lease.fence, decision.outcome, code, detail, at,
+        runId, lease.ownerId, lease.fence, at, lease.authorityHash ?? null, lease.authorityHash ?? null);
+    if (Number(result.changes) !== 1) throw new Error(`stale_write:${runId}`);
+  }
+
+  recordReadiness(runId: string, lease: RunLease, result: PrReadinessResult, at = Date.now()): void {
+    const changed = this.db.prepare(`INSERT INTO control_readiness_results
+      (run_id, lease_fence, ready, verified_sha, failures_json, created_at)
+      SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (
+        SELECT 1 FROM run_leases WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?
+          AND (? IS NULL OR authority_hash = ?)
+      )`).run(runId, lease.fence, result.ready ? 1 : 0, result.ready ? result.verifiedSha : null,
+        JSON.stringify(result.ready ? [] : result.failures), at, runId, lease.ownerId, lease.fence, at,
+        lease.authorityHash ?? null, lease.authorityHash ?? null);
+    if (Number(changed.changes) !== 1) throw new Error(`stale_write:${runId}`);
+  }
+
+  writeVerifiedCheckpoint(runId: string, lease: RunLease, checkpointSha: string, payloadDigest: string, at = Date.now()): void {
+    if (!lease.authorityHash) throw new Error(`missing_authority_hash:${runId}`);
+    if (!/^[a-f0-9]{40,64}$/.test(checkpointSha) || !/^[a-f0-9]{64}$/.test(payloadDigest)) {
+      throw new Error("Invalid verified checkpoint digest");
+    }
+    const changed = this.db.prepare(`INSERT INTO control_verified_checkpoints
+      (run_id, lease_fence, authority_hash, checkpoint_sha, payload_digest, created_at)
+      SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (
+        SELECT 1 FROM run_leases WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ? AND authority_hash = ?
+      )`).run(runId, lease.fence, lease.authorityHash, checkpointSha, payloadDigest, at,
+        runId, lease.ownerId, lease.fence, at, lease.authorityHash);
+    if (Number(changed.changes) !== 1) throw new Error(`stale_write:${runId}`);
   }
 }

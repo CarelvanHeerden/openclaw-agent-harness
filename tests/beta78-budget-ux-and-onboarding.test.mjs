@@ -111,7 +111,7 @@ test("beta78/F2: daily ledger survives a 'restart' (new enforcer on the SAME db)
 });
 
 test("beta78/F2: loop session budget is SOFT (warn+continue); daily_max is the HARD stop", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // Soft session warning (once, non-aborting).
   assert.match(src, /loop\.session_budget_warn/);
   assert.match(src, /sessionBudgetWarned = true/);
@@ -125,7 +125,7 @@ test("beta78/F2: loop session budget is SOFT (warn+continue); daily_max is the H
 });
 
 test("beta78/F2: dailyMaxUsd()/safeDailySpend() are defensive (missing budgets / no getDailySpend)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /private dailyMaxUsd\(\): number/);
   assert.match(src, /this\.deps\.config\.budgets\?\.daily_max_usd/);
   assert.match(src, /private safeDailySpend\(user: string\): number/);
@@ -145,14 +145,14 @@ test("beta78/F1: recommendBudget + daily-aware note wired into startSessionFromB
 });
 
 test("beta78/F1: warnSessionBudgetSoft factors REMAINING daily headroom", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /You've used \$\{pct\}% of today's budget/);
   assert.match(src, /remaining < totalCost/);
   assert.match(src, /reply with a higher budget or drop :moneybag:/);
 });
 
 test("beta78/F1+F2: postWarning is an independent direct-post channel (gated on real binding)", () => {
-  const loopSrc = S("src/orchestrator/loop.ts");
+  const loopSrc = S("src/orchestrator/legacy-loop.ts");
   assert.match(loopSrc, /postWarning\?: \(sessionId: string, text: string\) => void/);
   const idxSrc = S("src/index.ts");
   assert.match(idxSrc, /postWarning: \(sessionId, text\) =>/);

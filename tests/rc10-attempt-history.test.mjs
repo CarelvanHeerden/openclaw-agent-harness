@@ -256,7 +256,7 @@ test("rc.10: recording history never breaks a run", { skip }, async () => {
   // The table is for reporting. A run must not die because a row could not be
   // written, so the recorder swallows and logs -- asserted here because the
   // failure it prevents would only ever show up in production.
-  const src = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const src = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const i = src.indexOf("private recordSubTaskAttempt");
   assert.ok(i > 0, "the recorder exists");
   const body = src.slice(i, src.indexOf("private priorAttemptCommits"));

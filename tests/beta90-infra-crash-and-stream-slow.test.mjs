@@ -357,7 +357,7 @@ test("beta90 F1: infra-crash module exports + is imported by the loop (source)",
   assert.match(mod, /export function isInfraCrash/);
   assert.match(mod, /041bd3d3/, "doc comment references the smoke session");
   assert.match(mod, /beta\.90/, "doc comment references beta.90");
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /import \{ isInfraCrash \} from "\.\/infra-crash\.js"/);
   assert.match(loop, /const infra = isInfraCrash\(String\(\(err as Error\)\?\.message \?\? err\)\)/);
   assert.match(loop, /viaInfraCrash: infra/);
@@ -383,7 +383,7 @@ test("beta90 F2: consumeWorkerStream has stream-slow tick wired; observability o
 });
 
 test("beta90 F2: loop emits loop.worker_stream_slow + bumps last_progress_at (source)", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /"loop\.worker_stream_slow"/);
   assert.match(loop, /makeStreamSlowCallback/);
   // reuses the beta.63 last_progress_at heartbeat mechanism

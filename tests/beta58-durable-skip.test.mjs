@@ -111,7 +111,7 @@ test("beta.58 D1/D2 wiring: harness_answer skip is content-keyed + strips findin
 });
 
 test("beta.58 D1/D2 wiring: loop captures paused sub-task title+intent at pause", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /clarify\.subtask = \{\s*title: st\.title,\s*intent: st\.intent,/);
   assert.match(src, /clarification_subtask = \?/, "persists it in finaliseAwaitingClarification");
 });
@@ -124,7 +124,7 @@ test("beta.58 D3 wiring: lead prompt forbids promoting a conditional premise to 
 });
 
 test("beta.58 Bug B wiring: loop emits loop.worker_skipped_invalid_premise distinct from worker_refusal", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /"loop\.worker_skipped_invalid_premise"/);
   assert.match(src, /matchesInvalidPremiseSkip\(refusalText\)/);
   // gated on commit_made among failed kinds (Staging's discriminator):

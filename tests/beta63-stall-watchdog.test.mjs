@@ -254,12 +254,12 @@ test("beta63: last_progress_at in schema.sql CREATE + additive migration list (s
 });
 
 test("beta63: setStatus writes last_progress_at on EVERY transition (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /SET status = \?, updated_at = \?, last_progress_at = \? WHERE id = \?/);
 });
 
 test("beta63: harness_progress surfaces stalled + msSinceProgress (source)", () => {
-  const prog = S("src/orchestrator/progress.ts");
+  const prog = S("src/orchestrator/legacy-progress.ts");
   assert.match(prog, /msSinceProgress: number \| null/);
   assert.match(prog, /stalled: boolean/);
   const reg = S("src/tools/registration.ts");

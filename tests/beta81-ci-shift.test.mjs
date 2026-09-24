@@ -283,7 +283,7 @@ test("beta81/B3: authorCiWorkflow authors NOTHING when a workflow already exists
 });
 
 test("beta81/B3: loop authors a workflow before push + polls CI after (wired in finalize)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /this\.deps\.ciAuthorWorkflow/);
   assert.match(src, /loop\.ci_workflow_authored/);
   // Authored before both preview push and the non-Vercel combined push/open
@@ -306,7 +306,7 @@ test("beta81/B3: loop authors a workflow before push + polls CI after (wired in 
 
 // ---- B4: local runner off the verify spine ----
 test("beta81/B4: the local check-script runner is retired from the verify spine (CI-only)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // runFinalVerifyChecks still exists (kept for the scripted-verify fallback)
   // but is gated off by default and explicitly documented as NOT the spine.
   assert.match(src, /the beta\.63 LOCAL check-script runner is RETIRED/);

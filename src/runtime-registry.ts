@@ -26,13 +26,34 @@ export interface RuntimeLike {
 }
 
 let currentRuntime: RuntimeLike | null = null;
+let runtimeGeneration = 0;
+
+export interface RuntimeHandle {
+  readonly runtime: RuntimeLike;
+  readonly generation: number;
+}
 
 /** Publish the live runtime generation. Called on every (re-)register. */
 export function setCurrentRuntime(rt: RuntimeLike | null): void {
+  if (currentRuntime !== rt) runtimeGeneration++;
   currentRuntime = rt;
 }
 
 /** Resolve the live runtime generation, or null before first register. */
 export function getCurrentRuntime(): RuntimeLike | null {
   return currentRuntime;
+}
+
+/** Capture a fenced handle. A caller must revalidate it before every write. */
+export function getCurrentRuntimeHandle(): RuntimeHandle | null {
+  return currentRuntime ? Object.freeze({ runtime: currentRuntime, generation: runtimeGeneration }) : null;
+}
+
+export function isCurrentRuntimeHandle(handle: RuntimeHandle): boolean {
+  return currentRuntime === handle.runtime && runtimeGeneration === handle.generation && handle.runtime.state.isOpen();
+}
+
+export function assertCurrentRuntimeHandle(handle: RuntimeHandle): RuntimeLike {
+  if (!isCurrentRuntimeHandle(handle)) throw new Error("stale_runtime_generation");
+  return handle.runtime;
 }

@@ -325,7 +325,7 @@ test("rc1: non-zero unparseable typecheck output becomes a harness_env finding",
 
 test("beta135: accepting committed work continues the stored plan", () => {
   const registration = S("src/tools/registration.ts");
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(registration, /brief\.resumeExistingPlan = true/);
   assert.match(registration, /UPDATE sub_tasks[\s\S]{0,500}SET status = 'completed'/);
   assert.match(loop, /loadAcceptedContinuation\(sessionId\)/);
@@ -435,7 +435,7 @@ test("beta135: accepted continuation skips completed tasks without calling the l
 });
 
 test("beta137: accepted continuation remembers each sub-task's latest completion", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const start = loop.indexOf("private loadAcceptedContinuation");
   // Window widened in rc.2: the helper now also reads the paused sequence and
   // the operator's answer, which pushed the query past 2500 chars. The claim
@@ -451,7 +451,7 @@ test("beta137: accepted continuation remembers each sub-task's latest completion
 });
 
 test("beta137: a resumed review replaces its same-cycle predecessor", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const start = loop.indexOf("private saveReview");
   const body = loop.slice(start, start + 1200);
   assert.match(body, /ON CONFLICT\(id\) DO UPDATE SET/);
@@ -460,7 +460,7 @@ test("beta137: a resumed review replaces its same-cycle predecessor", () => {
 });
 
 test("beta137: resolved contracts are reported to the adversary as passing", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const start = loop.indexOf("private readLocalVerification");
   const body = loop.slice(start, start + 2500);
   assert.match(body, /current\.status IN \('completed', 'completed_no_change'\)/);
@@ -478,14 +478,14 @@ test("beta137: chunked reviews cannot infer missing tests from one chunk", () =>
 });
 
 test("beta135: observe reports are durable across the accepted continuation", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /report: report\.slice\(0, OBSERVE_REPORT_MAX_CHARS\)/);
   assert.match(loop, /hydrateObserveReports\(sessionId, plan\)/);
   assert.match(loop, /loop\.observe_reports_hydrated/);
 });
 
 test("beta136: zero-change retry keeps evidence and confronts the false completion", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /subTask: dispatchSt/);
   assert.match(loop, /resumeSessionId: result\.sdkSessionId/);
   assert.match(loop, /worktreePath: workerWorktree/);

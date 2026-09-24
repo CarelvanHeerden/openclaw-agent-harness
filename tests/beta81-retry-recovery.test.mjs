@@ -122,7 +122,7 @@ test("rc.11/C1: a worker timeout does not buy a duplicate unknown provider call"
   });
 
 test("beta81/C1: source guarantees a terminal timeout outcome (never a running-row no-op)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /loop\.worker_retry_reinvoked/);
   assert.match(src, /outcome: "timeout",\s*\n\s*summary: lastSummary \|\|/);
 });

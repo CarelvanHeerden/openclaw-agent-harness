@@ -269,7 +269,7 @@ test("beta62: merge gate treats needs_human_review as a hard refuse (never overr
 
 // ---- Wiring source-assertions for the loop changes ----
 test("beta62: loop wires review_failed telemetry + folds post-review persist into the try (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // Fix 1: the review catch emits loop.review_failed unconditionally
   assert.match(src, /"loop\.review_failed"/);
   // Spend persistence remains inside the review try. The review itself is
@@ -288,7 +288,7 @@ test("beta62: loop wires review_failed telemetry + folds post-review persist int
 });
 
 test("beta62: finaliseReviewCrash gate = graceful && green self-verify && priorReview && (infra || cycle>=2) (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /graceful_pr_on_review_crash !== false/);
   // beta.90 (Feature 1) widened eligibility to admit an INFRA crash without
   // requiring cycle>=2 OR a prior review. rc.3 gave back the prior-review half:
@@ -299,7 +299,7 @@ test("beta62: finaliseReviewCrash gate = graceful && green self-verify && priorR
 });
 
 test("beta62: finaliseFailedPreserveWorktree does NOT release the worktree (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const body = src.slice(src.indexOf("private async finaliseFailedPreserveWorktree"), src.indexOf("private async finaliseReviewCrash"));
   assert.doesNotMatch(body, /scheduleWorktreeReleaseForSession/);
   assert.match(body, /"loop\.failed_worktree_preserved"/);

@@ -130,7 +130,7 @@ test("rc.9: the existing guards are untouched", () => {
 
 test("rc.9: the declined candidate is audited and never written back to the plan", async () => {
   const { readFileSync } = await import("node:fs");
-  const loop = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loop = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   assert.match(loop, /loop\.contract_path_correction_suggested/);
 
   // The suggestion branch must not reach `pathCorrections`, or the plan

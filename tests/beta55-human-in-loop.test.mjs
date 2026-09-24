@@ -74,7 +74,7 @@ test("beta.55 B2: progress snapshot surfaces awaiting_clarification with the que
 
 // ---- source-assertion wiring ----
 test("beta.55 B2: loop.ts has awaiting_clarification state + finaliseAwaitingClarification that does NOT release the worktree", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /"awaiting_clarification"/, "LoopStatus includes awaiting_clarification");
   assert.match(src, /finaliseAwaitingClarification\(/, "finalise helper exists");
   assert.match(src, /loop\.clarification_requested/, "audits clarification_requested");

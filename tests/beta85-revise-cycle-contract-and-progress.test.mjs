@@ -143,7 +143,7 @@ test("beta.85: file_committed reviseRelaxed passes on branch-committed, echoes p
 // ---------------------------------------------------------------------------
 
 test("beta.85: loop marks not-targeted revise files reviseRelaxed off review findings", skip, () => {
-  const src = readSrc("src/orchestrator/loop.ts");
+  const src = readSrc("src/orchestrator/legacy-loop.ts");
   assert.ok(src.includes("loop.revise_contract_relaxed"), "audits loop.revise_contract_relaxed");
   assert.ok(/cycle > 1 && lastReview\?\.findings\?\.length/.test(src), "gated on revise cycle + review findings");
   assert.ok(/reviseRelaxed: true/.test(src), "sets reviseRelaxed on not-targeted entries");
@@ -180,7 +180,7 @@ test("beta.85: per-sub-task native progress fires at worker_end_turn", skip, () 
   // check mean what its name says, and tightens it: 600 characters of actual
   // code is a much smaller allowance than 2000 of anything -- and what is
   // left in the gap is the audit payload itself, which is what belongs there.
-  const src = readSrc("src/orchestrator/loop.ts")
+  const src = readSrc("src/orchestrator/legacy-loop.ts")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
     .replace(/\s+/g, " ");

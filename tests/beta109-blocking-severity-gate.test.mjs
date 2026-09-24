@@ -217,7 +217,7 @@ test("beta109: the loop counts blocking findings with isBlockingFinding", () => 
   // Not a second, looser notion of 'serious'. merge-recommendation's own
   // BLOCKING_SEVERITIES omits `medium`; the rest of the harness does not, and
   // shipping open mediums would be a loosening nobody asked for.
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const i = loop.indexOf("private countBlockingFindings(");
   assert.ok(i > 0);
   const body = loop.slice(i, i + 500);

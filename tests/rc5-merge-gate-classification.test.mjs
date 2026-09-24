@@ -264,7 +264,7 @@ test("a verdict the gate passes with no merge blockers is never do_not_merge", (
  * ------------------------------------------------------------------ */
 
 test("the loop supplies the merge-blocking count it computed", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /mergeBlockingFindings\(findings: ReviewFinding\[\] \| undefined\)/, "the loop must count merge blockers");
   // rc.5: the inline ctx literal became `this.classifyCtx`, shared by every
   // gating site so the loop cannot disagree with the adversary about whether a

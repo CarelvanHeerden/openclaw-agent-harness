@@ -148,7 +148,7 @@ test("beta123: retraction is keyed to the seq that recorded the failure", () => 
   // failure. Serial execution makes that hard to reach at runtime, which is
   // precisely why the guard is asserted structurally rather than left to a
   // scenario that can no longer construct the interleaving.
-  const src = readFileSync(resolve(root, "src/orchestrator/loop.ts"), "utf8");
+  const src = readFileSync(resolve(root, "src/orchestrator/legacy-loop.ts"), "utf8");
   const fn = src.slice(src.indexOf("const retractFailure ="));
   const body = fn.slice(0, fn.indexOf("};"));
   assert.match(body, /failed\.seq !== seq/, "retraction must compare the recording seq");

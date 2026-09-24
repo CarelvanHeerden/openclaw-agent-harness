@@ -25,7 +25,7 @@ import { runScenario, scenarioAvailable, mutateSubTask, IDENT } from "./helpers/
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const S = (p) => readFileSync(resolve(root, p), "utf8");
-const loopSrc = S("src/orchestrator/loop.ts");
+const loopSrc = S("src/orchestrator/legacy-loop.ts");
 const skip = (await scenarioAvailable()) ? false : "dist/ not built";
 
 const { parseHarnessConfig, declaresRemovedParallelKeys, REMOVED_LOOP_KEYS } = await import("../dist/config.js");

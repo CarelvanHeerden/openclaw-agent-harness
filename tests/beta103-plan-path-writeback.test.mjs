@@ -161,7 +161,7 @@ test("beta103 FIX: after writeback, both findings MAP to the sub-task instead of
 // ---------------------------------------------------------------------------
 
 test("beta103: the loop collects corrections from BOTH the rederive and the test reconcile", { skip }, () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /import \{ applyPathCorrections, describePathCorrections, type PathCorrection \}/);
   assert.match(src, /pathCorrections\.push\(\{ from: v\.path, to: rd\.path \}\)/, "b76 rederive must feed the writeback");
   assert.match(src, /pathCorrections\.push\(\{ from: rc\.from, to: rc\.to \}\)/, "b100 test reconcile must feed the writeback");
@@ -170,7 +170,7 @@ test("beta103: the loop collects corrections from BOTH the rederive and the test
 });
 
 test("beta103: the CI none grace no longer depends on having authored a workflow", { skip }, () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /const graceActive = graceMs > 0;/, "grace must apply to every repo");
   assert.match(src, /const authoredWorkflowGrace = !!input\.workflowAuthoredThisSession && graceMs > 0;/);
   assert.match(src, /if \(authoredWorkflowGrace\) \{/, "only the authored case may return authored_workflow_never_registered");
@@ -252,7 +252,7 @@ test("beta103: a single-commit turn records exactly one tip (no phantom entries)
 });
 
 test("beta103: the loop threads the full tip list into the reachability guard", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /commitShas: result\.commitShas \?\? \(result\.commitSha \? \[result\.commitSha\] : \[\]\)/,
     "worker_end_turn must carry the full list for the reachability guard");
   assert.match(loop, /Array\.isArray\(p\?\.commitShas\) \? p\.commitShas : \[\]/,
@@ -260,7 +260,7 @@ test("beta103: the loop threads the full tip list into the reachability guard", 
 });
 
 test("beta103: attaching a dispatch hint is now auditable", { skip }, () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /loop\.dispatch_hint_attached/);
   assert.match(src, /sources: \[/);
   assert.match(src, /plan_path_suspect/);

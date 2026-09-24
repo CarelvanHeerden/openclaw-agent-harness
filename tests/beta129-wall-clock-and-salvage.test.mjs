@@ -36,7 +36,7 @@ test("the injected HEAD probe must throw, because the salvage guard reads silenc
 });
 
 test("every best-effort caller guards worktreeHeadSha; exact-SHA preview and salvage fail closed", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const unguarded = src
     .split("\n")
     .map((l, i) => ({ l, n: i + 1 }))
@@ -57,7 +57,7 @@ test("every best-effort caller guards worktreeHeadSha; exact-SHA preview and sal
 });
 
 test("the guard compares HEAD against the fork point, never against an empty base", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private async abortHasSalvageableCommits");
   const body = src.slice(i, src.indexOf("\n  }", i));
   assert.ok(
@@ -436,7 +436,7 @@ FAIL src/a.test.ts
 });
 
 test("the CI repair grant is priced in minutes as well as dollars", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("const canRepair =");
   assert.ok(i > 0);
   const decl = src.slice(src.lastIndexOf("const repairCeiling", 0, i) >= 0 ? i - 1400 : i - 1400, i + 200);
@@ -565,7 +565,7 @@ test("answering a live time-extension pause records the reply without starting a
 });
 
 test("a granted extension is persisted, so a crash-resume honours what was paid for", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("if (grantedSeconds > 0)");
   assert.ok(i > 0);
   const body = src.slice(i, i + 900);
@@ -581,7 +581,7 @@ test("a granted extension is persisted, so a crash-resume honours what was paid 
 });
 
 test("the extension cycle joins the loop bound, or the grant is a lie", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(
     src,
     /while \(cycle < this\.deps\.config\.loop\.max_cycles \+ cycleExtensionsGranted \+ ciRepairCyclesGranted \+ timeExtensionCyclesGranted\)/,

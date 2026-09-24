@@ -22,6 +22,7 @@
  * Stale sessions (older than the hard timeout) are always marked
  * 'interrupted' -- they're too old to safely auto-resume.
  */
+import { authorityEnvelopeDigest } from "../control/authority.js";
 /**
  * beta.81 (Track C / C4): module-scoped resume-timestamp ledger, keyed by
  * sessionId. Survives across `recoverSessions` calls (recovery runs on every
@@ -163,5 +164,53 @@ export async function recoverSessions(state, opts) {
         });
     }
     return { interrupted, resumable };
+}
+/**
+ * Recover only confirmed autonomous runs. Drafts, confirmation waits, merge
+ * waits, terminal runs and all legacy session pauses are deliberately absent
+ * from this scan. The durable authority hash and monotonically increasing
+ * lease fence bind every resumed writer to the same confirmed envelope.
+ */
+export async function recoverAutonomousControlRuns(repository, state, options) {
+    const now = options.now ?? Date.now();
+    const rows = state.db.prepare(`SELECT id, version, authority_envelope_json
+    FROM control_runs WHERE state = 'autonomous_run' ORDER BY updated_at`).all();
+    let resumed = 0;
+    let leasedElsewhere = 0;
+    let rejected = 0;
+    for (const row of rows) {
+        const run = repository.getRun(row.id);
+        if (!run || run.state !== "autonomous_run")
+            continue;
+        const authorityHash = authorityEnvelopeDigest(run.authorityEnvelope);
+        const lease = repository.acquireLease(row.id, options.ownerId, options.leaseTtlMs, now, authorityHash);
+        if (!lease) {
+            leasedElsewhere++;
+            continue;
+        }
+        const checkpoint = state.db.prepare(`SELECT checkpoint_sha, payload_digest, authority_hash, lease_fence
+      FROM control_verified_checkpoints WHERE run_id = ? ORDER BY id DESC LIMIT 1`).get(row.id);
+        if (checkpoint && checkpoint.authority_hash !== authorityHash) {
+            rejected++;
+            repository.releaseLease(row.id, options.ownerId, lease.fence, now);
+            options.logger.warn("[recovery] rejected autonomous run with changed authority envelope", { runId: row.id });
+            continue;
+        }
+        try {
+            await options.resume(Object.freeze({
+                runId: row.id,
+                version: row.version,
+                authorityHash,
+                ...(checkpoint ? { checkpointSha: checkpoint.checkpoint_sha, checkpointPayloadDigest: checkpoint.payload_digest } : {}),
+            }), lease);
+            resumed++;
+        }
+        catch (error) {
+            options.logger.warn("[recovery] autonomous resume failed", { runId: row.id, error: String(error) });
+            repository.releaseLease(row.id, options.ownerId, lease.fence, now);
+            rejected++;
+        }
+    }
+    return { resumed, leasedElsewhere, rejected };
 }
 //# sourceMappingURL=recovery.js.map

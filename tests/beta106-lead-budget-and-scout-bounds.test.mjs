@@ -44,7 +44,7 @@ const skip = withTimeout === undefined;
 // ---------------------------------------------------------------------------
 
 test("beta106: the lead budget adds the scout ceiling instead of sharing it", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /const scoutBudget =/);
   assert.match(
     loop,
@@ -155,7 +155,7 @@ test("beta106: with the scout disabled the lead budget is unchanged", { skip }, 
 });
 
 test("beta106: the scout ceiling is excluded from the budget when scouting is off", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const i = loop.indexOf("const scoutBudget =");
   const seg = loop.slice(i, i + 400);
   assert.match(seg, /lead_repo_scout_enabled !== false/, "disabled scout must not inflate the lead budget");
@@ -209,7 +209,7 @@ test("beta106: an unlabelled timeout keeps the historical wording", { skip }, as
 });
 
 test("beta106: the lead, adversary and sub-task deadline all label their timers", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   for (const label of ["lead_timeout_seconds", "adversary_timeout_seconds", "subtask_deadline_seconds"]) {
     assert.ok(
       new RegExp(`,\\s*"${label}"\\s*[,)]`).test(loop),
@@ -258,8 +258,8 @@ test("beta106: the scout hard-stops and keeps what it already has", { skip }, ()
 test("beta106: a timed-out scout is still a scout, and says so", { skip }, () => {
   const lead = S("src/orchestrator/lead.ts");
   assert.match(lead, /timedOut: result\?\.timedOut === true \? true : undefined/);
-  assert.match(S("src/orchestrator/loop.ts"), /timedOut: plan\.scout\.timedOut === true/);
-  assert.match(S("src/orchestrator/loop.ts"), /scoutBudgetSeconds: scoutBudget/);
+  assert.match(S("src/orchestrator/legacy-loop.ts"), /timedOut: plan\.scout\.timedOut === true/);
+  assert.match(S("src/orchestrator/legacy-loop.ts"), /scoutBudgetSeconds: scoutBudget/);
 });
 
 // ---------------------------------------------------------------------------

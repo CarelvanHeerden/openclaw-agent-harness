@@ -288,7 +288,7 @@ test("30: workerLeftUncommittedWork reads the tree, not the sha", skipDist, asyn
 });
 
 test("30b: all three no-change decisions consult the working tree", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
 
   // (a) the contract demotion to `observe`
   assert.match(

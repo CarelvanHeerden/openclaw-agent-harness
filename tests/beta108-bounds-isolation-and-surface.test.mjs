@@ -345,7 +345,7 @@ test("beta108: the same session may re-allocate its own branch", async () => {
  * ------------------------------------------------------------------ */
 
 test("beta108: review and ship both emit a phase timing", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /private emitPhaseTiming\(/);
   assert.match(loop, /this\.emitPhaseTiming\(sessionId, "review", cycle, reviewStart/);
   // b130 re-anchored this to the start of the push rather than the start of
@@ -358,7 +358,7 @@ test("beta108: review and ship both emit a phase timing", () => {
 });
 
 test("beta108: phase timing cannot fail a run", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const i = loop.indexOf("private emitPhaseTiming(");
   const body = loop.slice(i, i + 900);
   assert.match(body, /try \{/);
@@ -370,7 +370,7 @@ test("beta108: phase timing cannot fail a run", () => {
  * ------------------------------------------------------------------ */
 
 test("beta108: the early exit is guarded on every precondition", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const i = loop.indexOf("early_exit_no_change_cycle");
   assert.ok(i > 0, "the guard must exist");
   const block = loop.slice(i, i + 2600);
@@ -386,7 +386,7 @@ test("beta108: the early exit is guarded on every precondition", () => {
 });
 
 test("beta108: the cycle base sha is captured BEFORE the workers run", () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const base = loop.indexOf("const cycleBaseSha");
   const exit = loop.indexOf("tipNow === cycleBaseSha");
   assert.ok(base > 0 && exit > base, "the base must be read before the comparison, not after");
@@ -525,7 +525,7 @@ test("beta108: long durations read in minutes", () => {
 });
 
 test("beta108: the snapshot exposes the work log", () => {
-  const src = S("src/orchestrator/progress.ts");
+  const src = S("src/orchestrator/legacy-progress.ts");
   assert.match(src, /worklog: string\[\];/);
   assert.match(src, /worklog: renderWorklog\(stRows, plannedOrStarted\)/);
   assert.match(src, /files_touched AS filesTouched, commit_sha AS commitSha/);

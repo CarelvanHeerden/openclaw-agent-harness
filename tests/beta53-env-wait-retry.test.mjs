@@ -112,7 +112,7 @@ test("beta53 P2: statusPorcelain is empty on a clean tree", async () => {
 // Source-assertion wiring checks (P1b, P2, P3/P4, event rename)
 // ---------------------------------------------------------------------------
 test("beta53 wiring: loop.ts emits renamed loop.worker_env_wait_hallucination event", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /"loop\.worker_env_wait_hallucination"/);
   // old beta.52 event name should be gone as an emitted event
   assert.doesNotMatch(src, /audit\(\s*"loop\.worker_incorrect_protocol_assumption"/);
@@ -123,7 +123,7 @@ test("beta53 wiring: loop.ts emits renamed loop.worker_env_wait_hallucination ev
 });
 
 test("beta53 wiring: P1b retry-with-context, ordered AFTER P2 (uncommittedFiles), gated by config", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /loop\.worker_env_wait_retry/);
   assert.match(src, /env_wait_retry_enabled !== false/);
   // branches on partial-work using uncommittedFiles from P2

@@ -271,7 +271,7 @@ test("acceptanceCriteria is the carrier that reaches lead, worker and adversary"
     "the adversary's crystallisedPrompt projection renders the criteria",
   );
   assert.match(
-    S("src/orchestrator/loop.ts"),
+    S("src/orchestrator/legacy-loop.ts"),
     /acceptanceCriteria:\\n\$\{\(brief\.acceptanceCriteria \?\? \[\]\)\.join\("\\n"\)\}/,
     "the lead prompt snapshot renders the criteria",
   );

@@ -184,7 +184,7 @@ test("rc3: an abort with nothing committed is unchanged", skip, async () => {
  * ------------------------------------------------------------------ */
 
 test("rc3: all three salvage paths consult the same gate", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   for (const path of ["best_effort_verify", "abort_salvage", "review_crash"]) {
     assert.match(
       src,
@@ -197,7 +197,7 @@ test("rc3: all three salvage paths consult the same gate", () => {
 });
 
 test("rc3: best-effort verify refuses before it reaches the push", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const body = src.slice(src.indexOf("private async tryBestEffortVerify"), src.indexOf("private async awaitCiVerification"));
   const gate = body.indexOf("refuseUnreviewedSalvage");
   const push = body.indexOf("pushBranchAndOpenPr");
@@ -208,7 +208,7 @@ test("rc3: best-effort verify refuses before it reaches the push", () => {
 });
 
 test("rc3: the review-crash path no longer synthesizes a review to push behind", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const body = src.slice(src.indexOf("private async finaliseReviewCrash"));
   assert.doesNotMatch(body, /const synthesizedReview/, "beta.90's placeholder report is gone");
   assert.match(body, /const reviewForPr = priorReview;/);

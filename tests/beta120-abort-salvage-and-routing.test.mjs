@@ -202,7 +202,7 @@ test("advance() lands the run rather than starting a cycle it cannot finish", sk
 // ---------------------------------------------------------------------------
 
 test("the cycle extension respects the session's OWN budget, not just the operator ceiling", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private hasBudgetHeadroomForAnotherCycle");
   assert.ok(i > 0);
   const body = src.slice(i, i + 2200);
@@ -225,7 +225,7 @@ test("the cycle extension respects the session's OWN budget, not just the operat
 // ---------------------------------------------------------------------------
 
 test("every worktree release path audits, including the ones that do nothing", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   for (const fn of ["private async tryReleaseWorktree", "private scheduleWorktreeReleaseForSession"]) {
     const i = src.indexOf(fn);
     assert.ok(i > 0, `${fn} not found`);
@@ -253,7 +253,7 @@ test("every worktree release path audits, including the ones that do nothing", (
 // ---------------------------------------------------------------------------
 
 test("no abort path can reach the deleting finaliser without passing the salvage gate", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // Every call site outside the two finalisers themselves must go through the
   // salvaging entry point.
   const rawCalls = [...src.matchAll(/this\.finaliseAbort\(/g)].map((m) => m.index);
@@ -271,7 +271,7 @@ test("no abort path can reach the deleting finaliser without passing the salvage
 });
 
 test("the salvage path preserves rather than releases when the push fails", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private async finaliseAbortSalvaging");
   const body = src.slice(i, i + 7000);
   // Release happens only on the success branch, after a PR exists.
@@ -286,7 +286,7 @@ test("the salvage path preserves rather than releases when the push fails", () =
 });
 
 test("a commit probe that cannot answer protects the work instead of deleting it", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private async abortHasSalvageableCommits");
   assert.ok(i > 0);
   const body = src.slice(i, src.indexOf("\n  }", i));
@@ -350,7 +350,7 @@ test("an abort with nothing to preserve does not promise work that isn't there",
 });
 
 test("the operator is told where preserved work lives", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("loop.abort_worktree_preserved");
   const body = src.slice(i, i + 1200);
   assert.match(body, /worktreePath/);

@@ -75,7 +75,7 @@ test("beta.29: startSessionRow reclaims a thread from a terminal prior session (
 
 test("beta.29: terminal status set matches the loop's terminal set (done/failed/aborted)", () => {
   const reg = readFileSync(resolve(repoRoot, "src/tools/registration.ts"), "utf8");
-  const loop = readFileSync(resolve(repoRoot, "src/orchestrator/loop.ts"), "utf8");
+  const loop = readFileSync(resolve(repoRoot, "src/orchestrator/legacy-loop.ts"), "utf8");
   // Loop uses ["done", "failed", "aborted"] as terminal. Registration's
   // reclaim must use the same set, or a thread could be reclaimed while the
   // loop still considers the session live (or vice-versa).

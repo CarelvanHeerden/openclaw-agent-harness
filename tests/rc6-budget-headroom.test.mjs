@@ -277,7 +277,7 @@ test("rc.6: every trigger produces a question that names its own situation", () 
 // ---------------------------------------------------------------------------
 
 test("rc.6: the repair gate never reads the run's total spend", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("const repairFunding = assessRepairFunding({");
   assert.ok(i > 0, "repair must be funded through the named policy");
   const block = src.slice(i, src.indexOf("const wantsRepair", i));
@@ -294,7 +294,7 @@ test("rc.6: the repair gate never reads the run's total spend", () => {
 });
 
 test("rc.6: an extension may not spend the repair reserve", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const calls = src.match(/hasBudgetHeadroomForAnotherCycle\(row\.requester[^)]*\)/g) ?? [];
   assert.ok(calls.length >= 2, "the extension gates must still exist");
   for (const call of calls) {
@@ -307,12 +307,12 @@ test("rc.6: an extension may not spend the repair reserve", () => {
 });
 
 test("rc.6: the baseline is stamped once, so a second repair is still measured from where repair began", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /if \(ciRepairCyclesGranted === 0\) repairSpendBaselineUsd = totalCost;/);
 });
 
 test("rc.6: all five money stops ask before they refuse", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const triggers = (src.match(/trigger: "(ci_repair|cycle_extension|review|sub_task|daily_cap)"/g) ?? [])
     .map((m) => m.split('"')[1]);
   // `ci_repair` appears twice: the clock ask uses the same name.
@@ -331,7 +331,7 @@ test("rc.6: whether money was the only thing missing is asked of `advance`, not 
   // A copy of advance's conditions in the loop would drift the first time
   // somebody edited one of them, and the failure would be silent: the ask
   // simply stops firing.
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(
     src,
     /OrchestratorLoop\.advance\(\{ \.\.\.advanceInput, budgetHeadroomOk: true, budgetExhausted: false \}\)/,
@@ -342,7 +342,7 @@ test("rc.6: a granted extension is persisted, not just believed", () => {
   // beta.130 persisted an extended deadline for this reason: a resume that
   // reverted to the original figure would stop the run a second time for a
   // reason the operator has already overruled.
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private applyBudgetGrant(");
   assert.ok(i > 0);
   const body = src.slice(i, src.indexOf("\n  /**", i));
@@ -351,7 +351,7 @@ test("rc.6: a granted extension is persisted, not just believed", () => {
 });
 
 test("rc.6: the monthly cap is the one wall nothing in the loop may ask past", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("private hardCapsAllow(");
   const body = src.slice(i, src.indexOf("private hasBudgetHeadroomForAnotherCycle", i));
   assert.doesNotMatch(body, /monthly/i, "the monthly cap is admission-time, and deliberately not negotiable here");

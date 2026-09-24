@@ -318,7 +318,7 @@ test(
 
 test("rc.10 (F3): a resumed sub-task is not re-gated on the same conflict", async () => {
   const { readFileSync } = await import("node:fs");
-  const loop = readFileSync(new URL("../src/orchestrator/loop.ts", import.meta.url), "utf8");
+  const loop = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
   const at = loop.indexOf("const myPolicyConflicts = planPolicyConflicts.filter");
   assert.ok(at > 0, "the gate exists");
   const body = loop.slice(at, at + 900);

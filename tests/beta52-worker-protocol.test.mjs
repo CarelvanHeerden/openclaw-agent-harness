@@ -93,7 +93,7 @@ test("beta52: predicate does NOT match genuine reasoned refusals (no false posit
 // Part 2 wiring: loop.ts tags + audits the protocol-assumption case distinctly
 // ---------------------------------------------------------------------------
 test("beta52/53: loop.ts emits the env-wait hallucination tag distinct from worker_refusal", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // beta.53 renamed detection to the exported predicate + renamed the event
   // from loop.worker_incorrect_protocol_assumption -> loop.worker_env_wait_hallucination.
   // beta.54 broadened the predicate to matchesAsyncCoordConfabulation.

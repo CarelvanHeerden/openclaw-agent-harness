@@ -77,7 +77,7 @@ test("beta132: the loop stamps the heartbeat before its first sleep", { skip }, 
   // An operator watching the thread answers in seconds. If the first stamp
   // waited for the first tick, the fastest answers -- the ones most likely to
   // reach a live loop -- would be the ones judged dead.
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // rc.6: there are two asks now -- the clock's and the money's -- and both
   // wait in place on the same column, so both need this property. Counting
   // stamps across the whole file said nothing about either once a second ask
@@ -97,7 +97,7 @@ test("beta132: the loop stamps the heartbeat before its first sleep", { skip }, 
 });
 
 test("beta132: clearing the pause clears the heartbeat with it", { skip }, () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("const clearPause");
   const block = src.slice(i, i + 700);
   // A heartbeat left behind on a finished pause is a corpse that reads as
@@ -359,7 +359,7 @@ test("beta132: the comment about resumes and planning cost states which era it d
   // explicit about which is the historical claim and which is current
   // behaviour. A comment that silently reverts to the bare original is the
   // regression this test is here to catch.
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   const i = src.indexOf("let leadPlanningCostUsd = 0");
   assert.ok(i > 0);
   const block = src.slice(Math.max(0, i - 1400), i);

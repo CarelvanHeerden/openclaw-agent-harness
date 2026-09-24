@@ -240,7 +240,7 @@ test("P0a: a good first plan does NOT re-ask", async () => {
 
 // --- P0b + boundary source assertions ---
 test("beta.92 SUPERSEDES P0b: loop no longer runs the timed LLM revise-spec turn; uses deterministic mapping", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // The LLM revise-spec turn was DELETED in beta.92. The loop must NOT call
   // the timed turn nor gate on revise_spec_turn_enabled anymore.
   assert.ok(!/revise_spec_turn_enabled !== false/.test(src), "beta.92 removed the revise_spec_turn_enabled gate from the loop");

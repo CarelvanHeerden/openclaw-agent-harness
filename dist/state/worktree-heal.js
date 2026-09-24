@@ -27,8 +27,9 @@ export async function healOrphanedWorktrees(state, deps) {
         errors: [],
     };
     // beta.45: build the protected set (exact paths + basenames) from live loops.
-    const protectedPaths = new Set(deps.protectedWorktreePaths ?? []);
-    const protectedBasenames = new Set((deps.protectedWorktreePaths ?? []).map((p) => basename(p)));
+    const allProtected = [...(deps.protectedWorktreePaths ?? []), ...(deps.protectedAutonomousWorktreePaths ?? [])];
+    const protectedPaths = new Set(allProtected);
+    const protectedBasenames = new Set(allProtected.map((p) => basename(p)));
     const graceMs = typeof deps.graceMs === "number" ? deps.graceMs : 120_000;
     let dirs;
     try {

@@ -440,7 +440,7 @@ test("beta105: a resume onto a branch missing this run's commits fails BEFORE an
 // ---------------------------------------------------------------------------
 
 test("beta105: the ledger guard is a SHARED method with a resume and a review call site", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /private async checkLedgerReachability\(/, "extracted, not duplicated");
   const calls = [...loop.matchAll(/this\.checkLedgerReachability\(/g)];
   assert.equal(calls.length, 2, "exactly two call sites: resume and review");
@@ -449,13 +449,13 @@ test("beta105: the ledger guard is a SHARED method with a resume and a review ca
 });
 
 test("beta105: the resume guard fails the run rather than reviewing a truncated branch", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /ledger_commits_unreachable_at_resume/);
   assert.match(loop, /resume_ledger_guard_enabled !== false/);
 });
 
 test("beta105: the resume guard runs BEFORE any worker turn is dispatched", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const guardAt = loop.indexOf('checkLedgerReachability(sessionId, plan.worktreePath, 1, "resume")');
   const conventionsAt = loop.indexOf("repo_conventions_ingested");
   assert.ok(guardAt > 0 && conventionsAt > 0);
@@ -463,7 +463,7 @@ test("beta105: the resume guard runs BEFORE any worker turn is dispatched", { sk
 });
 
 test("beta105: the ledger check short-circuits on an empty ledger", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /if \(ledger\.length === 0\) return none;/, "a fresh run must not pay for this");
 });
 
@@ -483,14 +483,14 @@ test("beta105: a requested preservation that falls through to a reset WARNS", { 
 });
 
 test("beta105: the decision reaches the session audit trail", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /loop\.branch_allocation/);
   const idx = S("src/index.ts");
   assert.match(idx, /onBranchDecision,/, "index must forward the callback into GitContext");
 });
 
 test("beta105: the basename rescue is tried BEFORE the clarification escalation", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   const rescueAt = loop.indexOf("basename_rescue_enabled !== false");
   const escalateAt = loop.indexOf("loop.contract_path_mismatch_escalated");
   assert.ok(rescueAt > 0 && escalateAt > 0);
@@ -498,14 +498,14 @@ test("beta105: the basename rescue is tried BEFORE the clarification escalation"
 });
 
 test("beta105: a rescue only continues when re-verification actually passes", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /loop\.contract_path_basename_rescued/);
   assert.match(loop, /if \(reverified\.ok\) \{/, "nothing may be waved through unverified");
   assert.match(loop, /source: "basename_rescue"/, "a rescue must write back to the plan like a learned remap");
 });
 
 test("beta105: a throwing rescue leaves the pre-b105 escalation intact", { skip }, () => {
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.match(loop, /basename rescue failed \(non-fatal; escalating as before\)/);
 });
 
@@ -518,7 +518,7 @@ test("beta105: file_written's rename fallback is wired end to end", { skip }, ()
   // places agree" -- so it is repointed rather than pruned.
   assert.match(S("src/orchestrator/verify-probes.ts"), /filePathIntroducedSince: async \(path: string, baseSha: string\)/);
   assert.match(S("src/adapters/git-worktree.ts"), /--diff-filter=AR/);
-  const loop = S("src/orchestrator/loop.ts");
+  const loop = S("src/orchestrator/legacy-loop.ts");
   assert.equal(
     [...loop.matchAll(/acceptRenameAsWrite: this\.deps\.config\.loop\.file_written_accepts_rename !== false/g)].length,
     3,

@@ -58,7 +58,7 @@ test("beta60: the sub-task walk wraps runOneInner in withTimeout(subtask_deadlin
   // dispatch removed the wrapper has no job left, so the serial walk bounds
   // `runOneInner` directly. What b60 is about is unchanged: the bound must
   // cover the git/IO around the worker, which is where the 5h30m hang was.
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(
     src,
     // b106 added a label argument so the timeout error names its own knob.
@@ -90,7 +90,7 @@ test("beta60: withTimeout bounds a hanging runOne (behavioral) -> the exact seq-
 });
 
 test("beta60: loop exposes runningSessionIds() instance method delegating to the module guard", async () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   // instance method added next to ownedRunningSessionIds
   assert.match(src, /runningSessionIds\(\): string\[\] \{\s*return runningSessionIds\(\);/s);
 });

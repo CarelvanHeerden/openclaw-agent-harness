@@ -24,6 +24,8 @@
  */
 
 import type { StateStore } from "./store.js";
+import { authorityEnvelopeDigest } from "../control/authority.js";
+import type { ControlRepository, RunLease } from "../control/repository.js";
 
 export interface RecoveryOptions {
   staleAfterSeconds: number;
@@ -245,4 +247,77 @@ export async function recoverSessions(state: StateStore, opts: RecoveryOptions):
     });
   }
   return { interrupted, resumable };
+}
+
+export interface AutonomousRecoveryCandidate {
+  readonly runId: string;
+  readonly version: number;
+  readonly authorityHash: string;
+  readonly checkpointSha?: string;
+  readonly checkpointPayloadDigest?: string;
+}
+
+export interface AutonomousRecoveryOptions {
+  readonly ownerId: string;
+  readonly leaseTtlMs: number;
+  readonly now?: number;
+  readonly resume: (candidate: AutonomousRecoveryCandidate, lease: RunLease) => Promise<void>;
+  readonly logger: RecoveryOptions["logger"];
+}
+
+/**
+ * Recover only confirmed autonomous runs. Drafts, confirmation waits, merge
+ * waits, terminal runs and all legacy session pauses are deliberately absent
+ * from this scan. The durable authority hash and monotonically increasing
+ * lease fence bind every resumed writer to the same confirmed envelope.
+ */
+export async function recoverAutonomousControlRuns(
+  repository: ControlRepository,
+  state: StateStore,
+  options: AutonomousRecoveryOptions,
+): Promise<{ resumed: number; leasedElsewhere: number; rejected: number }> {
+  const now = options.now ?? Date.now();
+  const rows = state.db.prepare(`SELECT id, version, authority_envelope_json
+    FROM control_runs WHERE state = 'autonomous_run' ORDER BY updated_at`).all() as Array<{
+      id: string;
+      version: number;
+      authority_envelope_json: string;
+    }>;
+  let resumed = 0;
+  let leasedElsewhere = 0;
+  let rejected = 0;
+
+  for (const row of rows) {
+    const run = repository.getRun(row.id);
+    if (!run || run.state !== "autonomous_run") continue;
+    const authorityHash = authorityEnvelopeDigest(run.authorityEnvelope);
+    const lease = repository.acquireLease(row.id, options.ownerId, options.leaseTtlMs, now, authorityHash);
+    if (!lease) {
+      leasedElsewhere++;
+      continue;
+    }
+    const checkpoint = state.db.prepare(`SELECT checkpoint_sha, payload_digest, authority_hash, lease_fence
+      FROM control_verified_checkpoints WHERE run_id = ? ORDER BY id DESC LIMIT 1`).get(row.id) as
+      { checkpoint_sha: string; payload_digest: string; authority_hash: string; lease_fence: number } | undefined;
+    if (checkpoint && checkpoint.authority_hash !== authorityHash) {
+      rejected++;
+      repository.releaseLease(row.id, options.ownerId, lease.fence, now);
+      options.logger.warn("[recovery] rejected autonomous run with changed authority envelope", { runId: row.id });
+      continue;
+    }
+    try {
+      await options.resume(Object.freeze({
+        runId: row.id,
+        version: row.version,
+        authorityHash,
+        ...(checkpoint ? { checkpointSha: checkpoint.checkpoint_sha, checkpointPayloadDigest: checkpoint.payload_digest } : {}),
+      }), lease);
+      resumed++;
+    } catch (error) {
+      options.logger.warn("[recovery] autonomous resume failed", { runId: row.id, error: String(error) });
+      repository.releaseLease(row.id, options.ownerId, lease.fence, now);
+      rejected++;
+    }
+  }
+  return { resumed, leasedElsewhere, rejected };
 }

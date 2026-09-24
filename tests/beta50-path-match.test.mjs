@@ -170,7 +170,7 @@ test("beta50: anyPathMatches finds the route-group file among many committed", (
 // tests/beta123-verify-probes.test.mjs.
 
 test("beta50: headline enriches path-mismatch failures", () => {
-  const progSrc = S("src/orchestrator/progress.ts");
+  const progSrc = S("src/orchestrator/legacy-progress.ts");
   assert.match(progSrc, /loop\.file_committed_verify_failed/);
   assert.match(progSrc, /failureDetail/);
   assert.match(progSrc, /verifier path check:/);

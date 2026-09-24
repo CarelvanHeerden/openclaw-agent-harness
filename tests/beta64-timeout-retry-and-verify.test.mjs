@@ -396,7 +396,7 @@ test("beta64: all four new loop keys declared in manifest configSchema (addition
 });
 
 test("beta64: loop wires retry + best-effort verify + scripted fallback audits (source)", () => {
-  const src = S("src/orchestrator/loop.ts");
+  const src = S("src/orchestrator/legacy-loop.ts");
   assert.match(src, /"loop\.worker_timeout_retry"/);
   assert.match(src, /"loop\.verify_skipped_best_effort"/);
   assert.match(src, /"loop\.scripted_verify_fallback"/);
