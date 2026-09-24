@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createManagedTemp } from "./managed-temp.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const temp = mkdtempSync(join(dirname(root), ".oah-test-"));
-const cleanup = () => rmSync(temp, { recursive: true, force: true });
-const interrupted = (signal) => { cleanup(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); };
-process.once("SIGINT", () => interrupted("SIGINT"));
-process.once("SIGTERM", () => interrupted("SIGTERM"));
+const managedTemp = createManagedTemp(dirname(root), ".oah-test-");
+const temp = managedTemp.path;
+const cleanup = managedTemp.cleanup;
 
 try {
   const source = join(temp, "source");

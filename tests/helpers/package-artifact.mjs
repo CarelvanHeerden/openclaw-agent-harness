@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { createManagedTemp } from "../../scripts/managed-temp.mjs";
 
 function run(command, args, cwd, env = {}) {
   return execFileSync(command, args, {
@@ -20,11 +21,9 @@ function run(command, args, cwd, env = {}) {
 export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
   // Keep the staging tree on the repository filesystem: node_modules is close
   // to 1 GB and hard links cannot cross from the workspace mount into /tmp.
-  const temp = mkdtempSync(join(dirname(root), `.${prefix}`));
-  const cleanup = () => rmSync(temp, { recursive: true, force: true });
-  const interrupted = (signal) => { cleanup(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); };
-  process.once("SIGINT", () => interrupted("SIGINT"));
-  process.once("SIGTERM", () => interrupted("SIGTERM"));
+  const managedTemp = createManagedTemp(dirname(root), `.${prefix}`);
+  const temp = managedTemp.path;
+  const cleanup = managedTemp.cleanup;
   try {
     const source = join(temp, "source");
     const packDir = join(temp, "pack");

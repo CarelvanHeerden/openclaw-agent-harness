@@ -21,21 +21,20 @@
 //      that did survive a previous run cannot be mistaken for the baseline.
 //
 // Run: node scripts/mutation-check.mjs
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createManagedTemp } from "./managed-temp.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // Run the destructive scan in an immutable checkout so it cannot race with a
 // build, package test, or another mutation scan rewriting the repository dist/.
 if (process.env.OAH_MUTATION_ISOLATED !== "1") {
-  const temp = mkdtempSync(join(dirname(root), ".oah-mutation-"));
-  const cleanup = () => rmSync(temp, { recursive: true, force: true });
-  const interrupted = (signal) => { cleanup(); process.exit(128 + (signal === "SIGINT" ? 2 : 15)); };
-  process.once("SIGINT", () => interrupted("SIGINT"));
-  process.once("SIGTERM", () => interrupted("SIGTERM"));
+  const managedTemp = createManagedTemp(dirname(root), ".oah-mutation-");
+  const temp = managedTemp.path;
+  const cleanup = managedTemp.cleanup;
   try {
     const source = join(temp, "source");
     let result = spawnSync("git", ["clone", "--quiet", "--shared", root, source], { encoding: "utf8" });
