@@ -2,7 +2,8 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 const expectedRoot = resolve(process.argv[2] ?? process.cwd());
@@ -71,6 +72,34 @@ const openCodeVersion = spawnSync(openCode.command, ["--version"], {
 if (openCodeVersion.status !== 0) {
   throw new Error(`installed OpenCode executable failed --version: ${openCodeVersion.stderr || openCodeVersion.stdout}`);
 }
+
+const installedRequire = createRequire(resolve(installedRoot, "package.json"));
+const sdkEntry = installedRequire.resolve("@anthropic-ai/claude-agent-sdk");
+const sdkRoot = dirname(sdkEntry);
+const sdkPackage = JSON.parse(readFileSync(resolve(sdkRoot, "package.json"), "utf8"));
+const isMusl = process.platform === "linux" && process.report?.getReport?.().header?.glibcVersionRuntime === undefined;
+const platformSuffix = process.platform === "linux"
+  ? `linux-${process.arch}${isMusl ? "-musl" : ""}`
+  : `${process.platform}-${process.arch}`;
+const nativePackageName = `@anthropic-ai/claude-agent-sdk-${platformSuffix}`;
+const nativePackageRoot = dirname(installedRequire.resolve(`${nativePackageName}/package.json`));
+const claudeCommand = resolve(nativePackageRoot, process.platform === "win32" ? "claude.exe" : "claude");
+if (!existsSync(claudeCommand)) throw new Error(`installed Claude SDK native executable is missing: ${claudeCommand}`);
+if (!realpathSync(claudeCommand).startsWith(realpathSync(resolve(installedRoot, "..")))) {
+  throw new Error(`Claude SDK native executable did not resolve from the durable installation: ${claudeCommand}`);
+}
+const claudeVersion = spawnSync(claudeCommand, ["--version"], {
+  encoding: "utf8",
+  timeout: 15_000,
+});
+if (claudeVersion.status !== 0) {
+  throw new Error(`installed Claude SDK native executable failed --version: ${claudeVersion.stderr || claudeVersion.stdout}`);
+}
+const claudeVersionText = (claudeVersion.stdout || claudeVersion.stderr || "").trim();
+if (sdkPackage.claudeCodeVersion && !claudeVersionText.startsWith(sdkPackage.claudeCodeVersion)) {
+  throw new Error(`Claude SDK native version mismatch: SDK expects ${sdkPackage.claudeCodeVersion}, got ${claudeVersionText}`);
+}
+
 const manifestSha256 = createHash("sha256").update(entries.join("\n")).digest("hex");
 console.log(JSON.stringify({
   ok: true,
@@ -79,6 +108,10 @@ console.log(JSON.stringify({
   manifestSha256,
   openCodeCommand: openCode.command,
   openCodeVersion: (openCodeVersion.stdout || openCodeVersion.stderr || "").trim(),
+  claudeSdkVersion: sdkPackage.version,
+  claudeNativePackage: nativePackageName,
+  claudeCommand,
+  claudeVersion: claudeVersionText,
   testedRoot: expectedRoot,
   installedRoot,
 }, null, 2));

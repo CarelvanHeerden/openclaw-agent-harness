@@ -14,9 +14,9 @@
  *      { title, motivation, acceptanceCriteria[], filesLikelyTouched[],
  *        outOfScope[], repoHint, riskLevel }.
  *
- * The brief is stored on `sessions.crystallised_prompt` before the loop
- * starts. Users see it as a Slack thread reply and can react with a
- * confirming emoji before execution begins.
+ * The brief is stored on `sessions.crystallised_prompt` before the confirmed
+ * control-plane run starts. Exact authenticated confirmation is handled by
+ * OpenClaw before execution begins.
  */
 import type { HarnessConfig } from "../config.js";
 import { type ClarificationGrounding, type ClarificationReason, type VerifiedContinuation } from "./clarification-guard.js";
@@ -133,20 +133,18 @@ export interface CrystallisedBrief {
      */
     repoScoutReport?: string;
     /**
-     * beta.80 (F2): the crystalliser's self-reported DISTINCT readings of the
-     * brief that would produce MATERIALLY DIFFERENT diffs. When >= 2, the brief
-     * is bimodal and the run must PAUSE for clarification rather than the
-     * crystalliser guessing one reading. Absent/empty when unambiguous.
+     * The crystalliser's distinct readings that would produce materially
+     * different diffs. OpenClaw resolves this before confirmation; a confirmed
+     * run never exposes a new interaction state. Absent when unambiguous.
      */
     interpretations?: {
         reading: string;
         whatDiffers: string;
     }[];
     /**
-     * beta.80 (F2): when the crystalliser found competing readings (or made an
-     * assumption that changes WHAT is built), it populates this with the fork as
-     * an explicit multiple-choice question INSTEAD of picking one. prompt-refiner
-     * routes this into a hard `clarify` pause-and-wait (no session started).
+     * When crystallisation finds competing readings, this carries the bounded
+     * question OpenClaw must resolve before a change can be prepared. No
+     * confirmed control-plane session is started with this field unresolved.
      */
     clarificationNeeded?: {
         question: string;

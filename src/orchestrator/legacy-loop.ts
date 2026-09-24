@@ -12130,13 +12130,11 @@ export class OrchestratorLoop {
   }
 
   /**
-   * beta.55 (B2): pause the session for a human decision. Persists the
-   * question + the paused sub-task seq and sets status `awaiting_clarification`.
-   * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so
-   * a trusted host confirmation can re-drive the loop from the paused seq in place. The
-   * worktree-heal protect set (beta.45) + recovery both treat
-   * `awaiting_clarification` as resumable, so a stray re-register or restart
-   * won't reap the worktree or auto-fail the pause.
+   * Historical-loop clarification finalizer. Confirmed control-plane runs take
+   * the first branch below and end terminally before any interaction state,
+   * progress delivery, or continuation record is created. The remaining path
+   * exists only to recover legacy sessions that predate the four-operation
+   * contract.
    */
   private async finaliseAwaitingClarification(
     sessionId: string,
@@ -12158,7 +12156,7 @@ export class OrchestratorLoop {
       const now = Date.now();
       this.deps.state.db.prepare(`UPDATE sessions SET status='failed',worktree_preserved=1,clarification_question=NULL,clarification_seq=NULL,clarification_id=NULL,updated_at=? WHERE id=?`).run(now, sessionId);
       this.deps.state.audit("control.interactive_pause_rejected", { sessionId, seq, reason: "confirmed_control_is_non_interactive" }, sessionId);
-      return { status: "failed", sessionId, reason: "confirmed control requires an out-of-envelope human decision", cycles, totalCostUsd };
+      return { status: "failed", sessionId, reason: "confirmed control exhausted autonomous clarification handling", cycles, totalCostUsd };
     }
     /*
      * rc.9: checkpoint BEFORE blocking on a human.

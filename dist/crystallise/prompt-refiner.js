@@ -14,9 +14,9 @@
  *      { title, motivation, acceptanceCriteria[], filesLikelyTouched[],
  *        outOfScope[], repoHint, riskLevel }.
  *
- * The brief is stored on `sessions.crystallised_prompt` before the loop
- * starts. Users see it as a Slack thread reply and can react with a
- * confirming emoji before execution begins.
+ * The brief is stored on `sessions.crystallised_prompt` before the confirmed
+ * control-plane run starts. Exact authenticated confirmation is handled by
+ * OpenClaw before execution begins.
  */
 import { guardClarification, } from "./clarification-guard.js";
 import { renderRepoAmbiguityQuestion, resolveRepoAlias } from "./repo-alias.js";

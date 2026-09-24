@@ -31,7 +31,6 @@
     "LICENSE",
     "docs",
     "scripts/check-downgrade.mjs",
-    "scripts/prepare-dependency-bundle.mjs",
     "scripts/verify-installed-artifact.mjs"
   ],
   "scripts": {
@@ -45,8 +44,6 @@
     "check:downgrade": "node scripts/check-downgrade.mjs",
     "verify:installed-artifact": "node scripts/verify-installed-artifact.mjs",
     "prepublishOnly": "npm run schema:check && npm run typecheck && npm run build",
-    "prepack": "node scripts/prepare-dependency-bundle.mjs hide",
-    "postpack": "node scripts/prepare-dependency-bundle.mjs restore",
     "schema:sync": "node scripts/gen-config-schema.mjs",
     "schema:check": "node scripts/gen-config-schema.mjs --check"
   },
@@ -90,7 +87,6 @@
     "./openclaw.plugin.json": "./openclaw.plugin.json"
   },
   "bundledDependencies": [
-    "@anthropic-ai/claude-agent-sdk",
     "@anthropic-ai/sdk",
     "@modelcontextprotocol/sdk",
     "zod",

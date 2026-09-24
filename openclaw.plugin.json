@@ -421,7 +421,7 @@
           "plan_policy_conflict_check_enabled": {
             "type": "boolean",
             "default": true,
-            "description": "rc.10 (F3): at plan_ready, compare every filesLikelyTouched entry against the effective safety.path_denylist (honouring path_denylist_exceptions) and record any planned write the policy will refuse; the affected sub-task then pauses for an operator decision INSTEAD of being dispatched. Default true."
+            "description": "At plan_ready, compare every filesLikelyTouched entry against the effective safety.path_denylist (honouring path_denylist_exceptions) before dispatch. A conflict terminates the confirmed run safely instead of creating an operator-decision pause. Default true."
           },
           "plan_path_writeback_enabled": {
             "type": "boolean",
@@ -687,7 +687,7 @@
             "minimum": 30,
             "maximum": 7200,
             "default": 900,
-            "description": "beta.81 (B2): max wall-clock seconds the harness waits for CI to finish after pushing a branch before it treats the wait as a SOFT checkpoint (surfaces 'CI still running after N min on <sha>' and offers a resumable continue-watching -- never a hard fail). Clamped [30, 7200]."
+            "description": "Maximum wall-clock seconds to wait for CI after pushing a branch. If CI is still pending at the deadline, the confirmed run returns a terminal failure rather than exposing a resumable continue-watching operation. Clamped [30, 7200]."
           },
           "poll_interval_seconds": {
             "type": "integer",
@@ -1115,7 +1115,7 @@
               "always"
             ],
             "default": "always",
-            "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; a new confirmed request can approve or change the brief, budget, or time limit."
+            "description": "Compatibility setting for legacy callers. The four-operation control plane always requires exact authenticated harness_confirm_change confirmation before material work; it does not expose an additional operator pause or continuation surface."
           },
           "confirm_min_risk": {
             "type": "string",

@@ -52,6 +52,11 @@ const retiredPackagePatterns = [
   /slash_commands/g,
   /\/harness-(?:onboard|run|start|merge)\b/g,
   /registerCommand\s*[?(:]/g,
+  /confirming emoji/gi,
+  /pauses? for an operator decision/gi,
+  /offers? a resumable continue-watching/gi,
+  /pause for an operator to confirm/gi,
+  /hard `?clarify`? pause-and-wait/gi,
 ];
 
 function filesUnder(dir) {
@@ -105,6 +110,18 @@ test("the exact packed artifact has only the four ordinary operations and no ret
       }
     }
     assert.deepEqual(leaks, []);
+
+    const legacyLoop = readFileSync(join(packageRoot, "dist/orchestrator/legacy-loop.js"), "utf8");
+    assert.match(
+      legacyLoop,
+      /confirmedControlGuards\.has\(sessionId\)[\s\S]{0,800}UPDATE sessions SET status='failed'[\s\S]{0,800}exhausted autonomous clarification handling/,
+      "the packaged loop must terminalize before creating or delivering a historical clarification state",
+    );
+    assert.match(
+      legacyLoop,
+      /outcome\.status !== "awaiting_clarification"[\s\S]{0,1000}UPDATE sessions SET status='failed'/,
+      "the packaged confirmed-control entry point must retain a second terminalization guard",
+    );
 
     const registration = readFileSync(join(packageRoot, "dist/tools/registration.js"), "utf8");
     const names = [...registration.matchAll(/"(harness_[a-z_]+)"/g)].map((match) => match[1]);

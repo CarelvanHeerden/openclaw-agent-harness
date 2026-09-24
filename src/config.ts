@@ -102,11 +102,10 @@ export interface CredentialsConfig {
 
 export interface CiConfig {
   /**
-   * beta.81 (Track B / B2): max wall-clock seconds the harness waits for CI to
-   * finish after pushing a branch before it treats the wait as a SOFT
-   * checkpoint. On timeout the harness does NOT hard-fail -- it surfaces
-   * "CI still running after N min on <sha>" and offers a resumable
-   * continue-watching. Default 900 (15 min). Clamped to [30, 7200].
+   * Maximum wall-clock seconds to wait for CI after pushing a branch. A
+   * confirmed control-plane run that reaches this deadline ends terminally;
+   * no continue-watching operation is exposed. Default 900 (15 min), clamped
+   * to [30, 7200].
    */
   wait_timeout_seconds: number;
   /**
@@ -258,18 +257,9 @@ export interface BriefConfig {
   /** beta.120: hard cap on a `requestPath` file. Default 262144 (256 KB). */
   request_file_max_bytes: number;
   /**
-   * beta.120: pause for a human to confirm the crystallised brief BEFORE any
-   * planning or worker spend.
-   *
-   * "off"       - never pause (pre-beta.120 behaviour).
-   * "high_risk" - pause when the brief's riskLevel is at or above
-   *               confirm_min_risk.
-   * "always"    - pause on every run. Default.
-   *
-   * Motivation: two b119 smokes spent ~$18 and ~2h each building a feature
-   * whose brief had been paraphrased upstream (`performedAt` became
-   * `scheduledAt`). The error was obvious on sight; nothing showed it to
-   * anyone. Crystallising costs cents, so this gate is nearly free.
+   * Compatibility setting for legacy callers. The four-operation control
+   * plane always requires exact authenticated confirmation before planning or
+   * worker spend and exposes no additional operator-decision boundary.
    */
   confirm_before_spend: "off" | "high_risk" | "always";
   /**
@@ -728,12 +718,9 @@ export interface LoopConfig {
    */
   worker_protocol_max_attempts?: number;
   /**
-   * beta.55 (B2): when a worker refuses/confabulates a sub-task even after the
-   * beta.54 async-coord retry, instead of hard-failing the whole run, pause the
-   * session in `awaiting_clarification` (persisting the worker's own question/
-   * reason + the paused seq) and surface it via the control result for a human to
-   * answer with a trusted host confirmation. Default true. Set false to keep the old
-   * terminal-fail behaviour.
+   * Compatibility switch for the historical interactive loop. Confirmed
+   * control-plane runs always convert any exhausted worker clarification into
+   * a terminal failure; OpenClaw remains responsible for any new request.
    */
   clarification_escalation_enabled?: boolean;
   /**
@@ -961,11 +948,9 @@ export interface LoopConfig {
    */
   contract_test_path_reconcile?: boolean;
   /**
-   * beta.100: when a sub-task made a REAL commit but its files do not match the
-   * contract paths, pause the run in `awaiting_clarification` (worktree and
-   * commits preserved, resumable via a trusted host confirmation) instead of hard-failing.
-   * The sub-task still fails verification and nothing is accepted -- only the
-   * terminal disposition changes. false restores the pre-b100 hard fail.
+   * Compatibility switch for the historical interactive loop. Confirmed
+   * control-plane runs terminalize contract mismatches; they never expose a
+   * post-confirmation continuation operation.
    */
   contract_mismatch_escalation_enabled?: boolean;
   /**
@@ -984,9 +969,9 @@ export interface LoopConfig {
    */
   plan_path_validation_enabled?: boolean;
   /**
-   * rc.10 (F3): compare planned writes against the safety denylist at
-   * plan_ready, and gate the affected sub-task's dispatch on an operator
-   * decision instead of spending a worker turn on a write policy will refuse.
+   * Compare planned writes against the safety denylist at plan_ready. A
+   * conflict terminates the confirmed run before dispatch rather than asking
+   * for a new operator decision.
    */
   plan_policy_conflict_check_enabled?: boolean;
   /**
