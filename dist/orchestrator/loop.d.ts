@@ -1,14 +1,11 @@
 /**
- * Autonomous control-plane entry point. Confirmed changes have no interactive
- * exchange: deterministic in-envelope choices continue, while an
- * authority or readiness violation produces one terminal result.
- *
- * The rc.13 executor remains isolated in legacy-loop.ts solely to finish or
- * inspect pre-migration session records.
+ * Public autonomous control-plane helpers. Historical execution machinery is
+ * intentionally not re-exported from this package facade.
  */
-export * from "./legacy-loop.js";
 export { AutonomousControlEngine, decideEngineAuthority } from "../control/engine.js";
 export { evaluatePrReadiness } from "../control/readiness.js";
+/** Internal lifecycle signal; it does not expose an execution entry point. */
+export declare function runningSessionIds(): string[];
 export interface StrictReadinessAuditShape {
     state: "pr_ready";
     verdict: "pass";

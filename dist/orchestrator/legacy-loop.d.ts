@@ -972,7 +972,7 @@ export declare class OrchestratorLoop {
      * reused for planning and workers, but its interactive pause is not part of
      * the control-plane contract: a request for clarification is terminal.
      */
-    runConfirmedControl(sessionId: string, brief: CrystallisedBrief, authorityGuard?: ConfirmedControlAuthorityGuard, credentialResolver?: ConfirmedControlCredentialResolver): Promise<LoopOutcome>;
+    runConfirmedControl(sessionId: string, brief: CrystallisedBrief, authorityGuard: ConfirmedControlAuthorityGuard, credentialResolver?: ConfirmedControlCredentialResolver): Promise<LoopOutcome>;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is

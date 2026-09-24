@@ -66,7 +66,20 @@ concepts) {
             /* an audit write must never fail crystallisation */
         }
     };
-    const cls = await deps.callClassifier(userText);
+    let cls;
+    try {
+        cls = await deps.callClassifier(userText);
+    }
+    catch (error) {
+        deps.logger.warn("[crystalliser] classifier call or parse failure rejected", { error: String(error) });
+        audit("crystallise.unsafe_model_output", { role: "classifier", reason: "call_or_parse_failure" });
+        return {
+            kind: "reject",
+            reason: "The request classifier could not be evaluated safely, so the request was refused.",
+            intent: "unsafe",
+            spend,
+        };
+    }
     addSpend(spend, cls);
     deps.logger.info("[crystalliser] classifier", cls);
     // Older classifier implementations may still emit the retired `clarify`

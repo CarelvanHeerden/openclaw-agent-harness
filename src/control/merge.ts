@@ -31,12 +31,14 @@ export function mergeAuthorizationDigest(input:Omit<VerifiedMergeAuthorization,"
 export function createVerifiedMergeAuthorization(input:Omit<VerifiedMergeAuthorization,"version"|"id"|"bindingDigest">&{id?:string}):VerifiedMergeAuthorization{const unsigned=Object.freeze({version:2 as const,id:input.id??randomUUID(),runId:input.runId,actorIdentity:input.actorIdentity,conversationIdentity:input.conversationIdentity,repository:input.repository,baseRef:input.baseRef,prNumber:input.prNumber,expectedHeadSha:input.expectedHeadSha,publishedSha:input.publishedSha,readinessDigest:input.readinessDigest,nonce:input.nonce,issuedAt:input.issuedAt,expiresAt:input.expiresAt});if(!unsigned.actorIdentity||!unsigned.conversationIdentity||!unsigned.repository||!unsigned.baseRef||!unsigned.nonce||!unsigned.readinessDigest)throw new Error("Incomplete merge authorization");if(!Number.isSafeInteger(unsigned.prNumber)||unsigned.prNumber<1||unsigned.expiresAt<=unsigned.issuedAt||unsigned.expectedHeadSha!==unsigned.publishedSha)throw new Error("Invalid merge authorization");return Object.freeze({...unsigned,bindingDigest:mergeAuthorizationDigest(unsigned)});}
 
 interface IntentRow { id:string; change_id:string; authorization_id:string; expected_head_sha:string; merge_provider_idempotency:string; status:string; provider_merge_sha:string|null }
-interface IntentLease { owner:string; fence:number }
+interface IntentLease { owner:string; fence:number; attempts:number }
 interface PersistedReadiness { input:PrReadinessInput; result:PrReadinessResult }
 
 export class InternalMergeService {
   private recoveryInFlight: Promise<void> | null = null;
   private static readonly INTENT_LEASE_MS = 300_000;
+  private static readonly MAX_RECOVERY_ATTEMPTS = 12;
+  private static readonly MAX_INSPECTIONS_PER_ATTEMPT = 5;
   constructor(private readonly db:DatabaseSync,private readonly repository:ControlRepository,private readonly provider:MergeProvider,private readonly now:()=>number=Date.now){}
 
   registerAuthorizationAndIntent(a:VerifiedMergeAuthorization, now=this.now()): string {
@@ -105,13 +107,14 @@ export class InternalMergeService {
     const raw=this.db.prepare(`SELECT * FROM control_merge_authorizations WHERE id=?`).get(id) as Record<string,unknown>|undefined;
     const auth=raw&&this.verifyPersistedAuthorization(raw);
     if(!auth){this.failRun(intent.change_id,intent.id,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});}
-    if(auth.expiresAt<now&&raw!.consumed_at===null)return Object.freeze({status:"refused",code:"authorization_expired"});
+    if(auth.expiresAt<now&&raw!.consumed_at===null){this.terminalize(auth.runId,intent.id,"verification_failed","authority_expired",lease);return Object.freeze({status:"refused",code:"authorization_expired"});}
     const run=this.repository.getRun(auth.runId);
     if(!run||(run.state!=="awaiting_merge"&&run.state!=="done"))return Object.freeze({status:"refused",code:"merge_attestation_required"});
     const proposal=this.db.prepare(`SELECT published_sha,readiness_digest FROM control_proposals WHERE run_id=?`).get(run.id) as {published_sha:string|null;readiness_digest:string|null}|undefined;
     if(!proposal||proposal.published_sha!==auth.expectedHeadSha||proposal.readiness_digest!==auth.readinessDigest||intent.change_id!==auth.runId||intent.expected_head_sha!==auth.expectedHeadSha){this.refuseRun(run.id,intent.id,"readiness_changed",lease);return Object.freeze({status:"refused",code:"readiness_changed"});}
     const persisted=this.verifyPersistedReadiness(run.id,auth.readinessDigest);
     if(!persisted||!persisted.result.ready||persisted.result.verifiedSha!==auth.expectedHeadSha){this.refuseRun(run.id,intent.id,"readiness_changed",lease);return Object.freeze({status:"refused",code:"readiness_changed"});}
+    if(lease.attempts>=InternalMergeService.MAX_RECOVERY_ATTEMPTS){this.failRun(run.id,intent.id,"provider_failure",lease);return Object.freeze({status:"merge_failed",code:"provider_failure"});}
     if(intent.status!=="authorized")return this.reconcileClaimedMerge(auth,intent.id,lease);
 
     let inspection:MergeInspection;
@@ -148,6 +151,7 @@ export class InternalMergeService {
 
   private async reconcileClaimedMerge(auth:VerifiedMergeAuthorization,intentId:string,lease:IntentLease):Promise<MergeServiceResult>{
     const deadline=Date.now()+5000;
+    let inspections=0;
     while(true){
       if(!this.validIntentLease(intentId,lease)||!this.verifyPersistedAuthorizationRow(auth.id)||!this.verifyPersistedReadiness(auth.runId,auth.readinessDigest)){this.failRun(auth.runId,intentId,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});}
       const current=this.db.prepare(`SELECT status,provider_merge_sha FROM control_engine_merge_intents WHERE id=?`).get(intentId) as {status:string;provider_merge_sha:string|null}|undefined;
@@ -160,12 +164,13 @@ export class InternalMergeService {
       if(current.status==="verification_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});
       let inspection:MergeInspection|undefined;
       try{inspection=await this.provider.inspect({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,readinessDigest:auth.readinessDigest});}catch{}
+      inspections++;
       if(inspection?.merged){
         const mergeSha=inspection.mergeSha;
         if(mergeSha&&EXACT_PROVIDER_SHA.test(mergeSha)&&await this.provider.verifyMerged({runId:auth.runId,repository:auth.repository,prNumber:auth.prNumber,mergeSha})&&this.completeRun(auth.runId,intentId,mergeSha,lease))return Object.freeze({status:"already_merged",mergeSha});
         this.failRun(auth.runId,intentId,"verification_failed",lease);return Object.freeze({status:"merge_failed",code:"verification_failed"});
       }
-      if(Date.now()>=deadline)return Object.freeze({status:"merge_in_progress"});
+      if(inspections>=InternalMergeService.MAX_INSPECTIONS_PER_ATTEMPT||Date.now()>=deadline)return Object.freeze({status:"merge_in_progress"});
       await sleep(10);
     }
   }
@@ -196,8 +201,8 @@ export class InternalMergeService {
     const owner=randomUUID(),now=this.now();
     const changed=this.db.prepare(`UPDATE control_engine_merge_intents SET recovery_owner=?,recovery_fence=recovery_fence+1,recovery_lease_expires_at=?,recovery_attempts=recovery_attempts+1,updated_at=? WHERE id=? AND status IN ('authorized','merging') AND (recovery_owner IS NULL OR recovery_lease_expires_at<=?)`).run(owner,now+InternalMergeService.INTENT_LEASE_MS,now,intentId,now);
     if(Number(changed.changes)!==1)return null;
-    const row=this.db.prepare(`SELECT recovery_fence FROM control_engine_merge_intents WHERE id=? AND recovery_owner=?`).get(intentId,owner) as {recovery_fence:number}|undefined;
-    return row?{owner,fence:Number(row.recovery_fence)}:null;
+    const row=this.db.prepare(`SELECT recovery_fence,recovery_attempts FROM control_engine_merge_intents WHERE id=? AND recovery_owner=?`).get(intentId,owner) as {recovery_fence:number;recovery_attempts:number}|undefined;
+    return row?{owner,fence:Number(row.recovery_fence),attempts:Number(row.recovery_attempts)}:null;
   }
   private validIntentLease(intentId:string,lease:IntentLease):boolean{const row=this.db.prepare(`SELECT 1 ok FROM control_engine_merge_intents WHERE id=? AND recovery_owner=? AND recovery_fence=? AND recovery_lease_expires_at>?`).get(intentId,lease.owner,lease.fence,this.now());return Boolean(row);}
   private releaseIntentLease(intentId:string,lease:IntentLease):void{this.db.prepare(`UPDATE control_engine_merge_intents SET recovery_owner=NULL,recovery_lease_expires_at=NULL WHERE id=? AND recovery_owner=? AND recovery_fence=?`).run(intentId,lease.owner,lease.fence);}

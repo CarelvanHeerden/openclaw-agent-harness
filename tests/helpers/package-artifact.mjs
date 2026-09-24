@@ -1,0 +1,47 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
+
+function run(command, args, cwd, env = {}) {
+  return execFileSync(command, args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false", ...env },
+    timeout: 300_000,
+  });
+}
+
+/**
+ * Pack the exact committed HEAD from an isolated checkout with a hard-linked
+ * dependency tree. npm lifecycle hooks may rewrite only this disposable tree,
+ * so parallel package tests cannot race on the repository's dist, staging, or
+ * native-package state. The caller must invoke cleanup in a finally block.
+ */
+export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
+  // Keep the staging tree on the repository filesystem: node_modules is close
+  // to 1 GB and hard links cannot cross from the workspace mount into /tmp.
+  const temp = mkdtempSync(join(dirname(root), `.${prefix}`));
+  try {
+    const source = join(temp, "source");
+    const packDir = join(temp, "pack");
+    mkdirSync(packDir);
+    run("git", ["clone", "--quiet", "--shared", root, source], temp);
+    run("cp", ["-al", join(root, "node_modules"), join(source, "node_modules")], temp);
+    const packed = JSON.parse(run("npm", ["pack", source, "--json", "--pack-destination", packDir], temp, {
+      npm_config_cache: join(temp, "npm-cache"),
+    }));
+    const artifact = packed[0] ?? Object.values(packed)[0];
+    if (!artifact?.filename) throw new Error("npm pack did not report an artifact filename");
+    return {
+      temp,
+      source,
+      packDir,
+      artifact,
+      tarball: join(packDir, basename(artifact.filename)),
+      cleanup: () => rmSync(temp, { recursive: true, force: true }),
+    };
+  } catch (error) {
+    rmSync(temp, { recursive: true, force: true });
+    throw error;
+  }
+}

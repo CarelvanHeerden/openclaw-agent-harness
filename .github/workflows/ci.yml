@@ -1,5 +1,10 @@
 name: CI
 
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
 on:
   push:
     # `harness/**` is the branch prefix every release actually uses; without it
@@ -93,6 +98,12 @@ jobs:
           echo "path=$artifact" >> "$GITHUB_OUTPUT"
           echo "sha_path=$artifact.sha256" >> "$GITHUB_OUTPUT"
           echo "provenance_path=$artifact.provenance.json" >> "$GITHUB_OUTPUT"
+
+      - name: Attest the exact packed artifact
+        if: matrix.node-version == '24' && github.event_name == 'push'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: ${{ steps.package.outputs.path }}
 
       - name: Install and compare the exact packed artifact
         if: matrix.node-version == '24'

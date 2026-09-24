@@ -1743,8 +1743,10 @@ export class OrchestratorLoop {
      * the control-plane contract: a request for clarification is terminal.
      */
     async runConfirmedControl(sessionId, brief, authorityGuard, credentialResolver) {
-        if (authorityGuard)
-            this.confirmedControlGuards.set(sessionId, authorityGuard);
+        if (typeof authorityGuard !== "function") {
+            throw new ConfirmedControlAuthorityError("confirmed control requires an authority guard");
+        }
+        this.confirmedControlGuards.set(sessionId, authorityGuard);
         if (credentialResolver)
             this.confirmedControlCredentialResolvers.set(sessionId, credentialResolver);
         try {

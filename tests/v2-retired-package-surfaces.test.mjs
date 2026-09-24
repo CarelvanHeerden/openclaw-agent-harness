@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packIsolatedHead } from "./helpers/package-artifact.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (path) => readFileSync(resolve(root, path), "utf8");
@@ -85,14 +85,9 @@ test("retired interactive modules are absent from source and built output", () =
 });
 
 test("the exact packed artifact has only the four ordinary operations and no retired interaction surface", () => {
-  const temp = mkdtempSync(resolve(tmpdir(), "oah-packed-surface-"));
+  const packed = packIsolatedHead(root, "oah-packed-surface-");
   try {
-    const packed = JSON.parse(execFileSync("npm", ["pack", root, "--json", "--pack-destination", temp], {
-      cwd: temp,
-      encoding: "utf8",
-    }));
-    const artifact = packed[0] ?? Object.values(packed)[0];
-    const tarball = join(temp, artifact.filename);
+    const { temp, tarball } = packed;
     execFileSync("tar", ["-xzf", tarball, "-C", temp]);
     const packageRoot = join(temp, "package");
     const files = filesUnder(packageRoot);
@@ -139,7 +134,7 @@ test("the exact packed artifact has only the four ordinary operations and no ret
       "harness_prepare_change",
     ]);
   } finally {
-    rmSync(temp, { recursive: true, force: true });
+    packed.cleanup();
   }
 });
 
@@ -177,4 +172,26 @@ test("control-plane documentation matches the v2 running response", () => {
   assert.match(doc, /"state": "running"/);
   assert.match(doc, /"summary": "Change confirmed and running autonomously\."/);
   assert.doesNotMatch(doc, /`accepted`/);
+});
+
+test("operational scripts expose only the four confirmed control operations", () => {
+  assert.equal(existsSync(resolve(root, "scripts/local-drive.mjs")), false);
+  const smoke = read("scripts/smoke.mjs");
+  for (const name of ["harness_prepare_change","harness_confirm_change","harness_change_result","harness_merge_change"]) assert.match(smoke,new RegExp(name));
+  for (const name of ["harness_run","harness_progress","harness_answer","harness_start_session","harness_cancel"]) assert.doesNotMatch(smoke,new RegExp(name));
+});
+
+test("public declarations do not expose bootstrap or legacy executor bypasses", () => {
+  const index = read("dist/index.d.ts");
+  const facade = read("dist/orchestrator/loop.d.ts");
+  for (const name of ["bootstrapHarnessSync","bootstrapHarnessAsync","bootstrapHarness","HarnessRuntime"]) assert.doesNotMatch(index,new RegExp(`export[^\\n]*\\b${name}\\b`));
+  assert.doesNotMatch(facade,/OrchestratorLoop|legacy-loop/);
+});
+
+test("CI requests GitHub provenance for the exact packed tarball", () => {
+  const ci = read(".github/workflows/ci.yml");
+  assert.match(ci,/id-token:\s*write/);
+  assert.match(ci,/attestations:\s*write/);
+  assert.match(ci,/actions\/attest-build-provenance@v3/);
+  assert.match(ci,/subject-path:\s*\$\{\{ steps\.package\.outputs\.path \}\}/);
 });

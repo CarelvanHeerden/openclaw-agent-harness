@@ -77,6 +77,8 @@ export declare class InternalMergeService {
     private readonly now;
     private recoveryInFlight;
     private static readonly INTENT_LEASE_MS;
+    private static readonly MAX_RECOVERY_ATTEMPTS;
+    private static readonly MAX_INSPECTIONS_PER_ATTEMPT;
     constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number);
     registerAuthorizationAndIntent(a: VerifiedMergeAuthorization, now?: number): string;
     registerAuthorization(a: VerifiedMergeAuthorization): void;

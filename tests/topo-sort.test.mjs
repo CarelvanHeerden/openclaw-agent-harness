@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 let topoSortSubTasks;
 try {
-  ({ topoSortSubTasks } = await import("../dist/orchestrator/loop.js"));
+  ({ topoSortSubTasks } = await import("../dist/orchestrator/legacy-loop.js"));
 } catch {
   topoSortSubTasks = null;
 }

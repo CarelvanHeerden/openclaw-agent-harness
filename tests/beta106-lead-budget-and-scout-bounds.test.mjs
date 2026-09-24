@@ -28,7 +28,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let withTimeout, WorkerTimeoutError, runLeadPlanner, parseHarnessConfig, PLUGIN_VERSION;
 let SCOUT_MAX_TURNS, buildScoutSystemPrompt, consumeWorkerStream;
 try {
-  ({ withTimeout, WorkerTimeoutError } = await import("../dist/orchestrator/loop.js"));
+  ({ withTimeout, WorkerTimeoutError } = await import("../dist/orchestrator/legacy-loop.js"));
   ({ runLeadPlanner } = await import("../dist/orchestrator/lead.js"));
   ({ parseHarnessConfig } = await import("../dist/config.js"));
   ({ PLUGIN_VERSION } = await import("../dist/version.js"));
@@ -62,7 +62,7 @@ test("beta106: the lead budget adds the scout ceiling instead of sharing it", { 
  * numbers are scaled but the arithmetic is identical to 900 vs 600 + 441.
  */
 async function runLeadPhase(overrides = {}) {
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { BudgetEnforcer } = await import("../dist/budgets/enforcer.js");
   const { PatRouter } = await import("../dist/auth/pat-router.js");
   const { DatabaseSync } = await import("node:sqlite");

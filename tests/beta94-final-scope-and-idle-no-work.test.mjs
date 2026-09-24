@@ -35,7 +35,7 @@ const {
   isElidableFinalScopeSubTask,
   elideFinalScopeSubTask,
 } = await import("../dist/orchestrator/lead.js");
-const { collectDeclaredScopeFiles } = await import("../dist/orchestrator/loop.js");
+const { collectDeclaredScopeFiles } = await import("../dist/orchestrator/legacy-loop.js");
 
 const observeScopeSubTask = (seq, extra = {}) => ({
   seq,
@@ -121,7 +121,7 @@ test("beta94 F1b: collectDeclaredScopeFiles unions filesLikelyTouched + verify p
 // ---------------------------------------------------------------------------
 let OrchestratorLoop, WorkerTimeoutError, BudgetEnforcer, PatRouter, Database;
 try {
-  ({ OrchestratorLoop, WorkerTimeoutError } = await import("../dist/orchestrator/loop.js"));
+  ({ OrchestratorLoop, WorkerTimeoutError } = await import("../dist/orchestrator/legacy-loop.js"));
   ({ BudgetEnforcer } = await import("../dist/budgets/enforcer.js"));
   ({ PatRouter } = await import("../dist/auth/pat-router.js"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));

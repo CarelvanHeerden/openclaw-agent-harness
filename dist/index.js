@@ -20,7 +20,8 @@ import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedParallelKeys 
 import { openStateStoreSync } from "./state/store.js";
 import { decideDrainAction } from "./state/teardown-drain.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
-import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
+import { OrchestratorLoop } from "./orchestrator/legacy-loop.js";
+import { runningSessionIds } from "./orchestrator/loop.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, normaliseSeverity } from "./orchestrator/finding-classify.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
@@ -88,7 +89,7 @@ let currentRuntime = null;
  * {@link bootstrapHarnessAsync}, which runs as a background promise the
  * runtime holds a reference to for teardown ordering.
  */
-export function bootstrapHarnessSync(api) {
+function bootstrapHarnessSync(api) {
     // OpenClaw plugin SDK provides config via `api.pluginConfig`.
     // We fall back to `api.getConfig()` for backwards-compat with older mock harnesses.
     const rawConfig = (api.pluginConfig ?? api.getConfig?.() ?? {});
@@ -2063,7 +2064,7 @@ export function bootstrapHarnessSync(api) {
  * can await it if it needs to (e.g. to ensure recovery notifies have
  * flushed before closing the state DB).
  */
-export async function bootstrapHarnessAsync(runtime, api) {
+async function bootstrapHarnessAsync(runtime, api) {
     const { config, state, creds, slack, git } = runtime;
     // beta.78 (Feature 3): loudly surface incoherent budget configs at startup.
     // Non-fatal (the truly nonsensical cases already throw in normaliseConfig);
@@ -2422,7 +2423,7 @@ export async function bootstrapHarnessAsync(runtime, api) {
  * Backwards-compat facade. New code should prefer
  * `bootstrapHarnessSync` + `bootstrapHarnessAsync`. Tests still call this.
  */
-export async function bootstrapHarness(api) {
+async function bootstrapHarness(api) {
     const runtime = bootstrapHarnessSync(api);
     await bootstrapHarnessAsync(runtime, api);
     return runtime;

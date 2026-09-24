@@ -339,7 +339,7 @@ test("isRecycledFinding no longer calls two different files the same defect", sk
 // ---------------------------------------------------------------------------
 
 test("the findings table survives a cycle and is keyed by fingerprint", skipDist, async () => {
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { makeState, makeConfig } = await import("./helpers/scenario.mjs");
   const { db, state, audits } = await makeState();
   const now = Date.now();
@@ -376,7 +376,7 @@ test("the findings table survives a cycle and is keyed by fingerprint", skipDist
 });
 
 test("reconciliation never fails a review that it cannot complete", skipDist, async () => {
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { makeState, makeConfig } = await import("./helpers/scenario.mjs");
   const { state } = await makeState();
   const loop = new OrchestratorLoop({

@@ -4127,6 +4127,20 @@ const MUTATIONS = [
     replace: "false",
     tests: ["tests/control-production-merge-recovery.test.mjs"],
   },
+  {
+    name: "rc.13 merge recovery: expired unconsumed authority terminalizes durably",
+    file: "dist/control/merge.js",
+    find: "if (auth.expiresAt < now && raw.consumed_at === null) {",
+    replace: "if (false) {",
+    tests: ["tests/control-final-security.test.mjs"],
+  },
+  {
+    name: "rc.13 merge recovery: repeated provider failures have a terminal ceiling",
+    file: "dist/control/merge.js",
+    find: "if (lease.attempts >= InternalMergeService.MAX_RECOVERY_ATTEMPTS) {",
+    replace: "if (false) {",
+    tests: ["tests/control-final-security.test.mjs"],
+  },
 
 ];
 

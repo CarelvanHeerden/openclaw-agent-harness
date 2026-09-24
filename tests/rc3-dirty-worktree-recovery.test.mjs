@@ -272,7 +272,7 @@ test("33b: a git error fails the turn and carries git's own words up", skipDist,
 // ---------------------------------------------------------------------------
 
 test("30: workerLeftUncommittedWork reads the tree, not the sha", skipDist, async () => {
-  const { workerLeftUncommittedWork } = await import("../dist/orchestrator/loop.js");
+  const { workerLeftUncommittedWork } = await import("../dist/orchestrator/legacy-loop.js");
   assert.equal(
     workerLeftUncommittedWork({ commitReconciliation: { state: "no_change", dirtyFiles: [] } }),
     false,
@@ -404,7 +404,7 @@ test("34e: a failure with nothing to lose still releases the worktree", skipDist
 // ---------------------------------------------------------------------------
 
 async function loopOverWorktree(worktreePath, planBaseSha) {
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { GitAdapter } = await import("../dist/adapters/git-worktree.js");
   const { makeState, makeConfig } = await import("./helpers/scenario.mjs");
   const { db, state, audits } = await makeState();
@@ -477,7 +477,7 @@ test("34c: preserving a worktree records where it is and what is in it", skipDis
 test("34d: an unreadable status probe never reads as a clean tree", skipDist, async () => {
   const repo = await makeRepo();
   const head = repo.g(["rev-parse", "HEAD"]);
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { makeState, makeConfig } = await import("./helpers/scenario.mjs");
   const { db, state, audits } = await makeState();
   const now = Date.now();

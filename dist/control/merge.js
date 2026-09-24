@@ -16,6 +16,8 @@ export class InternalMergeService {
     now;
     recoveryInFlight = null;
     static INTENT_LEASE_MS = 300_000;
+    static MAX_RECOVERY_ATTEMPTS = 12;
+    static MAX_INSPECTIONS_PER_ATTEMPT = 5;
     constructor(db, repository, provider, now = Date.now) {
         this.db = db;
         this.repository = repository;
@@ -109,8 +111,10 @@ export class InternalMergeService {
             this.failRun(intent.change_id, intent.id, "verification_failed", lease);
             return Object.freeze({ status: "merge_failed", code: "verification_failed" });
         }
-        if (auth.expiresAt < now && raw.consumed_at === null)
+        if (auth.expiresAt < now && raw.consumed_at === null) {
+            this.terminalize(auth.runId, intent.id, "verification_failed", "authority_expired", lease);
             return Object.freeze({ status: "refused", code: "authorization_expired" });
+        }
         const run = this.repository.getRun(auth.runId);
         if (!run || (run.state !== "awaiting_merge" && run.state !== "done"))
             return Object.freeze({ status: "refused", code: "merge_attestation_required" });
@@ -123,6 +127,10 @@ export class InternalMergeService {
         if (!persisted || !persisted.result.ready || persisted.result.verifiedSha !== auth.expectedHeadSha) {
             this.refuseRun(run.id, intent.id, "readiness_changed", lease);
             return Object.freeze({ status: "refused", code: "readiness_changed" });
+        }
+        if (lease.attempts >= InternalMergeService.MAX_RECOVERY_ATTEMPTS) {
+            this.failRun(run.id, intent.id, "provider_failure", lease);
+            return Object.freeze({ status: "merge_failed", code: "provider_failure" });
         }
         if (intent.status !== "authorized")
             return this.reconcileClaimedMerge(auth, intent.id, lease);
@@ -193,6 +201,7 @@ export class InternalMergeService {
     }
     async reconcileClaimedMerge(auth, intentId, lease) {
         const deadline = Date.now() + 5000;
+        let inspections = 0;
         while (true) {
             if (!this.validIntentLease(intentId, lease) || !this.verifyPersistedAuthorizationRow(auth.id) || !this.verifyPersistedReadiness(auth.runId, auth.readinessDigest)) {
                 this.failRun(auth.runId, intentId, "verification_failed", lease);
@@ -215,6 +224,7 @@ export class InternalMergeService {
                 inspection = await this.provider.inspect({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, readinessDigest: auth.readinessDigest });
             }
             catch { }
+            inspections++;
             if (inspection?.merged) {
                 const mergeSha = inspection.mergeSha;
                 if (mergeSha && EXACT_PROVIDER_SHA.test(mergeSha) && await this.provider.verifyMerged({ runId: auth.runId, repository: auth.repository, prNumber: auth.prNumber, mergeSha }) && this.completeRun(auth.runId, intentId, mergeSha, lease))
@@ -222,7 +232,7 @@ export class InternalMergeService {
                 this.failRun(auth.runId, intentId, "verification_failed", lease);
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             }
-            if (Date.now() >= deadline)
+            if (inspections >= InternalMergeService.MAX_INSPECTIONS_PER_ATTEMPT || Date.now() >= deadline)
                 return Object.freeze({ status: "merge_in_progress" });
             await sleep(10);
         }
@@ -261,8 +271,8 @@ export class InternalMergeService {
         const changed = this.db.prepare(`UPDATE control_engine_merge_intents SET recovery_owner=?,recovery_fence=recovery_fence+1,recovery_lease_expires_at=?,recovery_attempts=recovery_attempts+1,updated_at=? WHERE id=? AND status IN ('authorized','merging') AND (recovery_owner IS NULL OR recovery_lease_expires_at<=?)`).run(owner, now + InternalMergeService.INTENT_LEASE_MS, now, intentId, now);
         if (Number(changed.changes) !== 1)
             return null;
-        const row = this.db.prepare(`SELECT recovery_fence FROM control_engine_merge_intents WHERE id=? AND recovery_owner=?`).get(intentId, owner);
-        return row ? { owner, fence: Number(row.recovery_fence) } : null;
+        const row = this.db.prepare(`SELECT recovery_fence,recovery_attempts FROM control_engine_merge_intents WHERE id=? AND recovery_owner=?`).get(intentId, owner);
+        return row ? { owner, fence: Number(row.recovery_fence), attempts: Number(row.recovery_attempts) } : null;
     }
     validIntentLease(intentId, lease) { const row = this.db.prepare(`SELECT 1 ok FROM control_engine_merge_intents WHERE id=? AND recovery_owner=? AND recovery_fence=? AND recovery_lease_expires_at>?`).get(intentId, lease.owner, lease.fence, this.now()); return Boolean(row); }
     releaseIntentLease(intentId, lease) { this.db.prepare(`UPDATE control_engine_merge_intents SET recovery_owner=NULL,recovery_lease_expires_at=NULL WHERE id=? AND recovery_owner=? AND recovery_fence=?`).run(intentId, lease.owner, lease.fence); }

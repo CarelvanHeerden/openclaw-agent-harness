@@ -28,7 +28,7 @@ const indexSrc = readFileSync(resolve(repoRoot, "src/index.ts"), "utf8");
 
 let OrchestratorLoop = null;
 try {
-  ({ OrchestratorLoop } = await import("../dist/orchestrator/loop.js"));
+  ({ OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js"));
 } catch {
   OrchestratorLoop = null;
 }

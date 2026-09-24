@@ -2728,10 +2728,13 @@ export class OrchestratorLoop {
   async runConfirmedControl(
     sessionId: string,
     brief: CrystallisedBrief,
-    authorityGuard?: ConfirmedControlAuthorityGuard,
+    authorityGuard: ConfirmedControlAuthorityGuard,
     credentialResolver?: ConfirmedControlCredentialResolver,
   ): Promise<LoopOutcome> {
-    if (authorityGuard) this.confirmedControlGuards.set(sessionId, authorityGuard);
+    if (typeof authorityGuard !== "function") {
+      throw new ConfirmedControlAuthorityError("confirmed control requires an authority guard");
+    }
+    this.confirmedControlGuards.set(sessionId, authorityGuard);
     if (credentialResolver) this.confirmedControlCredentialResolvers.set(sessionId, credentialResolver);
     try {
       const outcome = await this.run(sessionId, brief);

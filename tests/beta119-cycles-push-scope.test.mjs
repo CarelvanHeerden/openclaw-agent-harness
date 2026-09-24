@@ -32,7 +32,7 @@ let OrchestratorLoop, isConvergingBlockingTrend, isConvergingFindingTrend;
 let diagnosePushFailure, describePreservedPushFailure;
 let isWorkflowPath, planTouchesWorkflows, canPushWorkflows, describeMissingWorkflowScope;
 try {
-  ({ OrchestratorLoop, isConvergingBlockingTrend, isConvergingFindingTrend } = await import("../dist/orchestrator/loop.js"));
+  ({ OrchestratorLoop, isConvergingBlockingTrend, isConvergingFindingTrend } = await import("../dist/orchestrator/legacy-loop.js"));
   ({ diagnosePushFailure, describePreservedPushFailure } = await import("../dist/orchestrator/push-failure.js"));
   ({ isWorkflowPath, planTouchesWorkflows, canPushWorkflows, describeMissingWorkflowScope } =
     await import("../dist/orchestrator/workflow-scope.js"));

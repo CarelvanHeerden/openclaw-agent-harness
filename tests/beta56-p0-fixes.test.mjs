@@ -31,7 +31,7 @@ let loopMod = null;
 let adversaryMod = null;
 let leadMod = null;
 try {
-  loopMod = await import("../dist/orchestrator/loop.js");
+  loopMod = await import("../dist/orchestrator/legacy-loop.js");
   adversaryMod = await import("../dist/orchestrator/adversary.js");
   leadMod = await import("../dist/orchestrator/lead.js");
 } catch {

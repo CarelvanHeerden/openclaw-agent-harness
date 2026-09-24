@@ -1,14 +1,12 @@
 /**
- * Autonomous control-plane entry point. Confirmed changes have no interactive
- * exchange: deterministic in-envelope choices continue, while an
- * authority or readiness violation produces one terminal result.
- *
- * The rc.13 executor remains isolated in legacy-loop.ts solely to finish or
- * inspect pre-migration session records.
+ * Public autonomous control-plane helpers. Historical execution machinery is
+ * intentionally not re-exported from this package facade.
  */
-export * from "./legacy-loop.js";
 export { AutonomousControlEngine, decideEngineAuthority } from "../control/engine.js";
 export { evaluatePrReadiness } from "../control/readiness.js";
+import { runningSessionIds as internalRunningSessionIds } from "./legacy-loop.js";
+/** Internal lifecycle signal; it does not expose an execution entry point. */
+export function runningSessionIds() { return internalRunningSessionIds(); }
 export function isStrictReadinessAudit(input) {
     return input.state === "pr_ready" && input.verdict === "pass" && input.blocking === 0 &&
         input.published_sha === input.pr_head_sha && input.required_ci === "green" &&
@@ -26,11 +24,7 @@ export const CONTROL_RECOVERY_CONTRACT = Object.freeze({
     merge_provider_idempotency: true,
 });
 export const TERMINAL_ENVELOPE_CODES = Object.freeze([
-    "budget_exceeded",
-    "time_exceeded",
-    "scope_escalation",
-    "path_violation",
-    "security_escalation",
-    "credential_escalation",
+    "budget_exceeded", "time_exceeded", "scope_escalation", "path_violation",
+    "security_escalation", "credential_escalation",
 ]);
 //# sourceMappingURL=loop.js.map

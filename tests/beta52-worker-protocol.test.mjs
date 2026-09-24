@@ -74,7 +74,7 @@ test("beta52: worker prompt discourages off-plan self-verification (beta.81: CI 
 // clause regex is kept only as a @deprecated constant; its exhaustive behavior
 // is covered in tests/beta53-env-wait-retry.test.mjs).
 // ---------------------------------------------------------------------------
-const { matchesEnvWaitHallucination } = await import("../dist/orchestrator/loop.js");
+const { matchesEnvWaitHallucination } = await import("../dist/orchestrator/legacy-loop.js");
 
 test("beta52: predicate MATCHES the exact fc64d8ea hallucination", () => {
   assert.equal(matchesEnvWaitHallucination("The install is still completing. I'll await the Monitor event signaling tsc is ready rather than polling further."), true);

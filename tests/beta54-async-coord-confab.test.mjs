@@ -32,7 +32,7 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..");
 
-const loop = await import("../dist/orchestrator/loop.js");
+const loop = await import("../dist/orchestrator/legacy-loop.js");
 const { matchesAsyncCoordConfabulation, matchesEnvWaitHallucination } = loop;
 
 test("beta.54: predicate is exported", () => {

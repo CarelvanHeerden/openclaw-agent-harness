@@ -162,7 +162,7 @@ test("buildRevisionBriefSections is the only thing that switches the two prompts
 // ---------------------------------------------------------------------------
 
 async function loopWithSession(row) {
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { makeState, makeConfig } = await import("./helpers/scenario.mjs");
   const { db, state, audits } = await makeState();
   const now = Date.now();

@@ -18,7 +18,7 @@ import { dirname, resolve } from "node:path";
 
 let OrchestratorLoop, BudgetEnforcer, PatRouter, Database, isSessionLoopRunning, clearStallWatchdog;
 try {
-  ({ OrchestratorLoop, isSessionLoopRunning, clearStallWatchdog } = await import("../dist/orchestrator/loop.js"));
+  ({ OrchestratorLoop, isSessionLoopRunning, clearStallWatchdog } = await import("../dist/orchestrator/legacy-loop.js"));
   ({ BudgetEnforcer } = await import("../dist/budgets/enforcer.js"));
   ({ PatRouter } = await import("../dist/auth/pat-router.js"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));

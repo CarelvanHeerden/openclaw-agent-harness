@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 const here = dirname(fileURLToPath(import.meta.url));
 const S = (p) => readFileSync(join(here, "..", p), "utf8");
 
-const loop = await import("../dist/orchestrator/loop.js");
+const loop = await import("../dist/orchestrator/legacy-loop.js");
 const { matchesEnvWaitHallucination } = loop;
 
 // ---------------------------------------------------------------------------

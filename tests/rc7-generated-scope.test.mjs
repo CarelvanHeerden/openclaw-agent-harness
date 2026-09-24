@@ -27,7 +27,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { OrchestratorLoop, ScopeBlowoutError } from "../dist/orchestrator/loop.js";
+import { OrchestratorLoop, ScopeBlowoutError } from "../dist/orchestrator/legacy-loop.js";
 
 const LOGGER = { info() {}, warn() {}, error() {}, debug() {} };
 

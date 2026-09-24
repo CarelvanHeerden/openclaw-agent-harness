@@ -17,7 +17,7 @@ function filesUnder(root, rel) {
   if (!existsSync(start)) throw new Error(`missing ${start}`);
   const out = [];
   const walk = (path) => {
-    for (const name of readdirSync(path)) {
+    for (const name of readdirSync(path).sort()) {
       const full = resolve(path, name);
       if (statSync(full).isDirectory()) walk(full);
       else out.push(relative(root, full));
@@ -36,22 +36,14 @@ const installedPackage = JSON.parse(readFileSync(resolve(installedRoot, "package
 const artifactBinding = JSON.parse(readFileSync(resolve(installedRoot, ".oah-artifact.json"), "utf8"));
 const expectedHeadSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: expectedRoot, encoding: "utf8" }).trim();
 const expectedTreeSha = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd: expectedRoot, encoding: "utf8" }).trim();
-const expectedBindingDigest = createHash("sha256")
-  .update(`openclaw-agent-harness-artifact/v1\n${expectedHeadSha}\n${expectedTreeSha}\n`)
-  .digest("hex");
-if (
-  artifactBinding.version !== 1 ||
-  artifactBinding.headSha !== expectedHeadSha ||
-  artifactBinding.treeSha !== expectedTreeSha ||
-  artifactBinding.bindingDigest !== expectedBindingDigest
-) {
+if (artifactBinding.version !== 2 || artifactBinding.headSha !== expectedHeadSha || artifactBinding.treeSha !== expectedTreeSha) {
   throw new Error(`stale or invalid artifact binding: expected ${expectedHeadSha}/${expectedTreeSha}`);
 }
 if (expectedPackage.version !== installedPackage.version) {
   throw new Error(`version mismatch: tested ${expectedPackage.version}, installed ${installedPackage.version}`);
 }
 
-const installedFiles = filesUnder(installedRoot, ".");
+const installedFiles = filesUnder(installedRoot, ".").filter((file) => !file.startsWith("node_modules/.bin/"));
 const requiredRoots = ["dist/", "docs/", "scripts/"];
 for (const root of requiredRoots) {
   if (!installedFiles.some((file) => file.startsWith(root))) {
@@ -62,16 +54,34 @@ for (const file of ["package.json", "openclaw.plugin.json", "README.md", "LICENS
   if (!installedFiles.includes(file)) throw new Error(`packaged file list is missing ${file}`);
 }
 
-const entries = installedFiles.map((file) => {
-  if (file === ".oah-artifact.json") {
-    return `${sha(resolve(installedRoot, file))}  ${file}`;
-  }
-  if (!existsSync(resolve(expectedRoot, file))) throw new Error(`packaged file has no tested-checkout source: ${file}`);
-  const expected = sha(resolve(expectedRoot, file));
+const entries = installedFiles.filter((file) => file !== ".oah-artifact.json").map((file) => {
   const installed = sha(resolve(installedRoot, file));
-  if (expected !== installed) throw new Error(`artifact mismatch: ${file}`);
-  return `${expected}  ${file}`;
+  let committed;
+  if (file.startsWith("node_modules/")) {
+    const source = resolve(expectedRoot, file);
+    if (!existsSync(source)) throw new Error(`bundled dependency has no tested source: ${file}`);
+    committed = sha(source);
+  } else {
+    try {
+      committed = createHash("sha256").update(execFileSync("git", ["show", `HEAD:${file}`], { cwd: expectedRoot, maxBuffer: 64 * 1024 * 1024 })).digest("hex");
+    } catch {
+      throw new Error(`packaged first-party file is not bound to the tested commit: ${file}`);
+    }
+  }
+  if (committed !== installed) throw new Error(`artifact mismatch: ${file}`);
+  return `${installed}  ${file}`;
 });
+const manifestSha256 = createHash("sha256").update(entries.join("\n")).digest("hex");
+const expectedBindingDigest = createHash("sha256")
+  .update(`openclaw-agent-harness-artifact/v2\n${expectedHeadSha}\n${expectedTreeSha}\n${manifestSha256}\n${entries.length}\n`)
+  .digest("hex");
+if (
+  artifactBinding.packageManifestSha256 !== manifestSha256 ||
+  artifactBinding.packageFileCount !== entries.length ||
+  artifactBinding.bindingDigest !== expectedBindingDigest
+) {
+  throw new Error(`packed content manifest is not bound to commit ${expectedHeadSha}`);
+}
 const { resolveOpenCodeBinary } = await import(
   pathToFileURL(resolve(installedRoot, "dist/adapters/backend-router.js")).href
 );
@@ -117,7 +127,6 @@ if (sdkPackage.claudeCodeVersion && !claudeVersionText.startsWith(sdkPackage.cla
   throw new Error(`Claude SDK native version mismatch: SDK expects ${sdkPackage.claudeCodeVersion}, got ${claudeVersionText}`);
 }
 
-const manifestSha256 = createHash("sha256").update(entries.join("\n")).digest("hex");
 console.log(JSON.stringify({
   ok: true,
   version: expectedPackage.version,

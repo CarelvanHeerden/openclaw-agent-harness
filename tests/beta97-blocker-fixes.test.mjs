@@ -19,7 +19,7 @@
 //   ask-to-extend note instead of a bare do_not_merge.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { OrchestratorLoop, isConvergingFindingTrend } from "../dist/orchestrator/loop.js";
+import { OrchestratorLoop, isConvergingFindingTrend } from "../dist/orchestrator/legacy-loop.js";
 import { extractJson } from "../dist/adapters/claude-code.js";
 
 // ---- Fix #8: plan-JSON truncation is the `no JSON in output` root cause ------

@@ -27,7 +27,7 @@ let salvage = null;
 let loopMod = null;
 try {
   salvage = await import("../dist/orchestrator/abort-salvage.js");
-  loopMod = await import("../dist/orchestrator/loop.js");
+  loopMod = await import("../dist/orchestrator/legacy-loop.js");
 } catch {
   /* dist not built: structural tests still run */
 }

@@ -30,7 +30,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let getCiSnapshot, getCombinedStatus, OrchestratorLoop, BudgetEnforcer, PatRouter, Database;
 try {
   ({ getCiSnapshot, getCombinedStatus } = await import("../dist/adapters/github.js"));
-  ({ OrchestratorLoop } = await import("../dist/orchestrator/loop.js"));
+  ({ OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js"));
   ({ BudgetEnforcer } = await import("../dist/budgets/enforcer.js"));
   ({ PatRouter } = await import("../dist/auth/pat-router.js"));
   ({ DatabaseSync: Database } = await import("node:sqlite"));

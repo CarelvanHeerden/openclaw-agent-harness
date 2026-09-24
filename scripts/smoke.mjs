@@ -115,22 +115,10 @@ if (registerResult && typeof registerResult.then === "function") {
 await new Promise((r) => setTimeout(r, 500));
 
 const expectTools = [
-  "harness_run",
-  "harness_status",
-  "harness_progress",
-  "harness_logs",
-  "harness_health",
-  "harness_start_session",
-  "harness_session_get",
-  "harness_telemetry",
-  "harness_upload_logs",
-  "harness_cancel",
-  "harness_resume",
-  "harness_answer",
-  "harness_retention_prune",
-  "harness_list_revisable",
-  "harness_revise",
-  "harness_onboard",
+  "harness_prepare_change",
+  "harness_confirm_change",
+  "harness_change_result",
+  "harness_merge_change",
 ];
 
 let failed = 0;
@@ -203,8 +191,8 @@ if (agentHooks.has("message_received")) {
   console.error("FAIL (agent-mode): listener_enabled=false but message_received was still registered. The agent-orchestrated default must NOT listen to Slack.");
   failed++;
 }
-if (!agentTools.has("harness_run")) {
-  console.error("FAIL (agent-mode): harness_run tool missing in agent-orchestrated mode.");
+if ([...agentTools].sort().join("\n") !== [...expectTools].sort().join("\n")) {
+  console.error(`FAIL (agent-mode): expected exactly the four control operations, got ${JSON.stringify([...agentTools].sort())}.`);
   failed++;
 }
 

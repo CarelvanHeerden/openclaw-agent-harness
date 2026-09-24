@@ -22,7 +22,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { computeReviseScope } from "../dist/orchestrator/revise-scope.js";
-import { declaredCovers, firstTokenWindowForAttempt } from "../dist/orchestrator/loop.js";
+import { declaredCovers, firstTokenWindowForAttempt } from "../dist/orchestrator/legacy-loop.js";
 import { resolveScoutRepo } from "../dist/orchestrator/lead.js";
 import { parseHarnessConfig } from "../dist/config.js";
 

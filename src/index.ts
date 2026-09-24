@@ -23,7 +23,8 @@ import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { decideDrainAction, type DrainProgressSample } from "./state/teardown-drain.js";
 import { decideRecoveryResume } from "./state/recovery-guard.js";
 import { InteractionLog, resolveInteractionLogConfig } from "./state/interaction-log.js";
-import { OrchestratorLoop, runningSessionIds } from "./orchestrator/loop.js";
+import { OrchestratorLoop } from "./orchestrator/legacy-loop.js";
+import { runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, isAtLeastMedium, normaliseSeverity } from "./orchestrator/finding-classify.js";
@@ -199,7 +200,7 @@ function sealedVault(reason: string): CredentialStore {
   return { get: fail, set: fail, delete: fail, list: fail };
 }
 
-export interface HarnessRuntime {
+interface HarnessRuntime {
   config: HarnessConfig;
   /** One canonical description of the route each model role actually uses. */
   effectiveBackendRoutes: EffectiveBackendRoute[];
@@ -412,7 +413,7 @@ let currentRuntime: HarnessRuntime | null = null;
  * {@link bootstrapHarnessAsync}, which runs as a background promise the
  * runtime holds a reference to for teardown ordering.
  */
-export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
+function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   // OpenClaw plugin SDK provides config via `api.pluginConfig`.
   // We fall back to `api.getConfig()` for backwards-compat with older mock harnesses.
   const rawConfig = (api.pluginConfig ?? api.getConfig?.() ?? {}) as unknown;
@@ -2416,7 +2417,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
  * can await it if it needs to (e.g. to ensure recovery notifies have
  * flushed before closing the state DB).
  */
-export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: HarnessPluginApi): Promise<void> {
+async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: HarnessPluginApi): Promise<void> {
   const { config, state, creds, slack, git } = runtime;
 
   // beta.78 (Feature 3): loudly surface incoherent budget configs at startup.
@@ -2792,7 +2793,7 @@ export async function bootstrapHarnessAsync(runtime: HarnessRuntime, api: Harnes
  * Backwards-compat facade. New code should prefer
  * `bootstrapHarnessSync` + `bootstrapHarnessAsync`. Tests still call this.
  */
-export async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRuntime> {
+async function bootstrapHarness(api: HarnessPluginApi): Promise<HarnessRuntime> {
   const runtime = bootstrapHarnessSync(api);
   await bootstrapHarnessAsync(runtime, api);
   return runtime;

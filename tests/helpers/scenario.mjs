@@ -65,7 +65,7 @@ test.after(() => {
 /** Is the build present? Every scenario suite skips cleanly without it. */
 export async function scenarioAvailable() {
   try {
-    await import("../../dist/orchestrator/loop.js");
+    await import("../../dist/orchestrator/legacy-loop.js");
     await import("../../dist/orchestrator/verify-probes.js");
     return true;
   } catch {
@@ -254,7 +254,7 @@ export function defaultWorker({ adapter }) {
  * run's terminal status rather than a row somewhere.
  */
 export async function runScenario(opts = {}) {
-  const { OrchestratorLoop } = await import("../../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../../dist/orchestrator/legacy-loop.js");
   const { BudgetEnforcer } = await import("../../dist/budgets/enforcer.js");
   const { PatRouter } = await import("../../dist/auth/pat-router.js");
   const { createVerifyProbes } = await import("../../dist/orchestrator/verify-probes.js");

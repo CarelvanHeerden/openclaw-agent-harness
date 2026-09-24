@@ -20,7 +20,7 @@ const S = (p) => readFileSync(join(root, p), "utf8");
 let OrchestratorLoop, BudgetEnforcer, PatRouter, Database;
 let recoverSessions, recordResumeAndCheckBreaker, __resetRecoveryResumeLedger;
 try {
-  ({ OrchestratorLoop } = await import("../dist/orchestrator/loop.js"));
+  ({ OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js"));
   ({ BudgetEnforcer } = await import("../dist/budgets/enforcer.js"));
   ({ PatRouter } = await import("../dist/auth/pat-router.js"));
   ({ recoverSessions, recordResumeAndCheckBreaker, __resetRecoveryResumeLedger } = await import("../dist/state/recovery.js"));

@@ -344,7 +344,7 @@ test("beta105: a requested preservation with NO local branch is reported as a re
 });
 
 test("beta105: a resume onto a branch missing this run's commits fails BEFORE any worker turn", { skip }, async () => {
-  const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+  const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
   const { BudgetEnforcer } = await import("../dist/budgets/enforcer.js");
   const { PatRouter } = await import("../dist/auth/pat-router.js");
   const { DatabaseSync } = await import("node:sqlite");

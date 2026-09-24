@@ -1,4 +1,4 @@
-import type { HarnessPluginApi, HarnessRuntime, HarnessToolContext, HarnessToolDefinition } from "../index.js";
+import type { HarnessPluginApi, HarnessToolContext, HarnessToolDefinition } from "../index.js";
 import { ControlError, ControlPlaneService, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
 
 /** Stable terminal envelope failures. */
@@ -83,7 +83,9 @@ function safeFailure(error: unknown): Record<string, unknown> {
   return { ok: false, code: "control_unavailable", summary: "The change service is temporarily unavailable." };
 }
 
-function serviceFor(runtime: HarnessRuntime): ControlPlaneService {
+type ControlRuntime = { controlPlane?: ControlPlaneService };
+
+function serviceFor(runtime: ControlRuntime): ControlPlaneService {
   const service = runtime.controlPlane;
   if (!service) throw new ControlError("control_unavailable", "The change service is not available.");
   return service;
@@ -95,7 +97,7 @@ function tool(
   parameters: unknown,
   context: HarnessToolContext,
   run: (service: ControlPlaneService, input: Record<string, unknown>, trusted: TrustedControlContext) => Promise<unknown> | unknown,
-  runtime: HarnessRuntime,
+  runtime: ControlRuntime,
 ): HarnessToolDefinition {
   return {
     name,
@@ -128,9 +130,9 @@ function tool(
  * four operations and no direct commands. Diagnostics remain host/operator
  * services rather than aliases in an ordinary user's catalog.
  */
-export function registerHarnessTools(api: HarnessPluginApi, runtime: Partial<HarnessRuntime>): () => void {
+export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRuntime): () => void {
   const disposers: Array<() => void> = [];
-  const rt = runtime as HarnessRuntime;
+  const rt = runtime;
 
   const definitions: Array<[string, (context: HarnessToolContext) => HarnessToolDefinition]> = [
     ["harness_prepare_change", (context) => tool(

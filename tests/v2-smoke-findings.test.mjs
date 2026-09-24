@@ -35,7 +35,7 @@ const VAULT_CLI = resolve(root, "scripts/vault.mjs");
 // path resolution testable at all, so this import is also a check on it.
 const { runtimeVaultDir, harnessDefaults } = await import("../scripts/vault.mjs");
 
-const { OrchestratorLoop } = await import("../dist/orchestrator/loop.js");
+const { OrchestratorLoop } = await import("../dist/orchestrator/legacy-loop.js");
 const { BudgetEnforcer } = await import("../dist/budgets/enforcer.js");
 const { PatRouter } = await import("../dist/auth/pat-router.js");
 const { DatabaseSync } = await import("node:sqlite");

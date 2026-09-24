@@ -65,6 +65,24 @@ test("crystallise: not_dev is rejected without calling crystalliser",
     assert.equal(result.intent, "not_dev");
   });
 
+test("crystallise: classifier call or parser failure is refused deterministically",
+  { skip: crystallisePrompt === null }, async () => {
+    const audit = [];
+    const result = await crystallisePrompt("make a bounded change", {
+      config: {}, logger: noopLogger,
+      audit: (event, payload) => audit.push({ event, payload }),
+      callClassifier: async () => { throw new SyntaxError("malformed classifier JSON"); },
+      callCrystalliser: async () => { throw new Error("must not run"); },
+    });
+    assert.deepEqual(result, {
+      kind: "reject",
+      reason: "The request classifier could not be evaluated safely, so the request was refused.",
+      intent: "unsafe",
+      spend: { costUsd: 0, tokensIn: 0, tokensOut: 0, partial: false },
+    });
+    assert.deepEqual(audit, [{ event: "crystallise.unsafe_model_output", payload: { role: "classifier", reason: "call_or_parse_failure" } }]);
+  });
+
 test("crystallise: unsafe is rejected",
   { skip: crystallisePrompt === null }, async () => {
     const result = await crystallisePrompt("please rm -rf /", {
