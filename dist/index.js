@@ -1711,6 +1711,18 @@ export function bootstrapHarnessSync(api) {
         },
     };
     const internalMergeService = new InternalMergeService(state.db, controlRepository, controlMergeProvider);
+    const controlCredentialRoute = (route) => JSON.stringify({
+        provider: route.provider,
+        credentialService: route.credentialService,
+        apiBase: route.apiBase,
+        provenance: route.provenance,
+        person: route.person ?? null,
+        commitIdentity: route.commitIdentity,
+        tokenPointer: route.tokenPointer?.env ? { env: route.tokenPointer.env }
+            : route.tokenPointer?.vault ? { vault: route.tokenPointer.vault }
+                : route.tokenPointer?.value ? { inline: true }
+                    : null,
+    });
     runtime.controlPlane = new ControlPlaneService({
         db: state.db,
         repository: controlRepository,
@@ -1732,18 +1744,72 @@ export function bootstrapHarnessSync(api) {
             const payload = await response.json();
             if (!payload.sha || !/^[a-f0-9]{40,64}$/i.test(payload.sha))
                 throw new Error("Repository base revision was not returned by the provider");
-            return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision: payload.sha.toLowerCase(), credentialRoute: route.credentialService,
+            return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision: payload.sha.toLowerCase(), credentialRoute: controlCredentialRoute(route),
                 policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v2", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" };
         },
         executeEngine: async (change) => {
             change.assertCurrent();
+            const route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
+            const currentRouteDigest = createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex");
+            if (currentRouteDigest !== change.credentialRouteDigest) {
+                const run = controlRepository.getRun(change.changeId);
+                if (!run)
+                    throw new Error("credential_escalation");
+                autonomousEngine.decide(change.changeId, change.lease, {
+                    kind: "implementation_choice",
+                    request: {
+                        requesterId: run.requesterId,
+                        conversationId: run.conversationId,
+                        repository: run.repository,
+                        baseRef: run.baseRef,
+                        briefDigest: run.briefDigest,
+                        policyDigest: run.policyDigest,
+                        nonce: run.authorityEnvelope.nonce,
+                        action: "implement",
+                        projectedBudgetUsd: 0,
+                        projectedActiveTimeMs: 0,
+                        projectedCycles: 0,
+                        projectedRetries: 0,
+                        credentialChange: true,
+                        now: Date.now(),
+                    },
+                });
+                throw new Error("credential_escalation");
+            }
+            const controlRun = controlRepository.getRun(change.changeId);
+            if (!controlRun)
+                throw new Error("authority_violation");
+            const authorityDecision = autonomousEngine.decide(change.changeId, change.lease, {
+                kind: "implementation_choice",
+                request: {
+                    requesterId: controlRun.requesterId,
+                    conversationId: controlRun.conversationId,
+                    repository: controlRun.repository,
+                    baseRef: controlRun.baseRef,
+                    briefDigest: controlRun.briefDigest,
+                    policyDigest: controlRun.policyDigest,
+                    nonce: controlRun.authorityEnvelope.nonce,
+                    action: "implement",
+                    paths: [],
+                    projectedBudgetUsd: 0,
+                    projectedActiveTimeMs: 0,
+                    projectedCycles: 0,
+                    projectedRetries: 0,
+                    now: Date.now(),
+                },
+            });
+            if (authorityDecision.outcome === "terminate")
+                throw new Error(authorityDecision.code);
             const now = Date.now();
             const controlledBrief = { ...change.brief, repoHint: change.repositoryIdentity, filesLikelyTouched: [...change.scope], outOfScope: [...change.excludedScope],
                 acceptanceCriteria: [...change.brief.acceptanceCriteria, `Immutable base revision: ${change.baseRevision}`, `Maximum active time: ${change.timeLimitSeconds} seconds`] };
             state.db.prepare(`INSERT OR IGNORE INTO sessions (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version) VALUES (?,?,'',?,?,?,'','','planning',?,?,?,?,0,0,?,?,?,?,?)`)
                 .run(change.changeId, `control:${change.changeId}`, change.actorIdentity, change.actorIdentity, change.repositoryIdentity, JSON.stringify(controlledBrief), now, now, change.budgetUsd, change.budgetUsd, change.timeLimitSeconds, change.baseRevision, PLUGIN_VERSION.pluginVersion);
             change.assertCurrent();
-            const outcome = await runtime.loop.runConfirmedControl(change.changeId, controlledBrief);
+            const existingSession = state.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha FROM sessions WHERE id=?`).get(change.changeId);
+            const outcome = existingSession?.status === "done" && existingSession.pr_number && existingSession.published_sha
+                ? { status: "shipped", sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
+                : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief);
             change.assertCurrent();
             if (outcome.status !== "shipped")
                 throw new Error(`autonomous_terminal:${outcome.status}`);
@@ -1751,7 +1817,6 @@ export function bootstrapHarnessSync(api) {
             const review = state.db.prepare(`SELECT verdict,findings FROM reviews WHERE session_id=? ORDER BY cycle DESC LIMIT 1`).get(change.changeId);
             if (!row.pr_number || !row.published_sha)
                 throw new Error("publication_evidence_missing");
-            const route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
             const ghToken = await resolveGitToken(route);
             const pr = await getPullRequest({ repoFullName: change.repositoryIdentity, prNumber: Number(row.pr_number), ghToken, apiBase: route.apiBase });
             const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken, apiBase: route.apiBase });
@@ -1763,22 +1828,36 @@ export function bootstrapHarnessSync(api) {
                 catch {
                     return [];
                 } }))];
+            const probeRows = state.db.prepare(`WITH ranked AS (
+        SELECT verification_status,commit_sha,ROW_NUMBER() OVER (PARTITION BY cycle,seq ORDER BY attempt DESC) AS rank
+        FROM sub_task_attempts WHERE session_id=?
+      ) SELECT verification_status,commit_sha FROM ranked WHERE rank=1`).all(change.changeId);
+            const completedProbes = probeRows.filter((item) => item.verification_status === "passed").length;
+            const indeterminateProbes = probeRows.filter((item) => item.verification_status !== "passed" && item.verification_status !== "failed").length;
+            const hasSecurityFinding = findings.some((finding) => /secret|credential|security/i.test(JSON.stringify(finding)));
+            const operationsPerformed = [
+                ...(changedPaths.length > 0 ? ["implement"] : []),
+                ...(completedProbes > 0 ? ["test"] : []),
+                ...(probeRows.some((item) => Boolean(item.commit_sha)) ? ["commit"] : []),
+                "push_feature_branch",
+                "open_pull_request",
+            ];
             return {
                 finalVerdict: review?.verdict === "pass" && row.merge_recommendation === "merge" ? "pass" : review?.verdict === "block" ? "block" : "revise",
                 blockingFindings: findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty }))).length,
                 reviewCompleted: !!review,
-                verificationProbes: { completed: 1, required: 1, indeterminate: 0 },
+                verificationProbes: { completed: completedProbes, required: probeRows.length, indeterminate: indeterminateProbes },
                 candidateSha: String(row.published_sha), publication: { sha: String(row.published_sha), observedAt: Number(row.published_at ?? Date.now()) },
                 pullRequest: { repository: change.repositoryIdentity, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: Number(row.pr_number), url: String(row.final_pr_url) },
                 expectedRepository: change.repositoryIdentity, expectedBaseRef: change.baseRef,
                 requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
                     status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
                 runtimeEvidence: { status: config.vercel?.enabled ? (row.deploy_status === "ready" ? "pass" : "indeterminate") : "not_required" },
-                securityEvidence: { status: review?.verdict === "pass" ? "pass" : "fail" }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000,
+                securityEvidence: { status: review?.verdict === "pass" && !hasSecurityFinding ? "pass" : "fail" }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000,
                 changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,
-                operationsPerformed: ["implement", "test", "commit", "push_feature_branch", "open_pull_request"], allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
-                credentialRouteDigest: createHash("sha256").update(JSON.stringify(route.credentialService)).digest("hex"), expectedCredentialRouteDigest: change.credentialRouteDigest,
-                secretExposure: { detected: false, evidence: review?.verdict === "pass" ? "pass" : "indeterminate" }, spendUsd: Number(row.cost_usd), budgetUsd: change.budgetUsd,
+                operationsPerformed, allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
+                credentialRouteDigest: createHash("sha256").update(JSON.stringify(controlCredentialRoute(route))).digest("hex"), expectedCredentialRouteDigest: change.credentialRouteDigest,
+                secretExposure: { detected: hasSecurityFinding, evidence: review?.verdict === "pass" && !hasSecurityFinding ? "pass" : "indeterminate" }, spendUsd: Number(row.cost_usd), budgetUsd: change.budgetUsd,
             };
         },
     });
