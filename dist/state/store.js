@@ -74,7 +74,7 @@ export function openStateStoreSync(pathHint) {
         { table: "sessions", column: "parent_session_id", type: "TEXT" }, // beta.36: links a repair session to the session whose deploy it repairs
         // beta.55 (B2): mid-run clarification pause. When the loop transitions to
         // 'awaiting_clarification' it persists the question + the sub-task seq it
-        // paused at, so a human answer (harness_answer) can re-drive from that seq.
+        // paused at, so a human answer (a trusted host confirmation) can re-drive from that seq.
         { table: "sessions", column: "clarification_question", type: "TEXT" }, // the ONE question surfaced to the human
         { table: "sessions", column: "clarification_seq", type: "INTEGER" }, // sub-task seq the loop paused at
         { table: "sessions", column: "clarification_answer", type: "TEXT" }, // the human's answer, folded into the brief on resume

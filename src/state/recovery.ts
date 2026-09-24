@@ -70,7 +70,7 @@ export interface RecoveryOptions {
    *
    * Checked BEFORE the breaker, so a live session is skipped entirely: no
    * `recovery.auto_resuming`, no ledger entry, no progress toward a hard stop.
-   * The three other consumers of the guard (harness_resume force, and both
+   * The three other consumers of the guard (confirmed-control recovery force, and both
    * sweepStalls paths) already ask this question first; recovery was the outlier.
    */
   isLiveRunner?: (sessionId: string) => boolean;
@@ -130,7 +130,7 @@ export interface RecoveredSession {
 // stranded forever. In agent-orchestrated mode it now auto-resumes like any
 // other fresh in-flight session; stale ones age out to 'interrupted'.
 // 'awaiting_clarification' stays EXCLUDED on purpose: it is a deliberate
-// human-in-the-loop pause that only harness_answer may resume.
+// human-in-the-loop pause that only a trusted host confirmation may resume.
 const NON_TERMINAL = ["crystallising", "planning", "executing", "reviewing", "resumable"] as const;
 
 export function findInterruptedSessions(state: StateStore, staleAfterSeconds: number): RecoveredSession[] {

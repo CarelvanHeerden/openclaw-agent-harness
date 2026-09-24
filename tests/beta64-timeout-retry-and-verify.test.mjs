@@ -193,7 +193,7 @@ test("beta64/P0-3 (rc.3): verify sub-task timeout with NO review preserves the w
     assert.equal(outcome.status, "failed", "nothing reviewed this, so it is not pushed");
     assert.equal(prCalls, 0, "no PR is opened for code no adversary has seen");
     assert.match(outcome.reason, /no adversary review has ever run/i);
-    assert.match(outcome.reason, /harness_resume/, "the operator is told how to recover the work");
+    assert.match(outcome.reason, /new confirmed change|confirmed control/i, "the operator is told how to recover the work");
 
     const row = state.db.prepare(`SELECT status, merge_recommendation, final_pr_url, worktree_preserved FROM sessions WHERE id='B1'`).get();
     assert.equal(row.status, "failed");

@@ -70,7 +70,7 @@ export interface RecoveryOptions {
      *
      * Checked BEFORE the breaker, so a live session is skipped entirely: no
      * `recovery.auto_resuming`, no ledger entry, no progress toward a hard stop.
-     * The three other consumers of the guard (harness_resume force, and both
+     * The three other consumers of the guard (confirmed-control recovery force, and both
      * sweepStalls paths) already ask this question first; recovery was the outlier.
      */
     isLiveRunner?: (sessionId: string) => boolean;

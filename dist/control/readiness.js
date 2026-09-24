@@ -46,17 +46,25 @@ export function evaluatePrReadiness(input, checkedAt = Date.now()) {
         failures.push("required_ci_unregistered");
     if (ci.status !== "success" || ci.sha !== input.candidateSha || !exactSet(ci.requiredChecks, ci.successfulChecks))
         failures.push("required_ci_not_green");
+    const readinessTimeoutMs = input.readinessTimeoutMs;
+    const exactFreshEvidence = (evidence) => {
+        if (evidence.sha !== input.candidateSha || !Number.isFinite(evidence.observedAt) || evidence.observedAt <= 0 || evidence.observedAt > checkedAt)
+            return false;
+        if (!input.publication || evidence.observedAt < input.publication.observedAt)
+            return false;
+        return readinessTimeoutMs === undefined || (Number.isFinite(readinessTimeoutMs) && readinessTimeoutMs > 0 && checkedAt - evidence.observedAt <= readinessTimeoutMs);
+    };
     if (input.runtimeEvidence.status === "indeterminate")
         failures.push("runtime_evidence_indeterminate");
     else if (input.runtimeEvidence.status === "fail")
         failures.push("runtime_evidence_failed");
-    else if (input.runtimeEvidence.status === "pass" && (input.runtimeEvidence.sha !== input.candidateSha || !Number.isFinite(input.runtimeEvidence.observedAt) || input.runtimeEvidence.observedAt <= 0 || input.runtimeEvidence.observedAt > checkedAt))
+    else if (input.runtimeEvidence.status === "pass" && !exactFreshEvidence(input.runtimeEvidence))
         failures.push("runtime_evidence_indeterminate");
     if (input.securityEvidence.status === "indeterminate")
         failures.push("security_evidence_indeterminate");
     else if (input.securityEvidence.status === "fail")
         failures.push("security_evidence_failed");
-    else if (input.securityEvidence.status === "pass" && (input.securityEvidence.sha !== input.candidateSha || !Number.isFinite(input.securityEvidence.observedAt) || input.securityEvidence.observedAt <= 0 || input.securityEvidence.observedAt > checkedAt))
+    else if (input.securityEvidence.status === "pass" && !exactFreshEvidence(input.securityEvidence))
         failures.push("security_evidence_indeterminate");
     if (!Number.isFinite(input.elapsedTimeMs) || !Number.isFinite(input.timeLimitMs) || input.elapsedTimeMs < 0 || input.elapsedTimeMs > input.timeLimitMs)
         failures.push("elapsed_time_exceeded");

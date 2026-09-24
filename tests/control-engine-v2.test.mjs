@@ -125,9 +125,7 @@ test("ambiguous provider success is reconciled without a second merge side effec
   const auth1 = createVerifiedMergeAuthorization({ runId: run.id, actorIdentity: "U1", conversationIdentity: "C1:T1", repository: "acme/repo", baseRef: "main", prNumber: 2, expectedHeadSha: head, publishedSha: head, readinessDigest: evaluated.contentDigest, nonce: "merge-crash-1", issuedAt: 50, expiresAt: 200 });
   service.registerAuthorization(auth1);
   assert.deepEqual(await service.merge(auth1.id), { status: "merge_failed", code: "provider_failure" });
-  const auth2 = createVerifiedMergeAuthorization({ runId: run.id, actorIdentity: "U1", conversationIdentity: "C1:T1", repository: "acme/repo", baseRef: "main", prNumber: 2, expectedHeadSha: head, publishedSha: head, readinessDigest: evaluated.contentDigest, nonce: "merge-crash-2", issuedAt: 60, expiresAt: 200 });
-  service.registerAuthorization(auth2);
-  assert.deepEqual(await service.merge(auth2.id), { status: "already_merged", mergeSha });
+  await service.recoverPending();
   assert.equal(mergeCalls, 1);
   assert.equal(repo.getRun(run.id).state, "done");
   assert.equal(db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(run.id).status, "merged");

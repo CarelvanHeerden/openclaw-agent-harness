@@ -89,21 +89,18 @@ export function renderCiWorkflowYaml(scripts) {
  * identity) so the file is committed onto the branch and lands in the PR.
  */
 export async function authorCiWorkflow(input) {
-    try {
-        if (hasExistingWorkflow(input.worktreePath))
-            return null;
-        const scripts = detectCheckScripts(input.worktreePath);
-        if (scripts.length === 0)
-            return null;
-        const relPath = ".github/workflows/harness-ci.yml";
-        const dir = join(input.worktreePath, ".github", "workflows");
-        mkdirSync(dir, { recursive: true });
-        writeFileSync(join(input.worktreePath, relPath), renderCiWorkflowYaml(scripts), "utf8");
-        await input.gitCommit(input.worktreePath, "ci: add harness-authored GitHub Actions workflow (beta.81 B3)");
-        return { path: relPath, scripts };
-    }
-    catch {
+    if (hasExistingWorkflow(input.worktreePath))
         return null;
-    }
+    const scripts = detectCheckScripts(input.worktreePath);
+    if (scripts.length === 0)
+        return null;
+    const relPath = ".github/workflows/harness-ci.yml";
+    const dir = join(input.worktreePath, ".github", "workflows");
+    input.assertMutationAuthorized?.("write", relPath);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(input.worktreePath, relPath), renderCiWorkflowYaml(scripts), "utf8");
+    input.assertMutationAuthorized?.("commit", relPath);
+    await input.gitCommit(input.worktreePath, "ci: add harness-authored GitHub Actions workflow (beta.81 B3)");
+    return { path: relPath, scripts };
 }
 //# sourceMappingURL=ci-workflow.js.map

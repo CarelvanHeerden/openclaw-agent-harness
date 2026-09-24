@@ -470,9 +470,9 @@ test("34c: preserving a worktree records where it is and what is in it", skipDis
   // which was the bug -- harness_resume refuses the `failed` status this very
   // function sets. The message has to point somewhere that actually accepts it.
   assert.match(preserved.payload.recoveryAction, new RegExp(repo.dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(preserved.payload.recoveryAction, /harness_resume will refuse/);
+  assert.match(preserved.payload.recoveryAction, /terminal session cannot be reopened/i);
   assert.match(preserved.payload.recoveryAction, /harness_link_pr/, "no PR is recorded, so linking comes first");
-  assert.match(preserved.payload.recoveryAction, /harness_revise/);
+  assert.match(preserved.payload.recoveryAction, /new confirmed change/i);
 });
 
 test("34d: an unreadable status probe never reads as a clean tree", skipDist, async () => {

@@ -38,6 +38,7 @@ export interface PrReadinessInput {
   readonly securityEvidence: DeterminateEvidence;
   readonly elapsedTimeMs: number;
   readonly timeLimitMs: number;
+  readonly readinessTimeoutMs?: number;
   readonly changedPaths: readonly string[];
   readonly allowedScope: readonly string[];
   readonly excludedScope: readonly string[];
@@ -84,12 +85,18 @@ export function evaluatePrReadiness(input: PrReadinessInput, checkedAt = Date.no
   const ci = input.requiredCi;
   if (!ci.registered || ci.requiredChecks.length === 0) failures.push("required_ci_unregistered");
   if (ci.status !== "success" || ci.sha !== input.candidateSha || !exactSet(ci.requiredChecks, ci.successfulChecks)) failures.push("required_ci_not_green");
+  const readinessTimeoutMs = input.readinessTimeoutMs;
+  const exactFreshEvidence = (evidence: DeterminateEvidence): boolean => {
+    if (evidence.sha !== input.candidateSha || !Number.isFinite(evidence.observedAt) || evidence.observedAt! <= 0 || evidence.observedAt! > checkedAt) return false;
+    if (!input.publication || evidence.observedAt! < input.publication.observedAt) return false;
+    return readinessTimeoutMs === undefined || (Number.isFinite(readinessTimeoutMs) && readinessTimeoutMs > 0 && checkedAt - evidence.observedAt! <= readinessTimeoutMs);
+  };
   if (input.runtimeEvidence.status === "indeterminate") failures.push("runtime_evidence_indeterminate");
   else if (input.runtimeEvidence.status === "fail") failures.push("runtime_evidence_failed");
-  else if (input.runtimeEvidence.status === "pass" && (input.runtimeEvidence.sha !== input.candidateSha || !Number.isFinite(input.runtimeEvidence.observedAt) || input.runtimeEvidence.observedAt! <= 0 || input.runtimeEvidence.observedAt! > checkedAt)) failures.push("runtime_evidence_indeterminate");
+  else if (input.runtimeEvidence.status === "pass" && !exactFreshEvidence(input.runtimeEvidence)) failures.push("runtime_evidence_indeterminate");
   if (input.securityEvidence.status === "indeterminate") failures.push("security_evidence_indeterminate");
   else if (input.securityEvidence.status === "fail") failures.push("security_evidence_failed");
-  else if (input.securityEvidence.status === "pass" && (input.securityEvidence.sha !== input.candidateSha || !Number.isFinite(input.securityEvidence.observedAt) || input.securityEvidence.observedAt! <= 0 || input.securityEvidence.observedAt! > checkedAt)) failures.push("security_evidence_indeterminate");
+  else if (input.securityEvidence.status === "pass" && !exactFreshEvidence(input.securityEvidence)) failures.push("security_evidence_indeterminate");
   if (!Number.isFinite(input.elapsedTimeMs) || !Number.isFinite(input.timeLimitMs) || input.elapsedTimeMs < 0 || input.elapsedTimeMs > input.timeLimitMs) failures.push("elapsed_time_exceeded");
   if (input.changedPaths.some((path) => !input.allowedScope.some((root) => within(path, root)) || input.excludedScope.some((root) => within(path, root)))) failures.push("scope_exceeded");
   const receipts = input.operationReceipts ?? [];

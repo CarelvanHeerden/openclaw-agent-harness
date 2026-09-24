@@ -345,6 +345,7 @@ export function bootstrapHarnessSync(api) {
                 body: commentBody,
                 ghToken: params.ghToken,
                 apiBase: params.apiBase,
+                refreshCredential: params.refreshCredential,
             });
             if (!comment.ok) {
                 api.logger.warn("[harness] PR review comment post failed (non-fatal)", {
@@ -1162,15 +1163,19 @@ export function bootstrapHarnessSync(api) {
                 };
             }
         },
-        pushBranchForPreview: async ({ plan, requester, commitSha }) => {
-            const resolution = pat.resolve({
-                slackUserId: requester ?? config.slack.authorised_users[0],
-                gitHubUser: plan.repo.split("/")[0],
-                repoFullName: plan.repo,
-            });
-            const gitToken = await resolveGitToken(resolution);
-            await git.pushBranch(plan.worktreePath, "origin", plan.branch, gitToken);
-            const remoteSha = await git.remoteBranchSha(plan.worktreePath, "origin", plan.branch, gitToken);
+        pushBranchForPreview: async ({ plan, requester, commitSha, resolveCredentialForMutation }) => {
+            const resolution = resolveCredentialForMutation
+                ? await resolveCredentialForMutation("push_feature_branch")
+                : await (async () => {
+                    const route = pat.resolve({
+                        slackUserId: requester ?? config.slack.authorised_users[0],
+                        gitHubUser: plan.repo.split("/")[0],
+                        repoFullName: plan.repo,
+                    });
+                    return { ...route, token: await resolveGitToken(route) };
+                })();
+            await git.pushBranch(plan.worktreePath, "origin", plan.branch, resolution.token);
+            const remoteSha = await git.remoteBranchSha(plan.worktreePath, "origin", plan.branch, resolution.token);
             if (remoteSha !== commitSha) {
                 throw new Error(`preview push did not publish expected SHA ${commitSha}; remote is ${remoteSha ?? "(missing)"}`);
             }
@@ -1196,13 +1201,18 @@ export function bootstrapHarnessSync(api) {
             const gitToken = await resolveGitToken(resolution);
             return await git.remoteBranchSha(plan.worktreePath, "origin", branch, gitToken);
         },
-        openPullRequest: async ({ plan, brief, reviewReport, requester }) => {
-            const resolution = pat.resolve({
-                slackUserId: requester ?? config.slack.authorised_users[0],
-                gitHubUser: plan.repo.split("/")[0],
-                repoFullName: plan.repo,
-            });
-            const ghToken = await resolveGitToken(resolution);
+        openPullRequest: async ({ plan, brief, reviewReport, requester, resolveCredentialForMutation }) => {
+            const resolution = resolveCredentialForMutation
+                ? await resolveCredentialForMutation("open_pull_request")
+                : await (async () => {
+                    const route = pat.resolve({
+                        slackUserId: requester ?? config.slack.authorised_users[0],
+                        gitHubUser: plan.repo.split("/")[0],
+                        repoFullName: plan.repo,
+                    });
+                    return { ...route, token: await resolveGitToken(route) };
+                })();
+            const ghToken = resolution.token;
             if (resolution.provider !== "github") {
                 throw new Error(`provider '${resolution.provider}' branch was pushed but automated MR/PR creation is not implemented (see issue #25); open the merge request manually for branch '${plan.branch}'`);
             }
@@ -1217,20 +1227,30 @@ export function bootstrapHarnessSync(api) {
                 draft: (config.repos.draft_pr_on_nonpass ?? false) && reviewReport.verdict !== "pass",
                 labels: prLabelsFor(reviewReport),
                 logger: api.logger,
+                refreshCredential: resolveCredentialForMutation ? async () => { const c = await resolveCredentialForMutation("open_pull_request"); return { ghToken: c.token, apiBase: c.apiBase }; } : undefined,
             });
             await postHarnessReviewComment({
-                repoFullName: plan.repo, pr, brief, reviewReport, ghToken, apiBase: resolution.apiBase,
+                repoFullName: plan.repo, pr, brief, reviewReport, ghToken, apiBase: resolution.apiBase ?? "https://api.github.com",
+                refreshCredential: resolveCredentialForMutation ? async () => { const c = await resolveCredentialForMutation("update_pull_request"); return { ghToken: c.token, apiBase: c.apiBase }; } : undefined,
             });
             return pr.htmlUrl;
         },
-        pushBranchAndOpenPr: async ({ plan, brief, reviewReport, requester }) => {
-            const resolution = pat.resolve({
-                slackUserId: requester ?? config.slack.authorised_users[0],
-                gitHubUser: plan.repo.split("/")[0],
-                repoFullName: plan.repo,
-            });
-            const ghToken = await resolveGitToken(resolution);
-            await git.pushBranch(plan.worktreePath, "origin", plan.branch, ghToken);
+        pushBranchAndOpenPr: async ({ plan, brief, reviewReport, requester, resolveCredentialForMutation }) => {
+            const pushResolution = resolveCredentialForMutation
+                ? await resolveCredentialForMutation("push_feature_branch")
+                : await (async () => {
+                    const route = pat.resolve({
+                        slackUserId: requester ?? config.slack.authorised_users[0],
+                        gitHubUser: plan.repo.split("/")[0],
+                        repoFullName: plan.repo,
+                    });
+                    return { ...route, token: await resolveGitToken(route) };
+                })();
+            await git.pushBranch(plan.worktreePath, "origin", plan.branch, pushResolution.token);
+            const resolution = resolveCredentialForMutation
+                ? await resolveCredentialForMutation("open_pull_request")
+                : await (async () => { const route = pat.resolve({ slackUserId: requester ?? config.slack.authorised_users[0], gitHubUser: plan.repo.split("/")[0], repoFullName: plan.repo }); return { ...route, token: await resolveGitToken(route) }; })();
+            const ghToken = resolution.token;
             if (resolution.provider !== "github") {
                 // GitLab merge-request creation is a separate adapter (tracked in
                 // issue #25). Token resolution + push work for GitLab; MR open does
@@ -1257,6 +1277,7 @@ export function bootstrapHarnessSync(api) {
                 // see. A label is checkable.
                 labels: prLabelsFor(reviewReport),
                 logger: api.logger,
+                refreshCredential: resolveCredentialForMutation ? async () => { const c = await resolveCredentialForMutation("open_pull_request"); return { ghToken: c.token, apiBase: c.apiBase }; } : undefined,
             });
             // beta.75 (#1): post the review verdict + findings as a PR COMMENT on
             // EVERY review -- not just at PR creation. createPullRequest writes the
@@ -1267,7 +1288,8 @@ export function bootstrapHarnessSync(api) {
             // surfaces the current verdict/findings on the PR timeline. Best-effort:
             // NEVER fail the run on a comment error -- the code + PR already landed.
             await postHarnessReviewComment({
-                repoFullName: plan.repo, pr, brief, reviewReport, ghToken, apiBase: resolution.apiBase,
+                repoFullName: plan.repo, pr, brief, reviewReport, ghToken, apiBase: resolution.apiBase ?? "https://api.github.com",
+                refreshCredential: resolveCredentialForMutation ? async () => { const c = await resolveCredentialForMutation("update_pull_request"); return { ghToken: c.token, apiBase: c.apiBase }; } : undefined,
             });
             return pr.htmlUrl;
         },
@@ -1380,12 +1402,13 @@ export function bootstrapHarnessSync(api) {
         // beta.81 (Track B / B3): when a repo has no CI, author + commit a GitHub
         // Actions workflow running its declared check scripts so CI runs on GitHub
         // (never a local fallback). Committed with the harness commit identity.
-        ciAuthorWorkflow: async ({ worktreePath }) => {
+        ciAuthorWorkflow: async ({ worktreePath, assertMutationAuthorized }) => {
             // The commit is a CI-config file; identity is cosmetic. Use the first
             // configured commit identity when present, else a stable harness default.
             const anyIdentity = Object.values(config.pat_routing.commit_identity ?? {})[0];
             return authorCiWorkflow({
                 worktreePath,
+                assertMutationAuthorized,
                 gitCommit: (wt, msg) => git.commit(wt, msg, {
                     name: anyIdentity?.name || "openclaw-agent-harness",
                     email: anyIdentity?.email || "harness@openclaw.local",
@@ -1426,16 +1449,6 @@ export function bootstrapHarnessSync(api) {
                 api.logger.warn("[harness] reportProgress audit failed", { sessionId, status, err: String(err) });
             }
         },
-        // beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
-        // the loop's `setStatus` on EVERY phase + terminal transition. Best-effort
-        // direct `chat.postMessage` to Slack via the vault bot token -- an
-        // INDEPENDENT path from the wedge-prone agent `api.sendMessage` turn, so a
-        // wedged channel-agent poller can no longer blind a run's progress/terminal.
-        // Gated: (1) a poster was built (credential_service resolved a token), (2)
-        // native_progress_delivery not disabled, (3) the session has a REAL Slack
-        // binding (channel + non-synthetic thread passed on harness_run). Otherwise
-        // no-op -> graceful fallback to the poll model (unchanged behaviour).
-        // Clarifications/inbound stay agent-mediated (harness_answer) -- untouched.
         deliverProgress: () => undefined,
         postWarning: () => undefined,
     });
@@ -1592,7 +1605,7 @@ export function bootstrapHarnessSync(api) {
         // ---- rc.4: recover a lost PR association ----
         //
         // StitchGuard session 112673df pushed nine commits and opened PR #1168,
-        // then failed before `pr_number` was written. `harness_revise` refuses a row
+        // then failed before `pr_number` was written. `a new confirmed change` refuses a row
         // with no PR, so the PR was unreachable by the one workflow built to change
         // it, and the documented alternative was to build the feature again.
         //
@@ -1840,7 +1853,13 @@ export function bootstrapHarnessSync(api) {
             const terminalLegacyPublication = existingSession && ["done", "failed", "aborted", "accounting_incomplete"].includes(existingSession.status) && existingSession.pr_number && existingSession.final_pr_url && existingSession.published_sha && existingSession.published_at;
             const outcome = terminalLegacyPublication
                 ? { status: "shipped", sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
-                : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief, authorize);
+                : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief, authorize, async (action) => {
+                    authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: Math.max(0, Date.now() - controlRun.createdAt), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
+                    const freshRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
+                    if (controlCredentialRouteDigest(freshRoute) !== change.credentialRouteDigest)
+                        throw new Error("credential_escalation");
+                    return { provider: freshRoute.provider, apiBase: freshRoute.apiBase, token: await resolveGitToken(freshRoute) };
+                });
             change.assertCurrent();
             if (outcome.status !== "shipped")
                 throw new Error(`autonomous_terminal:${outcome.status}`);
@@ -1895,9 +1914,10 @@ export function bootstrapHarnessSync(api) {
             const secretScanComplete = pullRequestFiles.every((file) => file.status === "removed" || typeof file.patch === "string");
             const secretScan = scanPatchForSecrets(pullRequestFiles.map((file) => file.patch ?? "").join("\n"));
             const publicationObservedAt = Number(row.published_at);
-            const evidenceObservedAt = Date.now();
             state.audit("control.pr_diff_observed", { sessionId: change.changeId, sha: pr.headSha, paths: changedPaths, prNumber: Number(row.pr_number) }, change.changeId);
-            state.audit("control.secret_scan_observed", { sessionId: change.changeId, sha: pr.headSha, complete: secretScanComplete, detected: secretScan.found }, change.changeId);
+            const securityReceipt = state.db.prepare(`INSERT INTO control_security_receipts (run_id,sha,complete,detected,observed_at) VALUES (?,?,?,?,CAST(unixepoch('subsec')*1000 AS INTEGER)) RETURNING sha,complete,detected,observed_at`).get(change.changeId, pr.headSha, secretScanComplete ? 1 : 0, secretScan.found ? 1 : 0);
+            const securityReceiptExact = !!securityReceipt && securityReceipt.sha === pr.headSha && Boolean(securityReceipt.complete) === secretScanComplete && Boolean(securityReceipt.detected) === secretScan.found;
+            state.audit("control.secret_scan_observed", { sessionId: change.changeId, sha: pr.headSha, complete: secretScanComplete, detected: secretScan.found, observedAt: securityReceipt?.observed_at }, change.changeId);
             const providerReceipt = state.db.prepare(`SELECT role,MAX(ended_at) AS observed_at FROM provider_calls WHERE session_id=? AND status='completed' AND ended_at IS NOT NULL GROUP BY role`).all(change.changeId);
             const shippedReceipt = state.db.prepare(`SELECT created_at,payload FROM audit_log WHERE session_id=? AND event='loop.shipped' ORDER BY id DESC LIMIT 1`).get(change.changeId);
             const operationReceipts = [];
@@ -1937,7 +1957,7 @@ export function bootstrapHarnessSync(api) {
                 requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
                     status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
                 runtimeEvidence,
-                securityEvidence: { status: !secretScanComplete ? "indeterminate" : review?.verdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail", sha: String(row.published_sha), observedAt: evidenceObservedAt }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000,
+                securityEvidence: { status: !securityReceiptExact || !secretScanComplete ? "indeterminate" : review?.verdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail", sha: String(row.published_sha), ...(securityReceiptExact ? { observedAt: securityReceipt.observed_at } : {}) }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000, readinessTimeoutMs: config.control.readiness_timeout_seconds * 1000,
                 changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,
                 operationsPerformed, operationReceipts, allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
                 credentialRouteDigest: controlCredentialRouteDigest(route), expectedCredentialRouteDigest: change.credentialRouteDigest,
@@ -2410,7 +2430,7 @@ export async function bootstrapHarnessAsync(runtime, api) {
         }
         // beta.55 (B2): a session paused in `awaiting_clarification` is NOT running
         // (its loop returned), so runningSessionIds() misses it -- but its worktree
-        // MUST survive so harness_answer can re-drive in place. Add those paths to
+        // MUST survive so a trusted host confirmation can re-drive in place. Add those paths to
         // the protect set explicitly.
         try {
             const pausedRows = state.db

@@ -288,7 +288,7 @@ test("beta81/B3: loop authors a workflow before push + polls CI after (wired in 
   assert.match(src, /loop\.ci_workflow_authored/);
   // Authored before both preview push and the non-Vercel combined push/open
   // path, so it always lands in the reviewed branch.
-  const authorIdx = src.indexOf("this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath })");
+  const authorIdx = src.indexOf("const authored = await this.deps.ciAuthorWorkflow({");
   const previewPushIdx = src.indexOf('this.deps.state.audit("loop.preview_push_started"');
   // rc.5 (#2): finalisation no longer picks its callback from a config flag --
   // it goes through publishCandidate, which resolves the candidate SHA AFTER

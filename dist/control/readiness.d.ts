@@ -50,6 +50,7 @@ export interface PrReadinessInput {
     readonly securityEvidence: DeterminateEvidence;
     readonly elapsedTimeMs: number;
     readonly timeLimitMs: number;
+    readonly readinessTimeoutMs?: number;
     readonly changedPaths: readonly string[];
     readonly allowedScope: readonly string[];
     readonly excludedScope: readonly string[];

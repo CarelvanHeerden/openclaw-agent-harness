@@ -38,7 +38,7 @@ export class ControlPlaneService {
         this.now = deps.now ?? Date.now;
         this.ttl = deps.confirmationTtlMs ?? 900_000;
         this.dispatchLeaseMs = deps.dispatchLeaseMs ?? 300_000;
-        queueMicrotask(() => void this.recoverDispatches());
+        queueMicrotask(() => { void this.recoverDispatches(); void this.deps.mergeService.recoverPending(); });
         this.recoveryTimer = setInterval(() => void this.recoverDispatches(), Math.max(10, Math.floor(this.dispatchLeaseMs / 3)));
         this.recoveryTimer.unref?.();
     }
@@ -107,15 +107,24 @@ export class ControlPlaneService {
         const expected = this.confirmBindingDigest(changeId, att);
         if (att.bindingDigest !== expected)
             throw new ControlError("stale_confirmation", "The proposal changed after review.");
+        this.deps.db.exec("BEGIN IMMEDIATE");
         try {
-            this.consumeAttestation(changeId, att, now);
-            const current = this.deps.repository.getRun(changeId);
+            const current = this.deps.db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(changeId);
             if (!current || current.version !== run.version || current.state !== "awaiting_confirmation")
                 throw new ControlError("stale_confirmation", "The proposal changed after review.");
-            this.deps.repository.transition({ runId: changeId, expectedVersion: run.version, to: "autonomous_run", actor: "host_confirmation", reason: "confirmed", at: now });
+            this.consumeAttestation(changeId, att, now);
+            const changed = this.deps.db.prepare(`UPDATE control_runs SET state='autonomous_run',version=version+1,updated_at=? WHERE id=? AND state='awaiting_confirmation' AND version=?`).run(now, changeId, run.version);
+            if (Number(changed.changes) !== 1)
+                throw new ControlError("stale_confirmation", "The proposal changed after review.");
+            this.deps.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,'awaiting_confirmation','autonomous_run',?,?,'host_confirmation','confirmed',?)`).run(changeId, run.version, run.version + 1, now);
             this.deps.db.prepare(`INSERT INTO control_dispatch_intents (run_id,status,created_at,updated_at) VALUES (?,'pending',?,?)`).run(changeId, now, now);
+            this.deps.db.exec("COMMIT");
         }
         catch (error) {
+            try {
+                this.deps.db.exec("ROLLBACK");
+            }
+            catch { }
             if (/UNIQUE constraint/i.test(String(error)))
                 throw new ControlError("confirmation_replayed", "This confirmation was already used.");
             throw error;
@@ -124,18 +133,61 @@ export class ControlPlaneService {
         return { ok: true, changeId, state: "running", summary: "Change confirmed and running autonomously." };
     }
     result(changeId, context) { const { actor, conversation } = contextIdentity(context); const run = this.deps.repository.getRun(changeId); const p = this.proposal(changeId); if (!run || !p || run.requesterId !== actor || run.conversationId !== conversation)
-        throw new ControlError("change_not_found", "The change was not found."); const publicState = run.state === "awaiting_confirmation" ? "prepared" : run.state === "autonomous_run" ? "running" : run.state === "done" ? "merged" : run.state; const result = { ok: true, changeId, state: publicState, summary: p.terminal_summary ?? this.summary(run.state), createdAt: new Date(run.createdAt).toISOString(), updatedAt: new Date(run.updatedAt).toISOString() }; if (run.state === "pr_ready" && p.pr_url)
+        throw new ControlError("change_not_found", "The change was not found."); const publicState = run.state === "awaiting_confirmation" ? "prepared" : run.state === "autonomous_run" ? "running" : run.state === "done" ? "merged" : run.state === "failed" && run.terminalCode === "merge_failed" ? "merge_failed" : run.state; const result = { ok: true, changeId, state: publicState, summary: p.terminal_summary ?? this.summary(run.state), createdAt: new Date(run.createdAt).toISOString(), updatedAt: new Date(run.updatedAt).toISOString() }; if (run.state === "pr_ready" && p.pr_url)
         result.pullRequest = { url: p.pr_url }; if (run.state === "failed")
         result.code = run.terminalCode ?? "execution_failed"; return result; }
-    async merge(changeId, context) { const { actor, conversation } = contextIdentity(context); const run = this.deps.repository.getRun(changeId); const p = this.proposal(changeId); if (!run || !p)
-        throw new ControlError("change_not_found", "The change was not found."); if (run.state === "done")
-        throw new ControlError("already_merged", "This change was already merged."); if (run.state !== "pr_ready" || !p.pr_number || !p.published_sha || !p.readiness_digest)
-        throw new ControlError("not_pr_ready", "This change is not ready to merge."); const att = this.requireAttestation("merge_change", context); if (actor !== run.requesterId || att.actorIdentity !== run.requesterId)
-        throw new ControlError("wrong_actor", "The merge must come from the preparing requester."); if (conversation !== run.conversationId || att.conversationIdentity !== run.conversationId)
-        throw new ControlError("wrong_conversation", "The merge must come from the preparing conversation."); const now = this.now(); if (att.issuedAt <= run.updatedAt || att.expiresAt < now || att.issuedAt > now)
-        throw new ControlError("stale_pr_head", "The merge confirmation expired."); const expected = this.mergeBindingDigest(changeId, att); if (att.bindingDigest !== expected)
-        throw new ControlError("stale_pr_head", "The pull request changed after review."); this.consumeAttestation(changeId, att, now); const auth = createVerifiedMergeAuthorization({ id: `merge_${randomUUID()}`, runId: changeId, actorIdentity: actor, conversationIdentity: conversation, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, expectedHeadSha: p.published_sha, publishedSha: p.published_sha, readinessDigest: p.readiness_digest, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt }); this.deps.mergeService.registerAuthorization(auth); const outcome = await this.deps.mergeService.merge(auth.id); if (outcome.status === "merged" || outcome.status === "already_merged")
-        return { ok: true, changeId, state: "merged", summary: "Pull request merged.", ...(outcome.mergeSha ? { mergeSha: outcome.mergeSha } : {}) }; throw new ControlError(outcome.code, outcome.status === "refused" ? "Merge readiness changed; merge refused." : "The merge did not complete."); }
+    async merge(changeId, context) {
+        const { actor, conversation } = contextIdentity(context);
+        const run = this.deps.repository.getRun(changeId);
+        const p = this.proposal(changeId);
+        if (!run || !p)
+            throw new ControlError("change_not_found", "The change was not found.");
+        if (run.state === "done")
+            throw new ControlError("already_merged", "This change was already merged.");
+        if (run.state !== "pr_ready" || !p.pr_number || !p.published_sha || !p.readiness_digest)
+            throw new ControlError("not_pr_ready", "This change is not ready to merge.");
+        const att = this.requireAttestation("merge_change", context);
+        if (actor !== run.requesterId || att.actorIdentity !== run.requesterId)
+            throw new ControlError("wrong_actor", "The merge must come from the preparing requester.");
+        if (conversation !== run.conversationId || att.conversationIdentity !== run.conversationId)
+            throw new ControlError("wrong_conversation", "The merge must come from the preparing conversation.");
+        const now = this.now();
+        if (att.issuedAt <= run.updatedAt || att.expiresAt < now || att.issuedAt > now)
+            throw new ControlError("stale_pr_head", "The merge confirmation expired.");
+        const expected = this.mergeBindingDigest(changeId, att);
+        if (att.bindingDigest !== expected)
+            throw new ControlError("stale_pr_head", "The pull request changed after review.");
+        const auth = createVerifiedMergeAuthorization({ id: `merge_${randomUUID()}`, runId: changeId, actorIdentity: actor, conversationIdentity: conversation, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, expectedHeadSha: p.published_sha, publishedSha: p.published_sha, readinessDigest: p.readiness_digest, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt });
+        this.deps.db.exec("BEGIN IMMEDIATE");
+        try {
+            const current = this.deps.db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(changeId);
+            const liveProposal = this.deps.db.prepare(`SELECT pr_number,published_sha,readiness_digest FROM control_proposals WHERE run_id=?`).get(changeId);
+            if (!current || current.state !== "pr_ready" || current.version !== run.version || !liveProposal || liveProposal.pr_number !== p.pr_number || liveProposal.published_sha !== p.published_sha || liveProposal.readiness_digest !== p.readiness_digest)
+                throw new ControlError("stale_pr_head", "The pull request changed after review.");
+            this.consumeAttestation(changeId, att, now);
+            this.deps.mergeService.registerAuthorizationAndIntent(auth, now);
+            const changed = this.deps.db.prepare(`UPDATE control_runs SET state='awaiting_merge',version=version+1,updated_at=? WHERE id=? AND state='pr_ready' AND version=?`).run(now, changeId, run.version);
+            if (Number(changed.changes) !== 1)
+                throw new ControlError("stale_pr_head", "The pull request changed after review.");
+            this.deps.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,'pr_ready','awaiting_merge',?,?,'merge_service','merge_authorized',?)`).run(changeId, run.version, run.version + 1, now);
+            this.deps.db.exec("COMMIT");
+        }
+        catch (error) {
+            try {
+                this.deps.db.exec("ROLLBACK");
+            }
+            catch { }
+            if (/UNIQUE constraint/i.test(String(error)))
+                throw new ControlError("authorization_replayed", "This merge confirmation was already used.");
+            throw error;
+        }
+        const outcome = await this.deps.mergeService.merge(auth.id);
+        if (outcome.status === "merged" || outcome.status === "already_merged")
+            return { ok: true, changeId, state: "merged", summary: "Pull request merged.", ...(outcome.mergeSha ? { mergeSha: outcome.mergeSha } : {}) };
+        if (outcome.status === "merge_failed")
+            throw new ControlError("merge_failed", "The merge failed after authorization; the failure was recorded durably.");
+        throw new ControlError(outcome.code, "Merge readiness changed; merge refused.");
+    }
     async dispatch(changeId) { const now = this.now(); const owner = `controller:${randomUUID()}`; const claimed = this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='running',lease_owner=?,lease_fence=lease_fence+1,lease_expires_at=?,attempts=attempts+1,updated_at=? WHERE run_id=? AND status IN ('pending','running') AND (status='pending' OR lease_expires_at<?)`).run(owner, now + this.dispatchLeaseMs, now, changeId, now); if (Number(claimed.changes) !== 1)
         return; const intent = this.deps.db.prepare(`SELECT lease_fence FROM control_dispatch_intents WHERE run_id=?`).get(changeId); let lease; let heartbeat; try {
         lease = this.deps.engine.acquire(changeId);

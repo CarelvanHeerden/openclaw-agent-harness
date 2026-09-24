@@ -41,6 +41,7 @@ export declare function renderCiWorkflowYaml(scripts: string[]): string;
 export declare function authorCiWorkflow(input: {
     worktreePath: string;
     gitCommit: (worktreePath: string, message: string) => Promise<string | null>;
+    assertMutationAuthorized?: (mutation: "write" | "commit", path: string) => void;
 }): Promise<{
     path: string;
     scripts: string[];

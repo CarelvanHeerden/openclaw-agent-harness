@@ -2,7 +2,7 @@ export declare const PLUGIN_ID = "openclaw-agent-harness";
 export declare const PLUGIN_NAME = "OpenClaw Agent Harness";
 export declare const PLUGIN_DESCRIPTION = "Multi-agent development harness: crystallise -> plan -> execute -> adversarial review -> PR.";
 /**
- * rc.3: the version of the clarification-answer policy that `harness_answer`
+ * rc.3: the version of the clarification-answer policy that `a trusted host confirmation`
  * enforces and `harness-clarification-steward` follows. Recorded on every
  * answer audit, because "was this allowed at the time" is a question about the
  * rules in force then, not the rules in force when somebody reads the log.

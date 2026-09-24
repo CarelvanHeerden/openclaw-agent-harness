@@ -1,7 +1,7 @@
 /**
  * beta.49 (C): revise-brief finding hygiene.
  *
- * `harness_revise` builds its brief from the prior session's STORED adversary
+ * `a new confirmed change` builds its brief from the prior session's STORED adversary
  * findings (reviews table) verbatim -- it never re-runs the adversary, so a
  * finding emitted before C3 (beta.48 adversary discipline) survives forever.
  * Session 21da9f9c's finding 10 ("rename grc/ -> governance-risk/ IF no

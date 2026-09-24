@@ -6,25 +6,28 @@
  * touch as little of GitHub as possible.
  */
 export async function createPullRequest(input) {
-    const apiBase = input.apiBase ?? "https://api.github.com";
-    const url = `${apiBase}/repos/${input.repoFullName}/pulls`;
-    const post = async (draft) => fetch(url, {
-        method: "POST",
-        headers: {
-            Authorization: `Bearer ${input.ghToken}`,
-            Accept: "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-            "User-Agent": "openclaw-agent-harness/0.1",
-        },
-        body: JSON.stringify({
-            title: input.title,
-            body: input.body,
-            head: input.head,
-            base: input.base,
-            draft,
-        }),
-    });
+    let apiBase = input.apiBase ?? "https://api.github.com";
+    const post = async (draft) => {
+        const credential = input.refreshCredential ? await input.refreshCredential() : { ghToken: input.ghToken, apiBase };
+        apiBase = credential.apiBase ?? apiBase;
+        return fetch(`${apiBase}/repos/${input.repoFullName}/pulls`, {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${credential.ghToken}`,
+                Accept: "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/json",
+                "User-Agent": "openclaw-agent-harness/0.1",
+            },
+            body: JSON.stringify({
+                title: input.title,
+                body: input.body,
+                head: input.head,
+                base: input.base,
+                draft,
+            }),
+        });
+    };
     let res = await post(!!input.draft);
     // beta.32: draft PRs are rejected with HTTP 422 on repos that don't
     // support them (private repos on free plans, certain repo types). Rather
@@ -101,10 +104,12 @@ async function applyPrLabels(input) {
     if (labels.length === 0)
         return;
     try {
-        const res = await fetch(`${input.apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/labels`, {
+        const credential = input.refreshCredential ? await input.refreshCredential() : { ghToken: input.ghToken, apiBase: input.apiBase };
+        const apiBase = credential.apiBase ?? input.apiBase;
+        const res = await fetch(`${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/labels`, {
             method: "POST",
             headers: {
-                Authorization: `Bearer ${input.ghToken}`,
+                Authorization: `Bearer ${credential.ghToken}`,
                 Accept: "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/json",
@@ -139,13 +144,14 @@ async function applyPrLabels(input) {
  * NEVER fail the run (the code + PR already landed), so callers swallow errors.
  */
 export async function postPrComment(input) {
-    const apiBase = input.apiBase ?? "https://api.github.com";
-    const url = `${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments`;
+    let apiBase = input.apiBase ?? "https://api.github.com";
     try {
-        const res = await fetch(url, {
+        const credential = input.refreshCredential ? await input.refreshCredential() : { ghToken: input.ghToken, apiBase };
+        apiBase = credential.apiBase ?? apiBase;
+        const res = await fetch(`${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments`, {
             method: "POST",
             headers: {
-                Authorization: `Bearer ${input.ghToken}`,
+                Authorization: `Bearer ${credential.ghToken}`,
                 Accept: "application/vnd.github+json",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/json",

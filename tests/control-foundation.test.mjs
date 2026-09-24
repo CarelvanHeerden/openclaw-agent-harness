@@ -9,7 +9,7 @@ const stateMachine = await import("../dist/control/state-machine.js");
 const authority = await import("../dist/control/authority.js");
 const reports = await import("../dist/control/report.js");
 const { ControlRepository } = await import("../dist/control/repository.js");
-const { applyStateMigrations } = await import("../dist/state/migrations.js");
+const { applyStateMigrations, STATE_MIGRATIONS } = await import("../dist/state/migrations.js");
 const { openStateStoreSync } = await import("../dist/state/store.js");
 
 const sha = (character) => character.repeat(64);
@@ -160,7 +160,7 @@ test("migration ledger applies control schema transactionally and idempotently",
   const db = new DatabaseSync(":memory:");
   applyStateMigrations(db);
   applyStateMigrations(db);
-  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, 3);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, STATE_MIGRATIONS.length);
   for (const table of ["control_runs", "control_state_events", "automation_decisions", "run_leases"]) {
     assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name=?").get(table).n, 1);
   }
@@ -170,10 +170,27 @@ test("migration ledger applies control schema transactionally and idempotently",
   db.close();
 });
 
+test("merge-intent recovery migration preserves existing one-use intents atomically", () => {
+  const db = new DatabaseSync(":memory:");
+  applyStateMigrations(db, STATE_MIGRATIONS.slice(0, 3));
+  const repo = new ControlRepository(db);
+  let run = repo.createRun({ id: "migration-intent", authority: makeEnvelope(), createdAt: 1 });
+  run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "test", reason: "prepared", at: 2 });
+  run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "autonomous_run", actor: "test", reason: "confirmed", at: 3 });
+  run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "test", reason: "ready", at: 4 });
+  db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,binding_digest,nonce,issued_at,expires_at,consumed_at) VALUES ('auth-migration',?,'U123','C1:T1','acme/widget','main',1,?,'digest','nonce',5,500,NULL)`).run(run.id, sha("c",40));
+  db.prepare(`INSERT INTO control_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES ('intent-migration',?,'auth-migration',?,'key-migration','authorized',5,5)`).run(run.id, sha("c",40));
+  applyStateMigrations(db);
+  assert.deepEqual({ ...db.prepare(`SELECT id,authorization_id,status FROM control_engine_merge_intents WHERE id='intent-migration'`).get() }, { id: "intent-migration", authorization_id: "auth-migration", status: "authorized" });
+  assert.equal(db.prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='control_security_receipts'`).get().n, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, STATE_MIGRATIONS.length);
+  db.close();
+});
+
 test("store migration is backward-compatible with legacy session columns", () => withStore(({ db }) => {
   const sessionColumns = db.prepare("PRAGMA table_info(sessions)").all().map((row) => row.name);
   for (const legacy of ["crystallised_prompt", "lead_plan_json", "clarification_id", "published_sha"]) assert.ok(sessionColumns.includes(legacy));
-  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, 3);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM migration_ledger").get().n, STATE_MIGRATIONS.length);
 }));
 
 test("run leases use monotonically increasing fences and reject stale owners", () => withStore(({ db }) => {

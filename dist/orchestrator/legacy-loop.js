@@ -535,7 +535,7 @@ export async function withTimeout(p, seconds, limit) {
  *
  * Convergence = the run was making real progress toward a clean pass but ran
  * out of cycle budget, so an operator should be TOLD it's worth extending
- * (re-run harness_revise) rather than shown a bare do_not_merge. We require
+ * (re-run a new confirmed change) rather than shown a bare do_not_merge. We require
  * BOTH: (a) at least two cycles of signal, and (b) a NET downward trend from
  * the first cycle to the last (last < first). A late bump (e.g. 13 -> 8 -> 12,
  * where cycle-3 fixes added new review surface) still counts as converging so
@@ -605,6 +605,7 @@ class ConfirmedControlAuthorityError extends Error {
 export class OrchestratorLoop {
     deps;
     confirmedControlGuards = new Map();
+    confirmedControlCredentialResolvers = new Map();
     constructor(deps) {
         this.deps = deps;
     }
@@ -694,7 +695,7 @@ export class OrchestratorLoop {
                 //
                 // Medium and above still cycles, so this cannot ship real defects. The
                 // remaining lows are not lost either -- they go on the PR body and
-                // `harness_revise` will pick them up if asked.
+                // `a new confirmed change` will pick them up if asked.
                 if (input.verdict === "revise" &&
                     input.shipWhenNoBlockingFindings !== false &&
                     input.blockingFindings === 0) {
@@ -709,7 +710,7 @@ export class OrchestratorLoop {
                     // OpenClaw smoke went 16 -> 8 -> 9 findings and stopped dead on the
                     // ceiling, having spent $12.90 of a $30 budget. b97 already detects
                     // this exact arc -- it just wrote a note asking the operator to run
-                    // `harness_revise` by hand, which is the same cycle the harness could
+                    // `a new confirmed change` by hand, which is the same cycle the harness could
                     // have run itself while the worktree was still warm. Four blocking
                     // findings, all described by the report as "small and mechanical",
                     // shipped unfixed for want of a fourth cycle nobody had to pay extra
@@ -743,7 +744,7 @@ export class OrchestratorLoop {
                     // was plausibly one more cycle away -- ship do_not_merge as before,
                     // but with a DISTINCT reason so the terminal headline + PR body can
                     // SURFACE an ask-to-extend ("converging but incomplete -- re-run
-                    // harness_revise to continue?") instead of a bare do_not_merge. The
+                    // a new confirmed change to continue?") instead of a bare do_not_merge. The
                     // merge gate is unchanged (still do_not_merge); this is purely an
                     // observability signal so the operator can make an informed call.
                     if (isConvergingFindingTrend(input.findingCountsByCycle)) {
@@ -831,7 +832,7 @@ export class OrchestratorLoop {
      * dispatch. When the SDK stream opens then goes idle past the threshold, this
      * (1) emits `loop.worker_stream_slow` for the audit trail and (2) bumps the
      * session liveness heartbeat (last_progress_at, the beta.63 column the stall
-     * watchdog reads) so harness_progress surfaces "worker stream idle Ns" rather
+     * watchdog reads) so the control result surfaces "worker stream idle Ns" rather
      * than the phase looking wedged. Best-effort + throw-guarded: this is pure
      * observability and must NEVER disturb the worker call.
      */
@@ -1758,9 +1759,11 @@ export class OrchestratorLoop {
      * reused for planning and workers, but its interactive pause is not part of
      * the control-plane contract: a request for clarification is terminal.
      */
-    async runConfirmedControl(sessionId, brief, authorityGuard) {
+    async runConfirmedControl(sessionId, brief, authorityGuard, credentialResolver) {
         if (authorityGuard)
             this.confirmedControlGuards.set(sessionId, authorityGuard);
+        if (credentialResolver)
+            this.confirmedControlCredentialResolvers.set(sessionId, credentialResolver);
         try {
             const outcome = await this.run(sessionId, brief);
             if (outcome.status !== "awaiting_clarification")
@@ -1778,6 +1781,7 @@ export class OrchestratorLoop {
         }
         finally {
             this.confirmedControlGuards.delete(sessionId);
+            this.confirmedControlCredentialResolvers.delete(sessionId);
         }
     }
     async run(sessionId, brief) {
@@ -1856,7 +1860,7 @@ export class OrchestratorLoop {
     /**
      * beta.60: instance accessor for the module-level re-entrancy guard set (all
      * in-process running loops, across runtime generations). Used by
-     * harness_resume force-unstick to REFUSE unsticking a session that still has
+     * confirmed-control recovery force-unstick to REFUSE unsticking a session that still has
      * a live loop-runner tracked -- so we never yank a genuinely-busy loop out
      * from under itself. A session that wedged with a dead executor will NOT be
      * in this set once the stall-watchdog/reclaim cleared its handle (or if the
@@ -4334,7 +4338,7 @@ export class OrchestratorLoop {
                                     : "[loop] worker made a reasoned refusal (zero side-effects + explanation)", { sessionId, seq: st.seq, reasonFirstLine: firstLine.slice(0, 200) });
                             }
                             // beta.48 (C2): fold the refusal first-line into the persisted
-                            // summary so harness_progress.headline and the terminal update
+                            // summary so the control result.headline and the terminal update
                             // show "worker refused: <reason>" rather than a bare
                             // verification-failed string.
                             // rc.2: when the harness corrected as far as it could and still got
@@ -4375,7 +4379,7 @@ export class OrchestratorLoop {
                             // blocking ambiguity). Rather than kill the whole run, surface the
                             // worker's OWN explanation as a question and pause resumably. The
                             // worktree is preserved (finaliseAwaitingClarification does NOT
-                            // release it) so harness_answer can re-drive from this seq in place.
+                            // release it) so a trusted host confirmation can re-drive from this seq in place.
                             if (policyDenied && this.deps.config.loop.clarification_escalation_enabled !== false) {
                                 // rc.9: built from the structured denial. The worker's narrative
                                 // appears last and clearly labelled, if at all -- at rc.8 it WAS
@@ -4471,7 +4475,7 @@ export class OrchestratorLoop {
                             // remainder: the worker committed real work, but the harness cannot
                             // prove whether the PLAN's path or the WORKER's placement is the wrong
                             // one. That is a human decision, so pause resumably -- the worktree and
-                            // its commits survive and harness_answer re-drives from this seq.
+                            // its commits survive and a trusted host confirmation re-drives from this seq.
                             //
                             // This does NOT weaken trust-but-verify. The sub-task still FAILS
                             // (failed.err is set and the row is already `failed_verification`);
@@ -5767,13 +5771,20 @@ export class OrchestratorLoop {
                     try {
                         if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
                             try {
-                                const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+                                const authored = await this.deps.ciAuthorWorkflow({
+                                    worktreePath: plan.worktreePath,
+                                    assertMutationAuthorized: (mutation, path) => this.assertConfirmedControlAuthority(sessionId, {
+                                        kind: "implementation_choice", action: mutation === "write" ? "implement" : "commit", paths: [path], projectedCycles: cycle, projectedRetries: 0,
+                                    }),
+                                });
                                 if (authored) {
                                     authoredWorkflowThisCycle = true;
                                     this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts, stage: "pre_preview" }, sessionId);
                                 }
                             }
                             catch (err) {
+                                if (err instanceof ConfirmedControlAuthorityError)
+                                    throw err;
                                 this.deps.logger.warn("[loop] pre-preview CI workflow authoring failed (non-fatal)", { sessionId, err: String(err) });
                             }
                         }
@@ -5792,7 +5803,7 @@ export class OrchestratorLoop {
                             projectedRetries: 0,
                         });
                         this.deps.state.audit("loop.preview_push_started", { sessionId, cycle, branch: plan.branch }, sessionId);
-                        const pushed = await this.deps.pushBranchForPreview({ plan, requester: row.requester, commitSha: previewHeadSha });
+                        const pushed = await this.deps.pushBranchForPreview({ plan, requester: row.requester, commitSha: previewHeadSha, resolveCredentialForMutation: this.confirmedControlCredentialResolvers.get(sessionId) });
                         if (!pushed.remoteSha || pushed.remoteSha !== previewHeadSha) {
                             throw new Error(`preview branch tip mismatch: expected ${previewHeadSha}, received ${pushed.remoteSha || "(missing)"}`);
                         }
@@ -6132,7 +6143,12 @@ export class OrchestratorLoop {
             // not block the push (the PR + review already stand); it just means no CI.
             if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
                 try {
-                    const authored = await this.deps.ciAuthorWorkflow({ worktreePath: plan.worktreePath });
+                    const authored = await this.deps.ciAuthorWorkflow({
+                        worktreePath: plan.worktreePath,
+                        assertMutationAuthorized: (mutation, path) => this.assertConfirmedControlAuthority(sessionId, {
+                            kind: "implementation_choice", action: mutation === "write" ? "implement" : "commit", paths: [path], projectedCycles: cycle, projectedRetries: 0,
+                        }),
+                    });
                     if (authored) {
                         authoredWorkflowThisCycle = true;
                         this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
@@ -6141,6 +6157,8 @@ export class OrchestratorLoop {
                     }
                 }
                 catch (err) {
+                    if (err instanceof ConfirmedControlAuthorityError)
+                        throw err;
                     this.deps.logger.warn("[loop] CI workflow authoring failed (non-fatal; repo will simply have no CI)", { sessionId, err: String(err) });
                 }
             }
@@ -6314,7 +6332,7 @@ export class OrchestratorLoop {
                         ciOverride = {
                             recommendation: "needs_human_review",
                             reason: `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
-                                `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via harness_progress -- this is a soft checkpoint, not a failure.`,
+                                `The PR is open; CI has not reported a verdict yet. Re-check CI on GitHub, or resume watching via the control result -- this is a soft checkpoint, not a failure.`,
                         };
                     }
                     else if (ci.outcome === "indeterminate") {
@@ -6637,7 +6655,7 @@ export class OrchestratorLoop {
                 : "";
             finalReason =
                 `${finalReason}\n\nCONVERGING: adversary findings were trending down across cycles (${arc}) but the run hit the ${effectiveCeiling}-cycle ceiling${extended} before a clean pass. ` +
-                    `This looks worth extending: re-run \`harness_revise\` on this PR to continue from the current findings — a clean sign-off was plausibly one or two cycles away.`;
+                    `This looks worth extending: re-run \`a new confirmed change\` on this PR to continue from the current findings — a clean sign-off was plausibly one or two cycles away.`;
             this.deps.state.audit("loop.max_cycles_extend_suggested", {
                 sessionId, findingCountsByCycle,
                 maxCycles: this.deps.config.loop.max_cycles,
@@ -6808,7 +6826,7 @@ export class OrchestratorLoop {
             seq: st.seq,
             title: st.title,
             chars: report.length,
-            // Durable handoff. `harness_answer` and process recovery start a new
+            // Durable handoff. `a trusted host confirmation` and process recovery start a new
             // runInner invocation, so an in-memory map alone loses the probe at
             // exactly the boundary where later dependants need it.
             report: report.slice(0, OBSERVE_REPORT_MAX_CHARS),
@@ -7425,7 +7443,7 @@ export class OrchestratorLoop {
         // run, keep the commits and refuse the push.
         if (this.refuseUnreviewedSalvage(sessionId, "best_effort_verify", { seq: st.seq, cycle })) {
             const why = "verify_timeout_no_adversary_review: the VERIFY sub-task timed out and no adversary review has ever run for this session, so there is nothing to ship behind. " +
-                "The commits are preserved in the worktree -- run harness_resume to review and push them.";
+                "The commits are preserved in the worktree -- start a new confirmed change after inspecting the preserved branch.";
             await this.finaliseFailedPreserveWorktree(sessionId, why, cycle, totalCost);
             // Distinct from "shipped": both short-circuit the caller's terminal fail
             // path, but only one of them opened a PR. Reporting this as shipped would
@@ -8224,7 +8242,7 @@ export class OrchestratorLoop {
     /**
      * rc.3: assemble the labelled brief sections a revise adversary needs.
      *
-     * Reads only what `harness_revise` and plan-ready already pinned to the row.
+     * Reads only what `a new confirmed change` and plan-ready already pinned to the row.
      * Returns undefined for an ordinary run, and for a revise session that
      * predates the baseline columns -- in both cases the adversary keeps the
      * single-brief prompt it has always had.
@@ -8653,7 +8671,7 @@ export class OrchestratorLoop {
      * "the loop reads it on its next checkpoint". There was no next checkpoint.
      * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
      * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
-     * idle waiting for `harness_answer`. Nothing was left to read the flag. The
+     * idle waiting for `a trusted host confirmation`. Nothing was left to read the flag. The
      * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
      * queries only `executing|planning|reviewing`, and recovery excludes it on
      * purpose. So the cancel was recorded, acknowledged, and never happened.
@@ -8900,7 +8918,7 @@ export class OrchestratorLoop {
             sessionId,
             reason: row?.terminal_classification === "failed_smoke_test"
                 ? `${reason} (FAILED SMOKE TEST; worktree PRESERVED as evidence at ${row?.worktree_path ?? "unknown path"}; do not resume automatically)`
-                : `${reason} (worktree PRESERVED at ${row?.worktree_path ?? "unknown path"} on branch ${row?.branch ?? "unknown"} -- commits are intact; push them or re-run harness_revise rather than re-doing the work)`,
+                : `${reason} (worktree PRESERVED at ${row?.worktree_path ?? "unknown path"} on branch ${row?.branch ?? "unknown"} -- commits are intact; push them through a new confirmed change rather than re-doing the work)`,
             cycles,
             totalCostUsd,
         };
@@ -9007,7 +9025,7 @@ export class OrchestratorLoop {
      * arithmetic exactly where they are.
      *
      * beta.132: the price of waiting in place is that the question dies with the
-     * process holding it, and b129 had no way to notice -- `harness_answer` read
+     * process holding it, and b129 had no way to notice -- `a trusted host confirmation` read
      * the wait window as proof of life and told session 2b4c1d33's operator the
      * run would pick their answer up. It had already exited. Hence the
      * heartbeat: every tick below stamps the row, and an answer arriving to a
@@ -9600,9 +9618,9 @@ export class OrchestratorLoop {
     /**
      * rc.4: the recovery instruction on a preserved-worktree failure.
      *
-     * This used to say "run harness_resume to continue". `harness_resume` refuses
-     * a terminal session and replies "it is terminal (failed). Use harness_revise
-     * to start a fresh revise" -- and `harness_revise` refuses a row with no PR.
+     * This used to say "run confirmed-control recovery to continue". `confirmed-control recovery` refuses
+     * a terminal session and replies "it is terminal (failed). Use a new confirmed change
+     * to start a fresh revise" -- and `a new confirmed change` refuses a row with no PR.
      * So the one message written specifically to tell an operator how to recover
      * named a tool that sent them to a second tool that refused them, in exactly
      * the situation the message exists for.
@@ -9626,12 +9644,12 @@ export class OrchestratorLoop {
             /* the instruction is still worth emitting without it */
         }
         if (pr?.pr_number) {
-            return `${where} The PR is recorded, so harness_revise (sessionId ${sessionId}) will build on this branch and update PR #${pr.pr_number}.`;
+            return `${where} The PR is recorded, so a new confirmed change (sessionId ${sessionId}) will build on this branch and update PR #${pr.pr_number}.`;
         }
-        return (`${where} harness_resume will refuse this session -- it is terminal. If a PR was already opened for ` +
+        return (`${where} This terminal session cannot be reopened. If a PR was already opened for ` +
             `branch ${row.branch ?? "this branch"}, recover the association with harness_link_pr ` +
-            `(sessionId ${sessionId}, repo ${pr?.repo || "<owner/name>"}, the PR number) and then harness_revise it; ` +
-            `harness_link_pr is a dry run until you pass apply. Otherwise push the branch by hand.`);
+            `(sessionId ${sessionId}, repo ${pr?.repo || "<owner/name>"}, the PR number), then start a new confirmed change referencing that PR; ` +
+            `harness_link_pr is a dry run until you pass apply. Otherwise push the branch by hand and prepare a new confirmed change.`);
     }
     /**
      * rc.5 (#2): can this run PROVE publication at all?
@@ -9774,7 +9792,7 @@ export class OrchestratorLoop {
                     projectedRetries: 0,
                 });
                 this.deps.state.audit("loop.publication_reused_push", { sessionId, cycle, stage, branch: plan.branch, sha: candidateSha }, sessionId);
-                prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester });
+                prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester, resolveCredentialForMutation: this.confirmedControlCredentialResolvers.get(sessionId) });
             }
             else {
                 this.assertConfirmedControlAuthority(sessionId, {
@@ -9792,7 +9810,7 @@ export class OrchestratorLoop {
                     projectedRetries: 0,
                 });
                 this.deps.state.audit("loop.publication_push_started", { sessionId, cycle, stage, branch: plan.branch, candidateSha: candidateSha || "(unresolved)" }, sessionId);
-                prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester });
+                prUrl = await this.deps.pushBranchAndOpenPr({ plan, brief, reviewReport, requester, resolveCredentialForMutation: this.confirmedControlCredentialResolvers.get(sessionId) });
             }
         }
         catch (err) {
@@ -9918,7 +9936,7 @@ export class OrchestratorLoop {
         // there is ONE terminal-fail event across BOTH terminal paths (this
         // preserve-worktree variant AND finaliseFailed). Pre-beta.74 a review crash
         // routed through here and emitted ONLY `loop.failed_worktree_preserved`, so
-        // a `harness_progress` consumer greppping for `loop.failed` missed the
+        // a `the control result` consumer greppping for `loop.failed` missed the
         // review-crash terminals (session 666fc103). The reason string is preserved
         // on both events; this just unifies the event name.
         this.deps.state.audit("loop.failed", { sessionId, reason, cycles, worktreePreserved: true }, sessionId);
@@ -10549,7 +10567,7 @@ export class OrchestratorLoop {
             // Not salvageable into a PR -- fail, but keep the worktree (fix #3).
             if (!priorReview) {
                 this.refuseUnreviewedSalvage(sessionId, "review_crash", { cycle, infra, selfVerifyGreen });
-                return await this.finaliseFailedPreserveWorktree(sessionId, `${reason}; no adversary review has ever run for this session, so the commits are preserved in the worktree rather than pushed -- run harness_resume to review and push them`, cycle, totalCost);
+                return await this.finaliseFailedPreserveWorktree(sessionId, `${reason}; no adversary review has ever run for this session, so the commits are preserved in the worktree rather than pushed -- start a new confirmed change after inspecting the preserved branch`, cycle, totalCost);
             }
             return await this.finaliseFailedPreserveWorktree(sessionId, reason, cycle, totalCost);
         }
@@ -10613,7 +10631,7 @@ export class OrchestratorLoop {
      * beta.55 (B2): pause the session for a human decision. Persists the
      * question + the paused sub-task seq and sets status `awaiting_clarification`.
      * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so
-     * harness_answer can re-drive the loop from the paused seq in place. The
+     * a trusted host confirmation can re-drive the loop from the paused seq in place. The
      * worktree-heal protect set (beta.45) + recovery both treat
      * `awaiting_clarification` as resumable, so a stray re-register or restart
      * won't reap the worktree or auto-fail the pause.

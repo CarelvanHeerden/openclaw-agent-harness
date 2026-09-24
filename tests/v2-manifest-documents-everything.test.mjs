@@ -88,8 +88,6 @@ const UNDESCRIBED_BASELINE = new Set([
   "repos.can_create", "repos.create_org", "repos.create_visibility", "repos.default_base_branch",
   "safety.allow_git_push", "safety.allow_network_commands", "safety.bash_denylist_tokens",
   "safety.bash_whitelist", "safety.path_denylist", "safety.worker_permission_mode",
-  "slack.reactions.abort", "slack.reactions.budget_bump", "slack.reactions.pause",
-  "slack.reactions.ship_it", "slack.reactions_poll_ms",
   "storage.audit_retention_days", "storage.min_free_disk_bytes", "storage.prune_terminal_sessions",
   "storage.prune_terminal_sessions_days", "storage.state_db_path", "storage.worktree_root",
   "vercel.credential_service", "vercel.deploy_repair.enabled", "vercel.deploy_repair.max_attempts",

@@ -71,9 +71,9 @@ export function listenerLooksAlive(heartbeatAt: number | null | undefined, nowMs
 
 /**
  * How long the live loop intends to keep polling for an answer. Written into
- * the pause marker so `harness_answer` can tell whether a loop is still sitting
+ * the pause marker so `a trusted host confirmation` can tell whether a loop is still sitting
  * there waiting (record the answer and let it pick it up) or has already given
- * up and shipped (resume the normal way, through harness_revise).
+ * up and shipped (resume the normal way, through a new confirmed change).
  */
 export function renderTimeExtensionMarker(waitUntilMs: number): string {
   return JSON.stringify({ kind: TIME_EXTENSION_KIND, waitUntilMs });

@@ -64,7 +64,7 @@ export function describeAbortSalvage(reason: string, cycles: number, lastReview:
     parts.push("No adversary verdict was reached at all, so nothing here has been reviewed.");
   }
   parts.push(
-    "Read the diff before merging. To continue automatically instead, run harness_revise against this PR -- it resumes from this branch rather than starting again.",
+    "Read the diff before merging. To continue automatically instead, run a new confirmed change against this PR -- it resumes from this branch rather than starting again.",
   );
   return parts.join(" ");
 }

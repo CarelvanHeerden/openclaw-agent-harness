@@ -12,7 +12,7 @@ test("beta132: dispatch ownership is durable, leased, and recovered without a li
   for (const token of ["control_dispatch_intents", "lease_owner", "lease_fence", "lease_expires_at", "recoverDispatches"]) {
     assert.match(service, new RegExp(token));
   }
-  assert.match(service, /queueMicrotask\(\(\)=>void this\.recoverDispatches\(\)\)/);
+  assert.match(service, /queueMicrotask\(\(\)=>\{void this\.recoverDispatches\(\);void this\.deps\.mergeService\.recoverPending\(\);\}\)/);
   assert.doesNotMatch(service, /clarification_heartbeat|listenerLooksAlive|time_extension/);
 });
 

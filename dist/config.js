@@ -16,13 +16,6 @@ const DEFAULTS = {
     slack: {
         channel: "",
         authorised_users: [],
-        native_progress_delivery: true,
-        reactions: {
-            ship_it: "rocket",
-            abort: "x",
-            pause: "pause_button",
-            budget_bump: "moneybag",
-        },
     },
     budgets: {
         monthly_per_user_usd: 1000,
@@ -77,10 +70,7 @@ const DEFAULTS = {
         adversary_timeout_seconds: 900,
         lead_timeout_seconds: 900,
         session_hard_timeout_seconds: 7200,
-        time_extension_wait_seconds: 300,
-        time_extension_default_seconds: 1800,
         repair_reserve_ratio: 0.3,
-        budget_extension_wait_seconds: 300,
         stuck_loop_seconds: 2700,
         teardown_drain_seconds: 3600,
         stall_watchdog_seconds: 90,
@@ -119,7 +109,6 @@ const DEFAULTS = {
         revise_max_adoptions_per_cycle: 3,
         revise_route_co_fix_owners: true,
         finding_repair_subtasks_enabled: true,
-        max_cycle_extensions: 1,
         workflow_scope_precheck: true,
         early_exit_no_change_cycle: true,
         ship_when_no_blocking_findings: true,

@@ -28,6 +28,10 @@ export interface CreatePrInput {
     logger?: {
         warn: (msg: string, meta?: unknown) => void;
     };
+    refreshCredential?: () => Promise<{
+        ghToken: string;
+        apiBase?: string;
+    }>;
 }
 export interface CreatePrOutput {
     number: number;
@@ -56,6 +60,10 @@ export declare function postPrComment(input: {
     body: string;
     ghToken: string;
     apiBase?: string;
+    refreshCredential?: () => Promise<{
+        ghToken: string;
+        apiBase?: string;
+    }>;
 }): Promise<{
     ok: boolean;
     status: number;

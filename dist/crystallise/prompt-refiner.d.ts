@@ -76,7 +76,7 @@ export interface CrystallisedBrief {
     pinnedBranch?: string;
     /**
      * Free-text direction from the human who requested a revise, describing what
-     * the fix must DO. Set by `harness_revise`'s `guidance` parameter.
+     * the fix must DO. Set by `a new confirmed change`'s `guidance` parameter.
      *
      * The instruction itself lives in `acceptanceCriteria`, which is what reaches
      * the lead, the workers and the adversary; this field is the structured copy,
@@ -85,7 +85,7 @@ export interface CrystallisedBrief {
      */
     operatorGuidance?: string;
     /**
-     * beta.101: set by harness_answer when re-driving a session out of
+     * beta.101: set by a trusted host confirmation when re-driving a session out of
      * `awaiting_clarification`. The resume path re-plans, which allocates a fresh
      * worktree; without this marker allocation resets the session branch to base
      * and orphans every commit the run has already made (b100 smoke, session

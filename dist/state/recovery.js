@@ -57,7 +57,7 @@ export function recordResumeAndCheckBreaker(sessionId, maxResumes, windowSeconds
 // stranded forever. In agent-orchestrated mode it now auto-resumes like any
 // other fresh in-flight session; stale ones age out to 'interrupted'.
 // 'awaiting_clarification' stays EXCLUDED on purpose: it is a deliberate
-// human-in-the-loop pause that only harness_answer may resume.
+// human-in-the-loop pause that only a trusted host confirmation may resume.
 const NON_TERMINAL = ["crystallising", "planning", "executing", "reviewing", "resumable"];
 export function findInterruptedSessions(state, staleAfterSeconds) {
     const cutoff = Date.now() - staleAfterSeconds * 1000;

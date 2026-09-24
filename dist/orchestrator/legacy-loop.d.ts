@@ -414,6 +414,7 @@ export interface OrchestratorDeps {
         plan: LeadPlan;
         requester?: string;
         commitSha: string;
+        resolveCredentialForMutation?: ConfirmedControlCredentialResolver;
     }) => Promise<{
         remoteSha: string;
     }>;
@@ -423,12 +424,14 @@ export interface OrchestratorDeps {
         brief: CrystallisedBrief;
         reviewReport: ReviewReport;
         requester?: string;
+        resolveCredentialForMutation?: ConfirmedControlCredentialResolver;
     }) => Promise<string>;
     pushBranchAndOpenPr: (params: {
         plan: LeadPlan;
         brief: CrystallisedBrief;
         reviewReport: ReviewReport;
         requester?: string;
+        resolveCredentialForMutation?: ConfirmedControlCredentialResolver;
     }) => Promise<string>;
     /** Signal source: user Slack reactions on our messages. */
     readReactions: (sessionId: string) => Promise<{
@@ -442,11 +445,11 @@ export interface OrchestratorDeps {
      * beta.77: harness-native OUTBOUND progress/terminal delivery. Fired from
      * `setStatus` on EVERY phase + terminal transition (the single choke point).
      * The implementation (index.ts) best-effort direct-posts the current
-     * `harness_progress` headline to Slack via a vault-resolved bot token WHEN the
+     * `the control result` headline to Slack via a vault-resolved bot token WHEN the
      * session has a real Slack binding -- an INDEPENDENT path from the wedge-prone
      * agent `api.sendMessage` turn. Fire-and-forget; the loop stays Slack-agnostic
      * (no Slack import here) and a throw here can NEVER escape `setStatus`.
-     * Clarifications/inbound stay agent-mediated (`harness_answer`) -- unchanged.
+     * Clarifications/inbound stay agent-mediated (`a trusted host confirmation`) -- unchanged.
      */
     deliverProgress?: (sessionId: string, status: LoopStatus) => void;
     /**
@@ -703,6 +706,7 @@ export interface OrchestratorDeps {
      */
     ciAuthorWorkflow?: (input: {
         worktreePath: string;
+        assertMutationAuthorized?: (mutation: "write" | "commit", path: string) => void;
     }) => Promise<{
         path: string;
         scripts: string[];
@@ -738,7 +742,7 @@ export interface OrchestratorDeps {
  *
  * Convergence = the run was making real progress toward a clean pass but ran
  * out of cycle budget, so an operator should be TOLD it's worth extending
- * (re-run harness_revise) rather than shown a bare do_not_merge. We require
+ * (re-run a new confirmed change) rather than shown a bare do_not_merge. We require
  * BOTH: (a) at least two cycles of signal, and (b) a NET downward trend from
  * the first cycle to the last (last < first). A late bump (e.g. 13 -> 8 -> 12,
  * where cycle-3 fixes added new review surface) still counts as converging so
@@ -781,9 +785,16 @@ export interface ConfirmedControlAuthorityCheck {
     projectedRetries: number;
 }
 export type ConfirmedControlAuthorityGuard = (check: ConfirmedControlAuthorityCheck) => void;
+export interface ConfirmedControlCredential {
+    token: string;
+    provider: string;
+    apiBase?: string;
+}
+export type ConfirmedControlCredentialResolver = (action: "push_feature_branch" | "open_pull_request" | "update_pull_request") => Promise<ConfirmedControlCredential>;
 export declare class OrchestratorLoop {
     private readonly deps;
     private readonly confirmedControlGuards;
+    private readonly confirmedControlCredentialResolvers;
     constructor(deps: OrchestratorDeps);
     private assertConfirmedControlAuthority;
     private routeLog;
@@ -850,7 +861,7 @@ export declare class OrchestratorLoop {
      * dispatch. When the SDK stream opens then goes idle past the threshold, this
      * (1) emits `loop.worker_stream_slow` for the audit trail and (2) bumps the
      * session liveness heartbeat (last_progress_at, the beta.63 column the stall
-     * watchdog reads) so harness_progress surfaces "worker stream idle Ns" rather
+     * watchdog reads) so the control result surfaces "worker stream idle Ns" rather
      * than the phase looking wedged. Best-effort + throw-guarded: this is pure
      * observability and must NEVER disturb the worker call.
      */
@@ -975,7 +986,7 @@ export declare class OrchestratorLoop {
      * reused for planning and workers, but its interactive pause is not part of
      * the control-plane contract: a request for clarification is terminal.
      */
-    runConfirmedControl(sessionId: string, brief: CrystallisedBrief, authorityGuard?: ConfirmedControlAuthorityGuard): Promise<LoopOutcome>;
+    runConfirmedControl(sessionId: string, brief: CrystallisedBrief, authorityGuard?: ConfirmedControlAuthorityGuard, credentialResolver?: ConfirmedControlCredentialResolver): Promise<LoopOutcome>;
     run(sessionId: string, brief: CrystallisedBrief): Promise<LoopOutcome>;
     /**
      * beta.57 (P1): sessions whose loop THIS OrchestratorLoop instance is
@@ -991,7 +1002,7 @@ export declare class OrchestratorLoop {
     /**
      * beta.60: instance accessor for the module-level re-entrancy guard set (all
      * in-process running loops, across runtime generations). Used by
-     * harness_resume force-unstick to REFUSE unsticking a session that still has
+     * confirmed-control recovery force-unstick to REFUSE unsticking a session that still has
      * a live loop-runner tracked -- so we never yank a genuinely-busy loop out
      * from under itself. A session that wedged with a dead executor will NOT be
      * in this set once the stall-watchdog/reclaim cleared its handle (or if the
@@ -1315,7 +1326,7 @@ export declare class OrchestratorLoop {
     /**
      * rc.3: assemble the labelled brief sections a revise adversary needs.
      *
-     * Reads only what `harness_revise` and plan-ready already pinned to the row.
+     * Reads only what `a new confirmed change` and plan-ready already pinned to the row.
      * Returns undefined for an ordinary run, and for a revise session that
      * predates the baseline columns -- in both cases the adversary keeps the
      * single-brief prompt it has always had.
@@ -1393,7 +1404,7 @@ export declare class OrchestratorLoop {
      * "the loop reads it on its next checkpoint". There was no next checkpoint.
      * A clarification pause is not a suspended loop; `finaliseAwaitingClarification`
      * RETURNS, `run()`'s `finally` deregisters the session, and the process goes
-     * idle waiting for `harness_answer`. Nothing was left to read the flag. The
+     * idle waiting for `a trusted host confirmation`. Nothing was left to read the flag. The
      * Slack reaction poller skips `awaiting_clarification`, the dead-loop sweep
      * queries only `executing|planning|reviewing`, and recovery excludes it on
      * purpose. So the cancel was recorded, acknowledged, and never happened.
@@ -1482,7 +1493,7 @@ export declare class OrchestratorLoop {
      * arithmetic exactly where they are.
      *
      * beta.132: the price of waiting in place is that the question dies with the
-     * process holding it, and b129 had no way to notice -- `harness_answer` read
+     * process holding it, and b129 had no way to notice -- `a trusted host confirmation` read
      * the wait window as proof of life and told session 2b4c1d33's operator the
      * run would pick their answer up. It had already exited. Hence the
      * heartbeat: every tick below stamps the row, and an answer arriving to a
@@ -1608,9 +1619,9 @@ export declare class OrchestratorLoop {
     /**
      * rc.4: the recovery instruction on a preserved-worktree failure.
      *
-     * This used to say "run harness_resume to continue". `harness_resume` refuses
-     * a terminal session and replies "it is terminal (failed). Use harness_revise
-     * to start a fresh revise" -- and `harness_revise` refuses a row with no PR.
+     * This used to say "run confirmed-control recovery to continue". `confirmed-control recovery` refuses
+     * a terminal session and replies "it is terminal (failed). Use a new confirmed change
+     * to start a fresh revise" -- and `a new confirmed change` refuses a row with no PR.
      * So the one message written specifically to tell an operator how to recover
      * named a tool that sent them to a second tool that refused them, in exactly
      * the situation the message exists for.
@@ -1888,7 +1899,7 @@ export declare class OrchestratorLoop {
      * beta.55 (B2): pause the session for a human decision. Persists the
      * question + the paused sub-task seq and sets status `awaiting_clarification`.
      * CRITICAL: does NOT release the worktree (unlike finaliseFailed/Abort) so
-     * harness_answer can re-drive the loop from the paused seq in place. The
+     * a trusted host confirmation can re-drive the loop from the paused seq in place. The
      * worktree-heal protect set (beta.45) + recovery both treat
      * `awaiting_clarification` as resumable, so a stray re-register or restart
      * won't reap the worktree or auto-fail the pause.

@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- unrelated commits => false-positive revise + a wasted cycle).
   plan_base_sha            TEXT,              -- fork-point sha for the adversary diff base
   -- beta.81 (Track A / A1): the harness-owned SESSION cost ESTIMATE surfaced up
-  -- front (from recommendBudget). Persisted so harness_progress / terminal /
+  -- front (from recommendBudget). Persisted so the control result / terminal /
   -- the loop.start audit echo "Estimated ~$X; cap $Y" independent of whether
   -- the agent relays the harness_run note.
   estimated_usd            REAL,              -- session cost estimate (USD) at start
@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   worktree_preserved       INTEGER,           -- 1 = abort kept this worktree on purpose
   -- beta.132: proof that a loop is still sitting on a time-extension question.
   -- That pause is unlike every other one: the loop does not return, it polls
-  -- this row in place. harness_answer used to infer "still listening" from the
+  -- this row in place. a trusted host confirmation used to infer "still listening" from the
   -- five-minute window alone, which is only true while the process lives.
   -- Session 2b4c1d33 answered 28 seconds in, to a listener that had already
   -- died, and was told the run would pick it up. Nothing did.

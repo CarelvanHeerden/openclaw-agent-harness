@@ -134,7 +134,7 @@ CREATE TABLE control_engine_merge_intents (
   authorization_id TEXT NOT NULL UNIQUE REFERENCES control_merge_authorizations(id),
   expected_head_sha TEXT NOT NULL,
   merge_provider_idempotency TEXT NOT NULL UNIQUE,
-  status TEXT NOT NULL CHECK (status IN ('authorized','merged','merge_failed','verification_failed')),
+  status TEXT NOT NULL CHECK (status IN ('authorized','merging','merged','merge_failed','verification_failed')),
   provider_merge_sha TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -198,6 +198,16 @@ CREATE TABLE control_dispatch_intents (
 );
 CREATE INDEX idx_control_dispatch_recovery ON control_dispatch_intents(status, lease_expires_at);
 
+CREATE TABLE control_security_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
+  sha TEXT NOT NULL,
+  complete INTEGER NOT NULL CHECK (complete IN (0,1)),
+  detected INTEGER NOT NULL CHECK (detected IN (0,1)),
+  observed_at INTEGER NOT NULL
+);
+CREATE INDEX idx_control_security_receipts_run ON control_security_receipts(run_id, id DESC);
+
 CREATE TABLE control_readiness_attestations (
   content_digest TEXT PRIMARY KEY,
   run_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
@@ -211,6 +221,36 @@ CREATE TABLE control_readiness_attestations (
   UNIQUE(run_id, generation)
 );
 CREATE INDEX idx_control_readiness_latest ON control_readiness_attestations(run_id, generation DESC);
+`,
+  }),
+  Object.freeze({
+    id: "20260924_004_merge_intent_recovery",
+    sql: `
+ALTER TABLE control_engine_merge_intents RENAME TO control_engine_merge_intents_old;
+CREATE TABLE control_engine_merge_intents (
+  id TEXT PRIMARY KEY,
+  change_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
+  authorization_id TEXT NOT NULL UNIQUE REFERENCES control_merge_authorizations(id),
+  expected_head_sha TEXT NOT NULL,
+  merge_provider_idempotency TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK (status IN ('authorized','merging','merged','merge_failed','verification_failed')),
+  provider_merge_sha TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(change_id)
+);
+INSERT INTO control_engine_merge_intents SELECT * FROM control_engine_merge_intents_old;
+DROP TABLE control_engine_merge_intents_old;
+
+CREATE TABLE IF NOT EXISTS control_security_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
+  sha TEXT NOT NULL,
+  complete INTEGER NOT NULL CHECK (complete IN (0,1)),
+  detected INTEGER NOT NULL CHECK (detected IN (0,1)),
+  observed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_control_security_receipts_run ON control_security_receipts(run_id, id DESC);
 `,
   }),
 ]);

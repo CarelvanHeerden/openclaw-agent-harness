@@ -1,4 +1,4 @@
-const TERMINAL = new Set(["done", "failed", "aborted", "cancelled"]);
+const TERMINAL = new Set(["done", "failed", "aborted", "cancelled", "accounting_incomplete"]);
 function versionParts(version) {
     const match = /^(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/.exec(version.trim());
     if (!match)

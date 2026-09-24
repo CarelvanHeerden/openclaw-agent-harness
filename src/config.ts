@@ -419,26 +419,6 @@ export interface SlackConfig {
   /** Outbound posting target. Optional; there is nothing to listen on. */
   channel: string;
   authorised_users: string[];
-  /** Vault service name for the Slack bot token (used by reactions poller + adapter fallback). Optional; if unset, poller stays idle. */
-  credential_service?: string;
-  /** Interval for reactions poller in ms. Default 15000. */
-  reactions_poll_ms?: number;
-  /**
-   * beta.77: harness-native OUTBOUND progress/terminal delivery. When true
-   * (DEFAULT) and `credential_service` is set AND a session has a REAL Slack
-   * binding (channel + non-synthetic thread passed on `harness_run`), the
-   * harness direct-posts progress/terminal headlines to Slack via the vault bot
-   * token -- an independent path from the wedge-prone agent `api.sendMessage`
-   * turn. Set false to force the poll-only model. Auto-noop (graceful fallback)
-   * when the token or binding is absent. Does NOT affect clarifications/inbound.
-   */
-  native_progress_delivery?: boolean;
-  reactions: {
-    ship_it: string;
-    abort: string;
-    pause: string;
-    budget_bump: string;
-  };
 }
 
 export interface BudgetsConfig {
@@ -666,13 +646,13 @@ export interface LoopConfig {
    * before giving up and shipping. Bounded on purpose: an unanswered question
    * must never be the reason a deliverable is not on GitHub. Default 300s.
    */
-  time_extension_wait_seconds: number;
+  time_extension_wait_seconds?: number;
   /**
    * beta.129: seconds granted when the operator says yes without naming a
    * figure. A reply carrying its own time clause ("2 more hours") wins.
    * Default 1800.
    */
-  time_extension_default_seconds: number;
+  time_extension_default_seconds?: number;
   /**
    * rc.6: fraction of the approved session budget held back for CI repair and
    * the verification tail, carved out before implementation starts spending.
@@ -700,7 +680,7 @@ export interface LoopConfig {
    * deliverable is missing. On timeout the loop does exactly what it would have
    * done without asking. Default 300s.
    */
-  budget_extension_wait_seconds: number;
+  budget_extension_wait_seconds?: number;
   /**
    * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
    * guard (`runningSessions`) is module-scoped and survives a plugin
@@ -800,8 +780,8 @@ export interface LoopConfig {
    * beta.55 (B2): when a worker refuses/confabulates a sub-task even after the
    * beta.54 async-coord retry, instead of hard-failing the whole run, pause the
    * session in `awaiting_clarification` (persisting the worker's own question/
-   * reason + the paused seq) and surface it via harness_progress for a human to
-   * answer with harness_answer. Default true. Set false to keep the old
+   * reason + the paused seq) and surface it via the control result for a human to
+   * answer with a trusted host confirmation. Default true. Set false to keep the old
    * terminal-fail behaviour.
    */
   clarification_escalation_enabled?: boolean;
@@ -820,7 +800,7 @@ export interface LoopConfig {
    * gate exists to prevent, so delegation is a config value an agent must READ
    * rather than an instruction it can decide it received.
    *
-   * With this false, `harness_answer` refuses any answer marked
+   * With this false, `a trusted host confirmation` refuses any answer marked
    * `answeredBy: "automation"`. It does NOT otherwise inspect who is calling:
    * an agent that simply omits the marker is not caught here, and nothing in
    * this repository can catch it. What this buys is that an honest agent cannot
@@ -1032,7 +1012,7 @@ export interface LoopConfig {
   /**
    * beta.100: when a sub-task made a REAL commit but its files do not match the
    * contract paths, pause the run in `awaiting_clarification` (worktree and
-   * commits preserved, resumable via harness_answer) instead of hard-failing.
+   * commits preserved, resumable via a trusted host confirmation) instead of hard-failing.
    * The sub-task still fails verification and nothing is accepted -- only the
    * terminal disposition changes. false restores the pre-b100 hard fail.
    */
@@ -1169,7 +1149,7 @@ export interface LoopConfig {
    * budget covers another cycle.
    *
    * b97 already detected this arc and wrote the operator a note asking them to
-   * run `harness_revise` by hand -- the same cycle the harness could have run
+   * run `a new confirmed change` by hand -- the same cycle the harness could have run
    * while the worktree was still warm. The b118 smoke went 16 -> 8 -> 9 and
    * stopped on the ceiling having spent $12.90 of $30, shipping four blocking
    * findings its own report called "small and mechanical". Both conditions must
@@ -1202,7 +1182,7 @@ export interface LoopConfig {
   /**
    * beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above.
    * The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises.
-   * Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and harness_revise picks them up on request.
+   * Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and a new confirmed change picks them up on request.
    */
   ship_when_no_blocking_findings?: boolean;
   /**
@@ -1313,11 +1293,11 @@ export interface LoopConfig {
    * consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick
    * watches for token/message activity; if the stream goes IDLE (no delta) for
    * this many seconds it emits `loop.worker_stream_slow` and bumps the session
-   * liveness heartbeat (so harness_progress surfaces "worker stream idle Ns"
+   * liveness heartbeat (so the control result surfaces "worker stream idle Ns"
    * instead of the phase looking wedged). OBSERVABILITY ONLY -- it NEVER aborts
    * (a slow stream recovered on b89; a blunt abort would have wrongly killed
    * it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went
-   * idle ~15 min with no signal in harness_progress. Default 90; 0 disables;
+   * idle ~15 min with no signal in the control result. Default 90; 0 disables;
    * clamped [30, 600].
    */
   worker_stream_idle_warn_seconds?: number;
@@ -1732,13 +1712,6 @@ const DEFAULTS: HarnessConfig = {
   slack: {
     channel: "",
     authorised_users: [],
-    native_progress_delivery: true,
-    reactions: {
-      ship_it: "rocket",
-      abort: "x",
-      pause: "pause_button",
-      budget_bump: "moneybag",
-    },
   },
   budgets: {
     monthly_per_user_usd: 1000,
@@ -1793,10 +1766,7 @@ const DEFAULTS: HarnessConfig = {
     adversary_timeout_seconds: 900,
     lead_timeout_seconds: 900,
     session_hard_timeout_seconds: 7200,
-    time_extension_wait_seconds: 300,
-    time_extension_default_seconds: 1800,
     repair_reserve_ratio: 0.3,
-    budget_extension_wait_seconds: 300,
     stuck_loop_seconds: 2700,
     teardown_drain_seconds: 3600,
     stall_watchdog_seconds: 90,
@@ -1835,7 +1805,6 @@ const DEFAULTS: HarnessConfig = {
     revise_max_adoptions_per_cycle: 3,
     revise_route_co_fix_owners: true,
     finding_repair_subtasks_enabled: true,
-    max_cycle_extensions: 1,
     workflow_scope_precheck: true,
     early_exit_no_change_cycle: true,
     ship_when_no_blocking_findings: true,

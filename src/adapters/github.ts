@@ -27,6 +27,7 @@ export interface CreatePrInput {
    */
   labels?: string[];
   logger?: { warn: (msg: string, meta?: unknown) => void };
+  refreshCredential?: () => Promise<{ ghToken: string; apiBase?: string }>;
 }
 
 export interface CreatePrOutput {
@@ -38,13 +39,14 @@ export interface CreatePrOutput {
 }
 
 export async function createPullRequest(input: CreatePrInput): Promise<CreatePrOutput> {
-  const apiBase = input.apiBase ?? "https://api.github.com";
-  const url = `${apiBase}/repos/${input.repoFullName}/pulls`;
-  const post = async (draft: boolean) =>
-    fetch(url, {
+  let apiBase = input.apiBase ?? "https://api.github.com";
+  const post = async (draft: boolean) => {
+    const credential = input.refreshCredential ? await input.refreshCredential() : { ghToken: input.ghToken, apiBase };
+    apiBase = credential.apiBase ?? apiBase;
+    return fetch(`${apiBase}/repos/${input.repoFullName}/pulls`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${input.ghToken}`,
+        Authorization: `Bearer ${credential.ghToken}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",
@@ -58,6 +60,7 @@ export async function createPullRequest(input: CreatePrInput): Promise<CreatePrO
         draft,
       }),
     });
+  };
 
   let res = await post(!!input.draft);
 
@@ -141,14 +144,17 @@ async function applyPrLabels(input: {
   prNumber: number;
   labels?: string[];
   logger?: { warn: (msg: string, meta?: unknown) => void };
+  refreshCredential?: () => Promise<{ ghToken: string; apiBase?: string }>;
 }): Promise<void> {
   const labels = (input.labels ?? []).filter((l) => l.trim() !== "");
   if (labels.length === 0) return;
   try {
-    const res = await fetch(`${input.apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/labels`, {
+    const credential = input.refreshCredential ? await input.refreshCredential() : { ghToken: input.ghToken, apiBase: input.apiBase };
+    const apiBase = credential.apiBase ?? input.apiBase;
+    const res = await fetch(`${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/labels`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${input.ghToken}`,
+        Authorization: `Bearer ${credential.ghToken}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",
@@ -188,14 +194,16 @@ export async function postPrComment(input: {
   body: string;
   ghToken: string;
   apiBase?: string;
+  refreshCredential?: () => Promise<{ ghToken: string; apiBase?: string }>;
 }): Promise<{ ok: boolean; status: number; htmlUrl?: string; error?: string }> {
-  const apiBase = input.apiBase ?? "https://api.github.com";
-  const url = `${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments`;
+  let apiBase = input.apiBase ?? "https://api.github.com";
   try {
-    const res = await fetch(url, {
+    const credential = input.refreshCredential ? await input.refreshCredential() : { ghToken: input.ghToken, apiBase };
+    apiBase = credential.apiBase ?? apiBase;
+    const res = await fetch(`${apiBase}/repos/${input.repoFullName}/issues/${input.prNumber}/comments`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${input.ghToken}`,
+        Authorization: `Bearer ${credential.ghToken}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "Content-Type": "application/json",

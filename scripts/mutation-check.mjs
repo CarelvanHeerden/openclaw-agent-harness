@@ -629,37 +629,6 @@ const MUTATIONS = [
     tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
   },
   {
-    name: "terminal merge advice (b108): 'Done' alone got do_not_merge PRs merged",
-    file: "dist/orchestrator/progress.js",
-    find: "return `Done${pr}${cost}.${mergeAdvice(input.mergeRecommendation, input.mergeRecommendationReason)}`;",
-    replace: "return `Done${pr}${cost}.`;",
-    tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
-  },
-  {
-    name: "the revise hint (b108): knowing a PR is bad is not knowing what to do",
-    file: "dist/orchestrator/progress.js",
-    find: 'const next = /harness_revise/i.test(reason ?? "") ? " Ask me to revise it to continue." : "";',
-    replace: 'const next = "";',
-    tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
-  },
-  {
-    name: "the work log (b108): phase tells you it is alive, not that it is right",
-    file: "dist/orchestrator/progress.js",
-    find: "worklog: renderWorklog(stRows, plannedOrStarted),",
-    replace: "worklog: [],",
-    tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
-  },
-  {
-    name: "help stays in sync (b108): the README drifted to 9 of 19 tools unnoticed",
-    file: "dist/tools/help-content.js",
-    // The bare name also appears in an example's `tools:` array, and rc.6 made
-    // ambiguous anchors an error rather than a silent first-match. Aimed at the
-    // canonical list, which is the one the README is compared against.
-    find: '    "harness_list_revisable",\n    "harness_revise",\n',
-    replace: '    "harness_list_revisable",\n',
-    tests: ["tests/beta108-bounds-isolation-and-surface.test.mjs"],
-  },
-  {
     name: "the merge gate (b109): a revise carrying only lows is mergeable",
     file: "dist/orchestrator/merge-recommendation.js",
     find: "if (blockingCount === 0) {",
@@ -1401,22 +1370,6 @@ const MUTATIONS = [
       "          sessionId,\n        );\n        return false;",
     tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
   },
-  {
-    // Preserving the branch is only half the fix; the operator has to be told.
-    // Behavioural test => mutate the compiled file the suite actually loads.
-    name: "a preserved abort SAYS so (b120): work saved but never mentioned is work the operator redoes",
-    file: "dist/orchestrator/progress.js",
-    find: "                if (ev.event === \"loop.abort_worktree_preserved\")\n                    worktreePreserved = true;",
-    replace: "                if (false)\n                    worktreePreserved = true;",
-    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
-  },
-  {
-    name: "an abort headline names its cause (b120): 'Aborted $18.46.' was the entire account of a two-hour run",
-    file: "dist/orchestrator/progress.js",
-    find: "    if (input.status === \"aborted\") {\n        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";",
-    replace: "    if (input.status === \"aborted\") {\n        const why = \"\";",
-    tests: ["tests/beta120-abort-salvage-and-routing.test.mjs"],
-  },
 
   // --- beta.122: the b121 smoke lost two correct commits to a rename ---
   {
@@ -1452,35 +1405,6 @@ const MUTATIONS = [
     find: '    lines.push(bullet("accept", "the commit is fine and the contract path was wrong -- keep the work and carry on"));',
     replace: "",
     tests: ["tests/beta122-branch-identity-and-clarify.test.mjs", "tests/beta111-clarify-and-typecheck.test.mjs"],
-  },
-  {
-    name: "a budget at the gate is applied (b122): 'Confirm, Budget $40' became an acceptance criterion and the run stayed at $10",
-    file: "dist/tools/brief-confirmation.js",
-    // beta.123: the anchor moved from `raw` to `working` when the time clause
-    // started being cut out before money is matched.
-    find: "    const budgetUsd = uniqueBudgets.length === 1 ? uniqueBudgets[0] : undefined;",
-    replace: "    const budgetUsd = undefined;",
-    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs", "tests/beta123-confirmation-clauses.test.mjs"],
-  },
-  {
-    // Fail the OTHER way too: a parser that swallows the whole reply would
-    // approve corrections it should have surfaced.
-    name: "a budget plus a correction is still a correction (b122): approving on a stripped clause would start the wrong build",
-    file: "dist/tools/brief-confirmation.js",
-    find: "            featureRemainder.length === 0 &&",
-    replace: "            true &&",
-    tests: [
-      "tests/beta122-branch-identity-and-clarify.test.mjs",
-      "tests/rc6-typed-approval.test.mjs",
-      "tests/rc13-brief-proposal.test.mjs",
-    ],
-  },
-  {
-    name: "the sub-task counter counts the plan (b122): 'Executing sub-task 1/1' described a ten-part plan",
-    file: "dist/orchestrator/progress.js",
-    find: "    const plannedOrStarted = Math.max(all.length, plannedTotal);",
-    replace: "    const plannedOrStarted = all.length;",
-    tests: ["tests/beta122-branch-identity-and-clarify.test.mjs"],
   },
 
   // ---- beta.123 -------------------------------------------------------------
@@ -1536,26 +1460,6 @@ const MUTATIONS = [
   // to the seq that recorded the failure" asserts the comparison structurally
   // against the source. Named here so the gap stays visible rather than assumed
   // closed.
-  {
-    name: "time and money are parsed separately (b123): 'a time budget of 3 hours' read as a $3 cap",
-    file: "dist/tools/brief-confirmation.js",
-    // Re-aimed in rc.6. The old anchor was the single `TIME_CLAUSE.exec` call,
-    // which is now one of three patterns tried in order -- and `BUDGET_OF_DURATION`
-    // matches this very string, so disabling `TIME_CLAUSE` alone changes nothing
-    // and the mutation reported a coverage gap that was really redundancy.
-    //
-    // The cut is the narrower half of b123's mechanism and the half that names
-    // the bug: recognising the duration is not enough, because if the words stay
-    // in the string the money regex reads "budget of 3 hours" as a $3 cap. This
-    // anchor reproduces exactly that.
-    find:
-      "            addControlValue(timeoutValues, seconds, \"timeout\", match[0].trim(), ambiguities);\n" +
-      "            working = tidyRemainder(working.replace(match[0], \" \"));",
-    replace:
-      "            addControlValue(timeoutValues, seconds, \"timeout\", match[0].trim(), ambiguities);\n" +
-      "            void match;",
-    tests: ["tests/beta123-confirmation-clauses.test.mjs"],
-  },
 
   {
     name: "a granted cycle is actually RUN (b124): b119's extension was authorised and discarded on every run for four releases",
@@ -1934,13 +1838,6 @@ const MUTATIONS = [
     file: "dist/orchestrator/loop.js",
     find: 'this.deps.state.audit("loop.pr_opened"',
     replace: 'void 0 && this.deps.state.audit("loop.pr_opened"',
-    tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
-  },
-  {
-    name: "the confirmation gate names the clock (b129): b123 parsed the time clause and told nobody",
-    file: "dist/tools/brief-confirmation.js",
-    find: `"confirm, budget $40 with a time budget of 4 hours"`,
-    replace: `"confirm, budget $40"`,
     tests: ["tests/beta129-wall-clock-and-salvage.test.mjs"],
   },
 
@@ -2819,26 +2716,6 @@ const MUTATIONS = [
     tests: ["tests/revise-guidance.test.mjs"],
   },
   {
-    // StitchGuard #1084 was not a worker ignoring a finding. It was a worker
-    // satisfying the finding's wording with a code comment. Strip the clause
-    // that rules that out and the guidance is just another restatement.
-    name: "a responsive-but-inert change is not a fix (revise): the #1084 dodge stays named",
-    file: "dist/tools/revise-guidance.js",
-    find: "does NOT count as addressing that finding. ",
-    replace: "is one way to address that finding. ",
-    tests: ["tests/revise-guidance.test.mjs"],
-  },
-  {
-    // Guidance must not be able to retire a finding. Remove the sentence that
-    // says so and the only thing standing between a steer and a quiet
-    // severity downgrade is the model's own restraint.
-    name: "guidance cannot weaken the gate (revise): the constraint must be stated, not assumed",
-    file: "dist/tools/revise-guidance.js",
-    find: "This ADDS intent and cannot subtract: it does not drop any finding and does not lower any finding's severity. ",
-    replace: "",
-    tests: ["tests/revise-guidance.test.mjs"],
-  },
-  {
     // Position is load-bearing: guidance is the intent the findings serve, so a
     // worker must read it before reaching finding 3, not after.
     name: "guidance governs the findings (revise): it must be read before them, not after",
@@ -2855,24 +2732,6 @@ const MUTATIONS = [
     file: "src/index.ts",
     find: "        operatorGuidance: params.brief.operatorGuidance,",
     replace: "        operatorGuidance: undefined,",
-    tests: ["tests/revise-guidance.test.mjs"],
-  },
-  {
-    // Whitespace-only input must be the same as no input, or an empty
-    // AUTHORITATIVE instruction is injected above every finding.
-    name: "empty guidance is no guidance (revise): an empty authoritative line is worse than none",
-    file: "dist/tools/revise-guidance.js",
-    find: "    return flattened.length > 0 ? flattened : undefined;",
-    replace: "    return flattened;",
-    tests: ["tests/revise-guidance.test.mjs"],
-  },
-  {
-    // The operator's words must survive verbatim; a normaliser that also
-    // truncates would silently change what was asked for.
-    name: "the operator's words survive (revise): normalising must not edit the instruction",
-    file: "dist/tools/revise-guidance.js",
-    find: "    const flattened = raw.replace(/\\s+/g, \" \").trim();",
-    replace: "    const flattened = raw.replace(/\\s+/g, \" \").trim().slice(0, 20);",
     tests: ["tests/revise-guidance.test.mjs"],
   },
   {
@@ -3357,39 +3216,6 @@ const MUTATIONS = [
     tests: ["tests/rc6-typed-approval.test.mjs"],
   },
   {
-    // Reading the shorthand at all.
-    name: "bare shorthand is read as limits (rc.6): '$60, 10 hours' goes back to meaning nothing",
-    file: "dist/tools/brief-confirmation.js",
-    find: "            if ((duration || money) && (!trial || isBriefConfirmation(trial))) {",
-    replace: "        if (false) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
-    name: "please continue is an explicit confirmation (rc.13 smoke)",
-    file: "dist/tools/brief-confirmation.js",
-    find: "    \"continue\",",
-    replace: "",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
-    // ...and the gate that keeps it from eating the feature. Without the
-    // affirmation-only condition, "the price threshold should be $60" caps the
-    // run at $60 and deletes the words from the operator's correction.
-    name: "shorthand needs an affirmation-only reply (rc.6): a price in a correction becomes the budget",
-    file: "dist/tools/brief-confirmation.js",
-    find: "            if ((duration || money) && (!trial || isBriefConfirmation(trial))) {",
-    replace: "            if (duration || money) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
-    // A named control with no usable number must not fall through to prose.
-    name: "an unusable amount is an ambiguity (rc.6): 'budget -$50' silently keeps the default",
-    file: "dist/tools/brief-confirmation.js",
-    find: "    if (MONEY_CUE_RESIDUE.test(working) || CURRENCY_CUE_RESIDUE.test(working)) {",
-    replace: "    if (false) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
     // Freshness must still FAIL on evidence. rc.6 loosened the no-evidence case;
     // if it also loosened the evidenced one, a genuinely stale artifact ships.
     name: "a moved input makes an artifact stale (rc.6): evidenced staleness stops being caught",
@@ -3697,19 +3523,6 @@ const MUTATIONS = [
     file: "dist/orchestrator/loop.js",
     find: "            db.prepare(`INSERT INTO provider_calls",
     replace: "            db.prepare(`INSERT INTO provider_calls_missing",
-    tests: ["tests/rc11-remediation.test.mjs"],
-  },
-  {
-    name: "rc.11: arbitrary cancellation prose cannot trigger higher-cap advice",
-    file: "dist/orchestrator/progress.js",
-    find:
-      "    if (input.status === \"aborted\") {\n" +
-      "        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";\n" +
-      "        const reserveHint = input.terminalCause === \"budget_exhausted\" ? ` Re-run at a higher cap to finish.` : \"\";",
-    replace:
-      "    if (input.status === \"aborted\") {\n" +
-      "        const why = input.failureDetail ? ` — ${input.failureDetail}` : \"\";\n" +
-      "        const reserveHint = /budget|reserve/i.test(input.failureDetail ?? \"\") ? ` Re-run at a higher cap to finish.` : \"\";",
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
@@ -4078,13 +3891,6 @@ const MUTATIONS = [
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
-    name: "rc.13 smoke: preservation qualifiers stay outside feature scope",
-    file: "dist/tools/brief-confirmation.js",
-    find: "        if (PRESERVATION_WHOLE.test(clause)) {",
-    replace: "        if (false) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
     name: "rc.13 smoke: labelled OBSERVE_RESULT fences are parsed",
     file: "dist/orchestrator/observe-contract.js",
     find: "    if (labelledFence)\n        return JSON.parse(labelledFence[1]);",
@@ -4215,27 +4021,6 @@ const MUTATIONS = [
     tests: ["tests/rc11-remediation.test.mjs"],
   },
   {
-    name: "rc.13 post-audit: preservation aliases never enter feature scope",
-    file: "dist/tools/brief-confirmation.js",
-    find: "        if (PRESERVATION_WHOLE.test(clause)) {",
-    replace: "        if (false) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
-    name: "rc.13 post-audit: attached holds prevent all writes and dispatch",
-    file: "dist/tools/brief-confirmation.js",
-    find: "        if (HOLD_CLAUSE.test(clause)) {",
-    replace: "        if (false) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
-    name: "rc.13 post-audit: historical control text is not authorization",
-    file: "dist/tools/brief-confirmation.js",
-    find: "        if (CONTROL_REFERENCE.test(clause) && CONDITIONAL_OR_HISTORICAL.test(clause)) {",
-    replace: "        if (false) {",
-    tests: ["tests/rc6-typed-approval.test.mjs"],
-  },
-  {
     name: "rc.13 post-audit: confirmation writes roll back as one transaction",
     file: "dist/tools/registration.js",
     find: "                    confirmationDb.exec(\"ROLLBACK TO SAVEPOINT brief_confirmation_apply\");",
@@ -4278,31 +4063,10 @@ const MUTATIONS = [
     tests: ["tests/rc13-brief-proposal.test.mjs"],
   },
   {
-    name: "rc.13 brief approval: exact payload hash binds confirmation",
-    file: "dist/tools/brief-proposal.js",
-    find: "        suppliedHash === briefStateHash(proposal) &&",
-    replace: "        true &&",
-    tests: ["tests/rc13-brief-proposal.test.mjs"],
-  },
-  {
-    name: "rc.13 brief approval: changed base invalidates proposal",
-    file: "dist/tools/brief-proposal.js",
-    find: "        proposal.baseHash === briefStateHash(base) &&",
-    replace: "        true &&",
-    tests: ["tests/rc13-brief-proposal.test.mjs"],
-  },
-  {
     name: "rc.13 brief approval: pre-spend authorisation cannot be delegated",
     file: "dist/tools/registration.js",
     find: "            if (automated && isBriefConfirmationPause(row.clarification_subtask)) {",
     replace: "            if (false) {",
-    tests: ["tests/rc13-brief-proposal.test.mjs"],
-  },
-  {
-    name: "rc.13 brief approval: limits alone are not authorisation",
-    file: "dist/tools/brief-confirmation.js",
-    find: "            featureRemainder.length === 0 &&\n            sawApproval,",
-    replace: "            featureRemainder.length === 0 &&\n            true,",
     tests: ["tests/rc13-brief-proposal.test.mjs"],
   },
   {
@@ -4351,15 +4115,6 @@ const MUTATIONS = [
   "file": "dist/tools/registration.js",
   "find": "            AND consumed_at IS NULL AND expires_at > ?\n            AND reviewed_through >= review_page_count",
   "replace": "            AND consumed_at IS NULL AND ? >= 0\n            AND reviewed_through >= review_page_count",
-  "tests": [
-    "tests/rc13-human-provenance.test.mjs"
-  ]
-},
-  {
-  "name": "rc.13 human provenance: receipt binds pending state",
-  "file": "dist/tools/human-answer-command.js",
-  "find": "export function answerStateHash(value) {\n    return createHash(\"sha256\").update(JSON.stringify(value)).digest(\"hex\");\n}",
-  "replace": "export function answerStateHash(value) {\n    return \"0\".repeat(64);\n}",
   "tests": [
     "tests/rc13-human-provenance.test.mjs"
   ]

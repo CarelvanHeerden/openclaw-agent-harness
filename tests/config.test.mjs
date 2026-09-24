@@ -19,7 +19,8 @@ test("config: minimal input applies defaults",
     assert.equal(cfg.slack.channel, "C1");
     assert.equal(cfg.budgets.monthly_per_user_usd, 1000);
     assert.equal(cfg.loop.max_cycles, 3);
-    assert.deepEqual(cfg.slack.reactions, { ship_it: "rocket", abort: "x", pause: "pause_button", budget_bump: "moneybag" });
+    assert.equal(cfg.slack.reactions, undefined);
+    assert.equal(cfg.slack.native_progress_delivery, undefined);
   });
 
 // beta.133 removed `slack.listener_enabled`. Until then, parsing THREW when the

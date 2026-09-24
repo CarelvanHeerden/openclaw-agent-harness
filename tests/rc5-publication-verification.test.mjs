@@ -801,7 +801,7 @@ test("rc5: finalisation no longer chooses its callback from the preview CONFIG F
     "this exact ternary is the #1168 defect: a config flag standing in for a fact about the remote",
   );
   // And the PR-only callback is only ever reached behind proven reuse.
-  const i = src.indexOf("prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester });");
+  const i = src.indexOf("prUrl = await this.deps.openPullRequest({ plan, brief, reviewReport, requester, resolveCredentialForMutation:");
   assert.ok(i > 0);
   const before = src.slice(Math.max(0, i - 900), i);
   assert.match(before, /if \(reuse && this\.deps\.openPullRequest\)/);

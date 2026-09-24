@@ -55,43 +55,6 @@
             "pattern": "^U[A-Z0-9]+$"
           },
           "description": "Slack user IDs allowed to open sessions or drop control reactions"
-        },
-        "credential_service": {
-          "type": "string",
-          "description": "Vault service name for the Slack bot token. Enables reactions poller."
-        },
-        "reactions_poll_ms": {
-          "type": "integer",
-          "minimum": 3000,
-          "maximum": 300000,
-          "default": 15000
-        },
-        "reactions": {
-          "type": "object",
-          "additionalProperties": false,
-          "properties": {
-            "ship_it": {
-              "type": "string",
-              "default": "rocket"
-            },
-            "abort": {
-              "type": "string",
-              "default": "x"
-            },
-            "pause": {
-              "type": "string",
-              "default": "pause_button"
-            },
-            "budget_bump": {
-              "type": "string",
-              "default": "moneybag"
-            }
-          }
-        },
-        "native_progress_delivery": {
-          "type": "boolean",
-          "default": true,
-          "description": "beta.77: harness direct-posts progress/terminal headlines to Slack via the vault bot token when credential_service is set and a session has a real Slack binding (channel + non-synthetic thread). Independent of the wedge-prone agent api.sendMessage turn. Set false to force poll-only. Does not affect clarifications/inbound."
         }
       }
     },
@@ -300,33 +263,12 @@
           "maximum": 86400,
           "default": 7200
         },
-        "time_extension_wait_seconds": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 3600,
-          "default": 300,
-          "description": "beta.129: how long the loop waits in place for an answer to the time-extension question before shipping anyway. An unanswered question must never be the reason a deliverable is missing from GitHub. Set 0 to disable waiting."
-        },
-        "time_extension_default_seconds": {
-          "type": "integer",
-          "minimum": 60,
-          "maximum": 86400,
-          "default": 1800,
-          "description": "beta.129: seconds added when the operator approves an extension without naming a figure. A reply with its own time clause wins over this."
-        },
         "repair_reserve_ratio": {
           "type": "number",
           "minimum": 0,
           "maximum": 0.5,
           "default": 0.3,
           "description": "rc.6: fraction of the approved session budget held back for CI repair and the verification tail, carved out before implementation spends anything. #1184 spent $53.81 of a $50 budget and was then refused a repair cycle for being over $50 -- implementation is SOFT and may cross the number, repair was measured HARD against it, so repair paid for implementation's overspend. A reserve gives repair its own pot, measured against repair's own spend, which no amount of implementation spend can consume. Clamped to 0.5; a larger reserve starves ordinary work. Default 0.3."
-        },
-        "budget_extension_wait_seconds": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 3600,
-          "default": 300,
-          "description": "rc.6: how long the loop waits, in place, for an answer to a budget question before continuing exactly as it would have without asking. Bounded on purpose: an unanswered question must never be the reason a deliverable is missing. Set 0 to disable waiting."
         },
         "subtask_concurrency": {
           "type": "integer",
@@ -516,13 +458,6 @@
           "default": true,
           "description": "rc.3: give a reviewer finding whose files no sub-task declared its own repair sub-task, with exactly those files granted and a verification contract generated from them. Such a finding used to be broadcast to every sub-task as context; on StitchGuard PR #1168 findings about the integration UI, credentials, authorization, OpenAPI, help content, the schema and the migration were shown to tasks like 'Declare SAST workflow routes', whose workers correctly refused to edit files outside their scope -- so the finding survived, was re-raised, and was re-routed to the same people next cycle. Set false for the pre-rc.3 broadcast-to-all behaviour."
         },
-        "max_cycle_extensions": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 5,
-          "default": 1,
-          "description": "beta.119: extra execute+review cycles the loop may grant itself past max_cycles when the adversary's finding count is trending DOWN and this run's own average cycle cost still fits inside the session ceiling and the per-user daily cap. b97 already detected this arc and merely asked the operator to re-run harness_revise by hand; the b118 smoke went 16 -> 8 -> 9 findings and stopped on the ceiling having spent $12.90 of $30, shipping four blocking findings its own report called small and mechanical. Both conditions must hold, so a stuck run (flat or rising findings) still stops on time. Set 0 to restore the pre-b119 hard ceiling."
-        },
         "workflow_scope_precheck": {
           "type": "boolean",
           "default": true,
@@ -550,7 +485,7 @@
         "ship_when_no_blocking_findings": {
           "type": "boolean",
           "default": true,
-          "description": "beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above. The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises. Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and harness_revise picks them up on request."
+          "description": "beta.109: end the review loop when the adversary says `revise` but no finding is diff-addressable at medium severity or above. The adversary writes `revise` while ANY finding is open, including the informational ones it emits to record that a prior finding was fixed, so a run converges to a floor it can never cross: ProjectThanos PR #932 went 18 -> 15 -> 17 across three cycles and finished with ten low, six info and one low convention finding, nothing at medium or above, over three separate revises. Medium and above still cycles, so this cannot ship real defects; the residual lows go on the PR body and a new confirmed change picks them up on request."
         },
         "auto_resolve_satisfied_contract": {
           "type": "boolean",
@@ -698,7 +633,7 @@
           "minimum": 30,
           "maximum": 600,
           "default": 90,
-          "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so harness_progress surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in harness_progress. Default 90; clamped [30,600]."
+          "description": "beta.90 (Feature 2): worker STREAM-SLOW idle-warn window (seconds). Inside consumeWorkerStream, once the worker SDK stream has OPENED, a 30s tick watches for token/message activity; if the stream goes IDLE (no delta) for this many seconds it emits loop.worker_stream_slow and bumps the session liveness heartbeat (last_progress_at) so the control result surfaces 'worker stream idle Ns' instead of the phase looking wedged. OBSERVABILITY ONLY -- it NEVER aborts (a slow stream recovered on b89; a blunt abort would have wrongly killed it). Root cause: session 041bd3d3 sub-task 2, worker stream opened then went idle ~15 min with no signal in the control result. Default 90; clamped [30,600]."
         },
         "deterministic_final_scope_check": {
           "type": "boolean",
@@ -1172,7 +1107,7 @@
             "always"
           ],
           "default": "always",
-          "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; harness_answer can approve or change the brief, budget, or time limit."
+          "description": "Pause for an operator to confirm every newly crystallised brief before planning, branch creation, worker execution, review, CI, pushing, or other material spend. 'always' is the safe default for low-, medium-, and high-risk runs. 'high_risk' is an explicit override that gates only briefs at or above confirm_min_risk. 'off' is an explicit override that disables the gate. The confirmation shows scope, repository, risk, estimated cost, effective budget, and wall-clock limit; a new confirmed request can approve or change the brief, budget, or time limit."
         },
         "confirm_min_risk": {
           "type": "string",

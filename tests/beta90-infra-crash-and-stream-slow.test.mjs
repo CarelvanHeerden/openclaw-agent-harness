@@ -206,7 +206,7 @@ test("rc3: a cycle-1 INFRA crash with NO prior review preserves the worktree ins
     assert.equal(prCalls, 0, "no PR is opened for code no adversary has seen");
     assert.equal(releaseCalls, 0, "the worktree is kept, so the work is recoverable");
     assert.match(outcome.reason, /no adversary review has ever run/i);
-    assert.match(outcome.reason, /harness_resume/, "the operator is told how to get the work");
+    assert.match(outcome.reason, /new confirmed change|confirmed control/i, "the operator is told how to get the work");
 
     const row = state.db.prepare(`SELECT status, worktree_preserved, final_pr_url FROM sessions WHERE id='I1'`).get();
     assert.equal(row.status, "failed");

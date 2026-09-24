@@ -18,41 +18,76 @@ export class InternalMergeService {
         this.provider = provider;
         this.now = now;
     }
-    registerAuthorization(a) { const { bindingDigest, ...unsigned } = a; if (mergeAuthorizationDigest(unsigned) !== bindingDigest)
-        throw new Error("Invalid merge authorization binding"); this.db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,binding_digest,nonce,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(a.id, a.runId, a.actorIdentity, a.conversationIdentity, a.repository, a.baseRef, a.prNumber, a.expectedHeadSha, a.bindingDigest, a.nonce, a.issuedAt, a.expiresAt); }
+    registerAuthorizationAndIntent(a, now = this.now()) {
+        const { bindingDigest, ...unsigned } = a;
+        if (mergeAuthorizationDigest(unsigned) !== bindingDigest)
+            throw new Error("Invalid merge authorization binding");
+        const intentId = randomUUID(), key = `control-merge:${a.runId}:${a.expectedHeadSha}`;
+        this.db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_number,expected_head_sha,binding_digest,nonce,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(a.id, a.runId, a.actorIdentity, a.conversationIdentity, a.repository, a.baseRef, a.prNumber, a.expectedHeadSha, a.bindingDigest, a.nonce, a.issuedAt, a.expiresAt);
+        this.db.prepare(`INSERT INTO control_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES (?,?,?,?,?,'authorized',?,?)`).run(intentId, a.runId, a.id, a.expectedHeadSha, key, now, now);
+        return intentId;
+    }
+    registerAuthorization(a) {
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            this.registerAuthorizationAndIntent(a);
+            const current = this.db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(a.runId);
+            if (current?.state === "pr_ready") {
+                this.db.prepare(`UPDATE control_runs SET state='awaiting_merge',version=version+1,updated_at=? WHERE id=? AND state='pr_ready' AND version=?`).run(this.now(), a.runId, current.version);
+                this.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,'pr_ready','awaiting_merge',?,?,'merge_service','merge_authorized',?)`).run(a.runId, current.version, current.version + 1, this.now());
+            }
+            this.db.exec("COMMIT");
+        }
+        catch (error) {
+            try {
+                this.db.exec("ROLLBACK");
+            }
+            catch { }
+            throw error;
+        }
+    }
+    async recoverPending() {
+        const rows = this.db.prepare(`SELECT authorization_id FROM control_engine_merge_intents WHERE status IN ('authorized','merging','merge_failed','verification_failed') ORDER BY created_at`).all();
+        for (const row of rows)
+            await this.merge(row.authorization_id).catch(() => undefined);
+    }
     async merge(id) {
         const now = this.now();
         const auth = this.db.prepare(`SELECT * FROM control_merge_authorizations WHERE id=?`).get(id);
         if (!auth)
             return Object.freeze({ status: "refused", code: "merge_attestation_required" });
-        if (Number(auth.expires_at) < now)
+        if (Number(auth.expires_at) < now && auth.consumed_at === null)
             return Object.freeze({ status: "refused", code: "authorization_expired" });
         const run = this.repository.getRun(String(auth.run_id));
-        if (!run || (run.state !== "pr_ready" && run.state !== "awaiting_merge" && run.state !== "done"))
+        if (!run || (run.state !== "awaiting_merge" && run.state !== "done" && !(run.state === "failed" && run.terminalCode === "merge_failed")))
             return Object.freeze({ status: "refused", code: "merge_attestation_required" });
         const repository = String(auth.repository_identity), baseRef = String(auth.base_ref), prNumber = Number(auth.pr_number), expectedHeadSha = String(auth.expected_head_sha);
-        const proposal = this.db.prepare(`SELECT published_sha,readiness_digest,generation FROM control_proposals WHERE run_id=?`).get(run.id);
+        const proposal = this.db.prepare(`SELECT published_sha,readiness_digest FROM control_proposals WHERE run_id=?`).get(run.id);
         if (!proposal || proposal.published_sha !== expectedHeadSha || !proposal.readiness_digest)
             return Object.freeze({ status: "refused", code: "readiness_changed" });
         const readinessRow = this.db.prepare(`SELECT input_json,content_digest FROM control_readiness_attestations WHERE run_id=? ORDER BY generation DESC LIMIT 1`).get(run.id);
         if (!readinessRow || readinessRow.content_digest !== proposal.readiness_digest)
             return Object.freeze({ status: "refused", code: "readiness_changed" });
+        const intent = this.db.prepare(`SELECT id,status,provider_merge_sha,merge_provider_idempotency,authorization_id FROM control_engine_merge_intents WHERE change_id=?`).get(run.id);
+        if (!intent || intent.authorization_id !== id)
+            return Object.freeze({ status: "refused", code: "merge_attestation_required" });
+        if (intent.status === "merged" && intent.provider_merge_sha && await this.provider.verifyMerged({ repository, prNumber, mergeSha: intent.provider_merge_sha }))
+            return Object.freeze({ status: "already_merged", mergeSha: intent.provider_merge_sha });
         let inspection;
         try {
             inspection = await this.provider.inspect({ repository, prNumber });
         }
         catch {
+            this.failRun(run.id, intent.id, "provider_failure");
             return Object.freeze({ status: "merge_failed", code: "provider_failure" });
         }
-        const existing = this.db.prepare(`SELECT id,status,provider_merge_sha,merge_provider_idempotency FROM control_engine_merge_intents WHERE change_id=?`).get(run.id);
-        if (existing?.status === "merged" && existing.provider_merge_sha && await this.provider.verifyMerged({ repository, prNumber, mergeSha: existing.provider_merge_sha }))
-            return Object.freeze({ status: "already_merged", mergeSha: existing.provider_merge_sha });
         if (inspection.merged) {
-            const mergeSha = inspection.mergeSha ?? existing?.provider_merge_sha ?? undefined;
+            const mergeSha = inspection.mergeSha ?? intent.provider_merge_sha ?? undefined;
             if (mergeSha && await this.provider.verifyMerged({ repository, prNumber, mergeSha })) {
-                this.completeRun(run.id, existing?.id, mergeSha);
+                this.completeRun(run.id, intent.id, mergeSha);
                 return Object.freeze({ status: "already_merged", mergeSha });
             }
+            this.failRun(run.id, intent.id, "verification_failed");
             return Object.freeze({ status: "merge_failed", code: "verification_failed" });
         }
         if (!inspection.open || inspection.repository !== repository || inspection.baseRef !== baseRef || inspection.prNumber !== prNumber)
@@ -62,37 +97,82 @@ export class InternalMergeService {
         const live = evaluatePrReadiness(inspection.readiness, now);
         if (!live.ready || live.verifiedSha !== expectedHeadSha)
             return Object.freeze({ status: "refused", code: "readiness_changed" });
-        const stored = evaluatePrReadiness(JSON.parse(readinessRow.input_json), live.checkedAt);
+        const stored = evaluatePrReadiness(JSON.parse(readinessRow.input_json), now);
         if (!stored.ready || stored.verifiedSha !== expectedHeadSha)
             return Object.freeze({ status: "refused", code: "readiness_changed" });
-        const priorConsumed = auth.consumed_at === null ? null : Number(auth.consumed_at);
-        const consumed = this.db.prepare(`UPDATE control_merge_authorizations SET consumed_at=COALESCE(consumed_at,?) WHERE id=? AND (consumed_at IS NULL OR consumed_at=?)`).run(now, id, priorConsumed);
-        if (Number(consumed.changes) !== 1)
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            const current = this.db.prepare(`SELECT consumed_at FROM control_merge_authorizations WHERE id=?`).get(id);
+            const currentIntent = this.db.prepare(`SELECT status FROM control_engine_merge_intents WHERE id=? AND authorization_id=?`).get(intent.id, id);
+            if (!current || !currentIntent || !["authorized", "merging", "merge_failed", "verification_failed"].includes(currentIntent.status))
+                throw new Error("authorization_replayed");
+            if (current.consumed_at === null)
+                this.db.prepare(`UPDATE control_merge_authorizations SET consumed_at=? WHERE id=? AND consumed_at IS NULL`).run(now, id);
+            this.db.prepare(`UPDATE control_engine_merge_intents SET status='merging',updated_at=? WHERE id=?`).run(now, intent.id);
+            this.db.exec("COMMIT");
+        }
+        catch (error) {
+            try {
+                this.db.exec("ROLLBACK");
+            }
+            catch { }
             return Object.freeze({ status: "refused", code: "authorization_replayed" });
-        let intent = existing;
-        if (!intent) {
-            const intentId = randomUUID(), key = `control-merge:${run.id}:${expectedHeadSha}`;
-            this.db.prepare(`INSERT INTO control_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES (?,?,?,?,?,'authorized',?,?)`).run(intentId, run.id, id, expectedHeadSha, key, now, now);
-            intent = { id: intentId, status: "authorized", provider_merge_sha: null, merge_provider_idempotency: key };
         }
         try {
             const merged = await this.provider.merge({ repository, prNumber, expectedHeadSha, idempotencyKey: intent.merge_provider_idempotency });
-            this.db.prepare(`UPDATE control_engine_merge_intents SET provider_merge_sha=?,status='authorized',updated_at=? WHERE id=?`).run(merged.mergeSha, this.now(), intent.id);
+            this.db.prepare(`UPDATE control_engine_merge_intents SET provider_merge_sha=?,updated_at=? WHERE id=?`).run(merged.mergeSha, this.now(), intent.id);
             if (!await this.provider.verifyMerged({ repository, prNumber, mergeSha: merged.mergeSha })) {
-                this.db.prepare(`UPDATE control_engine_merge_intents SET status='verification_failed',updated_at=? WHERE id=?`).run(this.now(), intent.id);
+                this.failRun(run.id, intent.id, "verification_failed");
                 return Object.freeze({ status: "merge_failed", code: "verification_failed" });
             }
             this.completeRun(run.id, intent.id, merged.mergeSha);
             return Object.freeze({ status: "merged", mergeSha: merged.mergeSha });
         }
         catch {
-            this.db.prepare(`UPDATE control_engine_merge_intents SET status='merge_failed',updated_at=? WHERE id=?`).run(this.now(), intent.id);
+            this.failRun(run.id, intent.id, "provider_failure");
             return Object.freeze({ status: "merge_failed", code: "provider_failure" });
         }
     }
-    completeRun(runId, intentId, mergeSha) { if (intentId)
-        this.db.prepare(`UPDATE control_engine_merge_intents SET status='merged',provider_merge_sha=?,updated_at=? WHERE id=?`).run(mergeSha, this.now(), intentId); let current = this.repository.getRun(runId); if (current?.state === "pr_ready")
-        current = this.repository.transition({ runId, expectedVersion: current.version, to: "awaiting_merge", actor: "merge_service", reason: "merge_authorized", at: this.now() }); if (current?.state === "awaiting_merge")
-        this.repository.transition({ runId, expectedVersion: current.version, to: "done", actor: "merge_service", reason: "merge_verified", at: this.now() }); }
+    failRun(runId, intentId, code) {
+        const at = this.now();
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            this.db.prepare(`UPDATE control_engine_merge_intents SET status=?,updated_at=? WHERE id=?`).run(code === "provider_failure" ? "merge_failed" : "verification_failed", at, intentId);
+            const current = this.db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(runId);
+            if (current?.state === "awaiting_merge") {
+                this.db.prepare(`UPDATE control_runs SET state='failed',version=version+1,terminal_code='merge_failed',updated_at=? WHERE id=? AND state='awaiting_merge' AND version=?`).run(at, runId, current.version);
+                this.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,'awaiting_merge','failed',?,?,'merge_service',?,?)`).run(runId, current.version, current.version + 1, code, at);
+                this.db.prepare(`UPDATE control_proposals SET terminal_summary=?,updated_at=? WHERE run_id=?`).run(`Merge failed: ${code}`, at, runId);
+            }
+            this.db.exec("COMMIT");
+        }
+        catch (error) {
+            try {
+                this.db.exec("ROLLBACK");
+            }
+            catch { }
+            throw error;
+        }
+    }
+    completeRun(runId, intentId, mergeSha) {
+        const at = this.now();
+        this.db.exec("BEGIN IMMEDIATE");
+        try {
+            this.db.prepare(`UPDATE control_engine_merge_intents SET status='merged',provider_merge_sha=?,updated_at=? WHERE id=?`).run(mergeSha, at, intentId);
+            const current = this.db.prepare(`SELECT state,version,terminal_code FROM control_runs WHERE id=?`).get(runId);
+            if (current?.state === "awaiting_merge" || (current?.state === "failed" && current.terminal_code === "merge_failed")) {
+                this.db.prepare(`UPDATE control_runs SET state='done',version=version+1,terminal_code=NULL,updated_at=? WHERE id=? AND state=? AND version=?`).run(at, runId, current.state, current.version);
+                this.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,?,'done',?,?,'merge_service','merge_verified',?)`).run(runId, current.state, current.version, current.version + 1, at);
+            }
+            this.db.exec("COMMIT");
+        }
+        catch (error) {
+            try {
+                this.db.exec("ROLLBACK");
+            }
+            catch { }
+            throw error;
+        }
+    }
 }
 //# sourceMappingURL=merge.js.map

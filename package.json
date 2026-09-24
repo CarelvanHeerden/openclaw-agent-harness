@@ -1,7 +1,7 @@
 {
   "name": "openclaw-agent-harness",
   "version": "2.0.0-rc.13",
-  "description": "Multi-agent orchestration harness for OpenClaw. Lead planner + workers + adversarial reviewer, driven from Slack.",
+  "description": "Confirmed control-plane orchestration for bounded repository changes",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -70,5 +70,12 @@
     "url": "https://github.com/CarelvanHeerden/openclaw-agent-harness.git"
   },
   "license": "MIT",
-  "author": "Carel van Heerden"
+  "author": "Carel van Heerden",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./openclaw.plugin.json": "./openclaw.plugin.json"
+  }
 }

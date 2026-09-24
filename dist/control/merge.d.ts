@@ -70,8 +70,11 @@ export declare class InternalMergeService {
     private readonly provider;
     private readonly now;
     constructor(db: DatabaseSync, repository: ControlRepository, provider: MergeProvider, now?: () => number);
+    registerAuthorizationAndIntent(a: VerifiedMergeAuthorization, now?: number): string;
     registerAuthorization(a: VerifiedMergeAuthorization): void;
+    recoverPending(): Promise<void>;
     merge(id: string): Promise<MergeServiceResult>;
+    private failRun;
     private completeRun;
 }
 //# sourceMappingURL=merge.d.ts.map

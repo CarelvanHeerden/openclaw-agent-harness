@@ -59,7 +59,6 @@ const JUSTIFIED = new Map([
   // point of use, so an operator who reads the manifest gets what it promises.
   // That is the difference between them and max_output_tokens, whose read site
   // was a bare `config.models.max_output_tokens` with nothing behind it.
-  ["slack.reactions_poll_ms", "applied at the read site: `config.slack.reactions_poll_ms ?? 15000`"],
   ["repos.never_commit_paths", "applied at the consumer: `(this.opts.neverCommitPaths ?? [])`"],
   ["loop.require_worker_context_strict", "read as `=== true`, so absent behaves as the promised false"],
   ["loop.lead_salvage_truncated_plan", "read as `!== false`, so absent behaves as the promised true"],

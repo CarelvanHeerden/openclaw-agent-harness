@@ -267,7 +267,7 @@ export interface HarnessRuntime {
      * after a failure lost the association.
      *
      * `pr_number` is written on the ship path only, so a session that pushed its
-     * work, opened a PR and then failed holds neither -- and `harness_revise`
+     * work, opened a PR and then failed holds neither -- and `a new confirmed change`
      * refuses a row with no PR. The only route back was to rebuild the feature.
      *
      * Two-phase by construction. The default is a read-only dry run that reports
