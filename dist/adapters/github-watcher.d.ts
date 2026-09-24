@@ -27,7 +27,10 @@ export interface PrWatcherOptions {
     git?: GitAdapter;
     slackNotify?: (channel: string, threadTs: string, text: string) => Promise<unknown>;
     /** Resolves the PAT service to use for a given repo + slack user. */
-    resolveGhToken: (repo: string, slackUserId: string) => Promise<string>;
+    resolveGhToken: (repo: string, slackUserId: string) => Promise<string | {
+        token: string;
+        apiBase: string;
+    }>;
 }
 export declare class PrMergedWatcher {
     private readonly state;

@@ -184,6 +184,8 @@ export class ControlPlaneService {
         const outcome = await this.deps.mergeService.merge(auth.id);
         if (outcome.status === "merged" || outcome.status === "already_merged")
             return { ok: true, changeId, state: "merged", summary: "Pull request merged.", ...(outcome.mergeSha ? { mergeSha: outcome.mergeSha } : {}) };
+        if (outcome.status === "merge_in_progress")
+            return { ok: true, changeId, state: "merging", summary: "Merge accepted; provider reconciliation is still in progress." };
         if (outcome.status === "merge_failed")
             throw new ControlError("merge_failed", "The merge failed after authorization; the failure was recorded durably.");
         throw new ControlError(outcome.code, "Merge readiness changed; merge refused.");

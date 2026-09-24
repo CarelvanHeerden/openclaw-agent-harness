@@ -54,6 +54,8 @@ export type MergeServiceResult = Readonly<{
     status: "already_merged";
     mergeSha?: string;
 } | {
+    status: "merge_in_progress";
+} | {
     status: "refused";
     code: "merge_attestation_required" | "stale_pr_head" | "pr_identity_mismatch" | "readiness_changed" | "authorization_expired" | "authorization_replayed";
 } | {
@@ -74,6 +76,8 @@ export declare class InternalMergeService {
     registerAuthorization(a: VerifiedMergeAuthorization): void;
     recoverPending(): Promise<void>;
     merge(id: string): Promise<MergeServiceResult>;
+    private reconcileClaimedMerge;
+    private refuseRun;
     private failRun;
     private completeRun;
 }

@@ -25,7 +25,7 @@ export interface PrWatcherOptions {
   git?: GitAdapter;
   slackNotify?: (channel: string, threadTs: string, text: string) => Promise<unknown>;
   /** Resolves the PAT service to use for a given repo + slack user. */
-  resolveGhToken: (repo: string, slackUserId: string) => Promise<string>;
+  resolveGhToken: (repo: string, slackUserId: string) => Promise<string | { token: string; apiBase: string }>;
 }
 
 export class PrMergedWatcher {
@@ -72,8 +72,10 @@ export class PrMergedWatcher {
       const info = parsePrUrl(row.final_pr_url);
       if (!info) continue;
       try {
-        const ghToken = await this.opts.resolveGhToken(row.repo, row.requester);
-        const state = await this.fetchPrState(info.owner, info.repo, info.number, ghToken);
+        const credential = await this.opts.resolveGhToken(row.repo, row.requester);
+        const ghToken = typeof credential === "string" ? credential : credential.token;
+        const apiBase = typeof credential === "string" ? "https://api.github.com" : credential.apiBase;
+        const state = await this.fetchPrState(info.owner, info.repo, info.number, ghToken, apiBase);
         if (!state) continue;
         if (state.state === "closed" || state.merged) {
           await this.finalise(row, state);
@@ -92,9 +94,9 @@ export class PrMergedWatcher {
     return closed;
   }
 
-  private async fetchPrState(owner: string, repo: string, number: number, ghToken: string): Promise<{ state: "open" | "closed"; merged: boolean; mergedAt: string | null } | null> {
+  private async fetchPrState(owner: string, repo: string, number: number, ghToken: string, apiBase: string): Promise<{ state: "open" | "closed"; merged: boolean; mergedAt: string | null } | null> {
     const fetchFn = this.opts.fetchImpl ?? fetch;
-    const res = await fetchFn(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
+    const res = await fetchFn(`${apiBase}/repos/${owner}/${repo}/pulls/${number}`, {
       headers: {
         Authorization: `Bearer ${ghToken}`,
         Accept: "application/vnd.github+json",
@@ -174,7 +176,11 @@ export class PrMergedWatcher {
 }
 
 export function parsePrUrl(url: string): { owner: string; repo: string; number: number } | null {
-  const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-  if (!m) return null;
-  return { owner: m[1]!, repo: m[2]!, number: Number(m[3]!) };
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return null;
+    const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
+    if (!m) return null;
+    return { owner: m[1]!, repo: m[2]!, number: Number(m[3]!) };
+  } catch { return null; }
 }

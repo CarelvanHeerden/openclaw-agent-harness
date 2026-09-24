@@ -124,3 +124,19 @@ test("PrMergedWatcher: open PR is left alone",
     const closed = await w.pollOnce();
     assert.equal(closed, 0);
   });
+
+test("PrMergedWatcher: enterprise credential never routes to public GitHub", { skip: PrMergedWatcher === null }, async () => {
+  const state = makeStore();
+  insertShipped(state.db, "S4", "https://ghe.example/o/r/pull/12");
+  let observedUrl = "", observedAuth = "";
+  const w = new PrMergedWatcher(state, {
+    logger: { info() {}, warn() {}, error() {} },
+    fetchImpl: async (url, init) => { observedUrl = String(url); observedAuth = init.headers.Authorization; return { ok: true, status: 200, json: async () => ({ state: "open", merged: false, merged_at: null }) }; },
+    slackNotify: async () => {},
+    resolveGhToken: async () => ({ token: "ghe-token", apiBase: "https://ghe.example/api/v3" }),
+  });
+  await w.pollOnce();
+  assert.equal(observedUrl, "https://ghe.example/api/v3/repos/o/r/pulls/12");
+  assert.equal(observedAuth, "Bearer ghe-token");
+  assert.ok(!observedUrl.startsWith("https://api.github.com"));
+});

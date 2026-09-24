@@ -32,7 +32,7 @@ import { deriveMergeRecommendation } from "./merge-recommendation.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { activeDeadlineSnapshot, closeActiveDeadline, extendActiveDeadline, pauseActiveDeadline, resumeActiveDeadline, } from "./active-deadline.js";
+import { activeDeadlineSnapshot, closeActiveDeadline, pauseActiveDeadline, resumeActiveDeadline, } from "./active-deadline.js";
 import { applyObserveBindings, loadBearingObserveContractErrors, renderObserveContractInstructions, taskHash as observeTaskHash, validateObserveResult, } from "./observe-contract.js";
 class AccountingPersistenceError extends Error {
     constructor(message, cause) {
@@ -243,9 +243,7 @@ import { diagnosePushFailure, describePreservedPushFailure } from "./push-failur
 import { verifyRemoteSha, evidenceCoversCandidate, describeUnpublished, describePublicationState, } from "./publication.js";
 import { planTouchesWorkflows, describeMissingWorkflowScope } from "./workflow-scope.js";
 import { ABORT_REASONS_WORTH_SHIPPING, describeAbortSalvage, shouldReserveTimeToShip } from "./abort-salvage.js";
-import { TIME_EXTENSION_SEQ, parseTimeExtensionReply, renderTimeExtensionMarker, renderTimeExtensionQuestion, } from "./time-extension.js";
-import { assessRepairFunding, describeBudgetPolicy, projectCycleCostUsd, resolveBudgetPolicy, } from "./budget-policy.js";
-import { BUDGET_EXTENSION_SEQ, maxExtensionUsd, parseBudgetExtensionReply, renderBudgetExtensionMarker, renderBudgetExtensionQuestion, } from "./budget-extension.js";
+import { assessRepairFunding, projectCycleCostUsd, resolveBudgetPolicy, } from "./budget-policy.js";
 import { selectWorkerModel } from "./worker-model-select.js";
 import { selectObserveReports, recoverObserveReports, OBSERVE_REPORT_MAX_CHARS, } from "./observe-handoff.js";
 /**
@@ -2484,14 +2482,6 @@ export class OrchestratorLoop {
         // cost of overestimating is shipping a cycle earlier than strictly needed.
         let cycleStartedAtMs = 0;
         let maxCycleMs = 0;
-        // beta.129: cycles unlocked by an operator buying more wall clock. Kept
-        // apart from `cycleExtensionsGranted` and `ciRepairCyclesGranted` for the
-        // same reason those are kept apart from each other -- three different
-        // reasons to run one more cycle, three different ceilings, and a report
-        // that can say which one paid for what.
-        let timeExtensionCyclesGranted = 0;
-        // Once the operator has said no (or said nothing), stop interrupting them.
-        let timeExtensionRefused = false;
         // beta.119: BLOCKING findings per cycle -- what the extension decision is
         // actually made on. See isConvergingBlockingTrend.
         const blockingCountsByCycle = [];
@@ -2511,17 +2501,10 @@ export class OrchestratorLoop {
         // implementation and repair. Reassigned, not const, because a granted
         // budget extension raises the approved figure and everything derived from
         // it must move with it.
-        let budgetPolicy = resolveBudgetPolicy({
+        const budgetPolicy = resolveBudgetPolicy({
             authorizedMaximumUsd: row.budget_usd,
             repairReserveRatio: this.deps.config.loop.repair_reserve_ratio,
         });
-        // rc.6: an answered budget question carries the same authority as the
-        // `:moneybag:` reaction, so it has to be honoured everywhere that reaction
-        // is. OR'd into every `reactions.budgetBump` read rather than faked into
-        // the snapshot, so the audit trail can still tell a reaction from an answer.
-        let budgetOverrideGranted = false;
-        // Once the operator has declined (or let the window close), stop asking.
-        let budgetExtensionRefused = false;
         // rc.6: total spend at the moment the first repair cycle was granted, which
         // is what makes repair's own spend measurable. Repair is funded from the
         // reserve and must never be charged for what implementation spent, so the
@@ -2604,7 +2587,7 @@ export class OrchestratorLoop {
             // b124 had to add `cycleExtensionsGranted` -- a grant the bound does not
             // know about is not a grant. Getting this wrong is silent: the counter goes
             // up, the audit event fires, and nothing runs.
-            while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted + timeExtensionCyclesGranted) {
+            while (cycle < this.deps.config.loop.max_cycles + cycleExtensionsGranted + ciRepairCyclesGranted) {
                 cycle += 1;
                 // beta.129: how long cycles actually take on THIS run, so the wall-clock
                 // guards can ask "does another cycle fit?" instead of "is there a little
@@ -3046,7 +3029,7 @@ export class OrchestratorLoop {
                     {
                         const subEst = this.estimateSubTaskCost(st, subTaskCosts);
                         const dailyMax = this.dailyMaxUsd();
-                        if (!reactions.budgetBump && !budgetOverrideGranted && dailyMax > 0) {
+                        if (!reactions.budgetBump && dailyMax > 0) {
                             const dailySoFar = this.safeDailySpend(row.requester);
                             // beta.61 reserve: keep headroom for the pending adversary review +
                             // push so a daily-cap abort doesn't strand committed work one
@@ -3056,43 +3039,11 @@ export class OrchestratorLoop {
                             const reserve = row.budget_usd * Math.max(0, Math.min(0.9, reserveRatio));
                             const dailyProjected = dailySoFar + subEst;
                             if (dailyProjected + reserve > dailyMax) {
-                                // rc.6: this used to abort the run outright, mid-plan, with
-                                // committed work in the worktree and nobody told until afterwards.
-                                // The daily cap is an operator limit and the operator is exactly
-                                // who can lift it, so ask before killing the run. An unanswered
-                                // question aborts exactly as it did before.
-                                let funded = false;
-                                if (!confirmedControl && !budgetExtensionRefused) {
-                                    const grantedUsd = await this.askForBudgetExtension({
-                                        sessionId,
-                                        cycle,
-                                        trigger: "sub_task",
-                                        spentUsd: totalCost,
-                                        policy: budgetPolicy,
-                                        shortfallUsd: dailyProjected + reserve - dailyMax,
-                                        observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
-                                        dailyCapUsd: dailyMax,
-                                        subTaskTitle: st.title,
-                                        resumeStatus: "executing",
-                                    });
-                                    rebaseHardDeadlineFromPersistedClock();
-                                    if (grantedUsd > 0) {
-                                        budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
-                                        budgetOverrideGranted = true;
-                                        row.budget_usd = budgetPolicy.authorizedMaximumUsd;
-                                        funded = true;
-                                    }
-                                    else {
-                                        budgetExtensionRefused = true;
-                                    }
-                                }
-                                if (!funded) {
-                                    this.deps.state.audit("loop.daily_max_abort", { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax, askedForBudget: budgetExtensionRefused }, sessionId);
-                                    this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
-                                    failed.err = "daily_max_exhausted";
-                                    failed.seq = st.seq;
-                                    return;
-                                }
+                                this.deps.state.audit("loop.daily_max_abort", { sessionId, seq: st.seq, user: row.requester, dailySoFar, subEst, reserve, dailyMax }, sessionId);
+                                this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
+                                failed.err = "daily_max_exhausted";
+                                failed.seq = st.seq;
+                                return;
                             }
                         }
                     }
@@ -5345,33 +5296,7 @@ export class OrchestratorLoop {
                     const dailyMax = this.dailyMaxUsd();
                     const dailySoFar = this.safeDailySpend(row.requester);
                     let dailyWouldExceed = dailyMax > 0 && dailySoFar + reviewEstimate > dailyMax;
-                    // rc.6: without a review nothing ships at all -- the branch is
-                    // salvaged, not delivered -- so this is the most valuable dollar in the
-                    // run and the worst one to refuse silently. Ask before abandoning it.
-                    if (!confirmedControl && !reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed && !budgetExtensionRefused) {
-                        const grantedUsd = await this.askForBudgetExtension({
-                            sessionId,
-                            cycle,
-                            trigger: "review",
-                            spentUsd: totalCost,
-                            policy: budgetPolicy,
-                            shortfallUsd: dailySoFar + reviewEstimate - dailyMax,
-                            observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
-                            dailyCapUsd: dailyMax,
-                            resumeStatus: "reviewing",
-                        });
-                        rebaseHardDeadlineFromPersistedClock();
-                        if (grantedUsd > 0) {
-                            budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
-                            budgetOverrideGranted = true;
-                            row.budget_usd = budgetPolicy.authorizedMaximumUsd;
-                            dailyWouldExceed = false;
-                        }
-                        else {
-                            budgetExtensionRefused = true;
-                        }
-                    }
-                    if (!reactions.budgetBump && !budgetOverrideGranted && dailyWouldExceed) {
+                    if (!reactions.budgetBump && dailyWouldExceed) {
                         // beta.8 (adversary point): the adversary was the only actor that
                         // caught the beta.6 confabulation, and beta.7's review-budget abort
                         // HID that failure by skipping review on cost. The observable-side-
@@ -5379,7 +5304,7 @@ export class OrchestratorLoop {
                         // aborting. This is the harness's own trust-but-verify guardrail;
                         // it must never be bypassed purely on token budget.
                         await this.runCheapObservableCheck(sessionId, plan, row.requester);
-                        this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max", askedForBudget: budgetExtensionRefused }, sessionId);
+                        this.deps.state.audit("loop.review_budget_abort", { sessionId, cycle, totalCost, reviewEstimate, dailySoFar, dailyMax, reason: "daily_max", extensionAvailable: false }, sessionId);
                         this.warnDailyMaxHit(sessionId, row.requester, dailySoFar, dailyMax);
                         return await this.finaliseAbortSalvaging(sessionId, "daily_max_exhausted", cycle, totalCost);
                     }
@@ -5993,7 +5918,7 @@ export class OrchestratorLoop {
                     blockingCountsByCycle,
                     cycleExtensionsGranted,
                     maxCycleExtensions: confirmedControl ? 0 : (this.deps.config.loop.max_cycle_extensions ?? 1),
-                    budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted),
+                    budgetHeadroomOk: this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd),
                     // beta.120 (fix 4): only meaningful once there is something to land.
                     // beta.129: now sized against a MEASURED cycle, and against the
                     // session's own ceiling rather than the configured default -- an
@@ -6018,76 +5943,7 @@ export class OrchestratorLoop {
                     hardTimeout: Date.now() > hardDeadlineMs,
                 };
                 let decision = OrchestratorLoop.advance(advanceInput);
-                // rc.6: was money the ONLY thing standing between this run and another
-                // cycle? Asking `advance` a second time with the money satisfied is the
-                // way to know without restating its rules here -- it is a pure function,
-                // the second call costs nothing, and a copy of its conditions in this
-                // file would drift the first time somebody edited one of them.
-                if (!confirmedControl &&
-                    !budgetOverrideGranted &&
-                    !budgetExtensionRefused &&
-                    decision.nextStatus !== "executing") {
-                    const ifFunded = OrchestratorLoop.advance({ ...advanceInput, budgetHeadroomOk: true, budgetExhausted: false });
-                    if (ifFunded.nextStatus === "executing") {
-                        const dailyBlocked = advanceInput.budgetExhausted;
-                        const grantedUsd = await this.askForBudgetExtension({
-                            sessionId,
-                            cycle,
-                            trigger: dailyBlocked ? "daily_cap" : "cycle_extension",
-                            spentUsd: totalCost,
-                            policy: budgetPolicy,
-                            shortfallUsd: Math.max(0, totalCost + projectCycleCostUsd(totalCost, cycle) - budgetPolicy.implementationTargetUsd),
-                            observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
-                            ...(dailyBlocked ? { dailyCapUsd: this.dailyMaxUsd() } : {}),
-                            resumeStatus: "reviewing",
-                        });
-                        rebaseHardDeadlineFromPersistedClock();
-                        if (grantedUsd > 0) {
-                            budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
-                            budgetOverrideGranted = true;
-                            row.budget_usd = budgetPolicy.authorizedMaximumUsd;
-                            decision = ifFunded;
-                        }
-                        else {
-                            budgetExtensionRefused = true;
-                        }
-                    }
-                }
                 this.deps.state.audit("loop.transition", { sessionId, from: "reviewing", ...decision }, sessionId);
-                // beta.129: the clock is about to land a branch that still has blocking
-                // findings on it, while the money to fix them is sitting unspent. That is
-                // the one case worth interrupting a human for, so ask before shipping
-                // short. Everything about this is bounded: only when work remains, only
-                // while the operator keeps saying yes, and only for as long as
-                // `time_extension_wait_seconds`. If the answer does not come, we ship
-                // exactly as b120 shipped and nothing is lost by having asked.
-                if (!confirmedControl &&
-                    decision.nextStatus === "done" &&
-                    decision.reason === "ship_time_reserved" &&
-                    this.deps.config.loop.time_extension_ask_enabled !== false &&
-                    !timeExtensionRefused &&
-                    blockingFindings > 0 &&
-                    this.hasBudgetHeadroomForAnotherCycle(row.requester, totalCost, cycle, budgetPolicy.implementationTargetUsd, budgetOverrideGranted)) {
-                    const grantedSeconds = await this.askForTimeExtension({
-                        sessionId,
-                        cycle,
-                        blockingFindings,
-                        spentUsd: totalCost,
-                        budgetUsd: row.budget_usd,
-                        remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
-                        observedCycleMs: maxCycleMs,
-                    });
-                    rebaseHardDeadlineFromPersistedClock();
-                    if (grantedSeconds > 0) {
-                        hardDeadlineMs += grantedSeconds * 1000;
-                        sessionTimeoutSeconds += grantedSeconds;
-                        timeExtensionCyclesGranted += 1;
-                        this.persistExtendedDeadline(sessionId, sessionTimeoutSeconds);
-                        this.setStatus(sessionId, "executing");
-                        continue;
-                    }
-                    timeExtensionRefused = true;
-                }
                 if (decision.nextStatus === "done") {
                     terminalDoneReason = decision.reason;
                     break;
@@ -6400,8 +6256,8 @@ export class OrchestratorLoop {
                         ? projectCycleCostUsd(Math.max(0, totalCost - repairSpendBaselineUsd), ciRepairCyclesGranted)
                         : 0,
                 });
-                let budgetOk = repairFunding.funded &&
-                    this.hardCapsAllow(row.requester, totalCost, cycle, budgetOverrideGranted);
+                const budgetOk = repairFunding.funded &&
+                    this.hardCapsAllow(row.requester, totalCost, cycle, false);
                 // beta.129: a repair cycle costs TIME as well as money, and b127 only
                 // ever priced the money. Session d48ba433 was granted one with roughly
                 // twenty minutes left on a clock that cycles were eating in twenty-five,
@@ -6428,84 +6284,9 @@ export class OrchestratorLoop {
                     });
                 const wantsRepair = ciOverride !== null && lastCiFindings.length > 0;
                 const ceilingOk = ciRepairCyclesGranted < repairCeiling;
-                // beta.130: b129 taught this site to refuse a repair it could not
-                // finish, and refusing was right -- but refusing SILENTLY was not. The
-                // first local b129 run reached exactly here with $30.16 of its $40
-                // unspent, 15.6 minutes on the clock, and a CI failure that was one
-                // assertion out of 9,027 tests (a sidebar ordering index that the new
-                // nav entry had shifted). It shipped a do-not-merge PR without asking.
-                //
-                // This is a stronger case for interrupting a human than the b129 one:
-                // the branch is already pushed, so the cost of a "yes" is bounded and
-                // the prize is a green PR instead of one somebody has to finish by
-                // hand. Only the clock may be missing -- a ceiling shortfall is a real
-                // no, and asking for time would not change it.
-                //
-                // rc.6: money is no longer a real no either. b130 wrote "a ceiling or
-                // budget shortfall is a real no" because there was nothing to be done
-                // about money mid-run; there is now, and it is the same ask. Money is
-                // asked FIRST because the clock question describes itself as "out of
-                // time, not out of money", which would be a lie if both were short.
-                if (!confirmedControl && wantsRepair && ceilingOk && !budgetOk && !budgetExtensionRefused) {
-                    const grantedUsd = await this.askForBudgetExtension({
-                        sessionId,
-                        cycle,
-                        trigger: "ci_repair",
-                        spentUsd: totalCost,
-                        policy: budgetPolicy,
-                        shortfallUsd: repairFunding.funded ? 0 : (repairFunding.shortfallUsd ?? 0),
-                        observedCycleCostUsd: projectCycleCostUsd(totalCost, cycle),
-                        ciSummary: describeCiFindings(lastCiFindings),
-                        // The repair re-enters the loop as an execution cycle; the ship path
-                        // it was asked from is not a phase to be parked in.
-                        resumeStatus: "executing",
-                    });
-                    rebaseHardDeadlineFromPersistedClock();
-                    if (grantedUsd > 0) {
-                        budgetPolicy = this.applyBudgetGrant(sessionId, budgetPolicy, grantedUsd);
-                        budgetOverrideGranted = true;
-                        row.budget_usd = budgetPolicy.authorizedMaximumUsd;
-                        budgetOk = true;
-                    }
-                    else {
-                        budgetExtensionRefused = true;
-                    }
-                }
-                if (!confirmedControl &&
-                    wantsRepair &&
-                    ceilingOk &&
-                    budgetOk &&
-                    !clockOk &&
-                    this.deps.config.loop.time_extension_ask_enabled !== false &&
-                    !timeExtensionRefused) {
-                    const grantedSeconds = await this.askForTimeExtension({
-                        sessionId,
-                        cycle,
-                        blockingFindings: lastCiFindings.length,
-                        spentUsd: totalCost,
-                        budgetUsd: row.budget_usd,
-                        remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
-                        observedCycleMs: maxCycleMs,
-                        trigger: "ci_repair",
-                        ciSummary: describeCiFindings(lastCiFindings),
-                        // The repair re-enters the loop as an execution cycle; the ship path
-                        // it was asked from is not a phase to be parked in.
-                        resumeStatus: "executing",
-                    });
-                    rebaseHardDeadlineFromPersistedClock();
-                    if (grantedSeconds > 0) {
-                        hardDeadlineMs += grantedSeconds * 1000;
-                        sessionTimeoutSeconds += grantedSeconds;
-                        // Deliberately NOT bumping `timeExtensionCyclesGranted`: the repair
-                        // grant below raises the loop bound by one on its own, and counting
-                        // it twice would buy a cycle nobody agreed to.
-                        this.persistExtendedDeadline(sessionId, sessionTimeoutSeconds);
-                        clockOk = true;
-                    }
-                    else {
-                        timeExtensionRefused = true;
-                    }
-                }
+                // v2: resource envelopes are immutable after confirmation. A repair that
+                // does not fit the confirmed budget or time limit is declined terminally;
+                // the loop never opens an extension question.
                 const canRepair = wantsRepair && ceilingOk && budgetOk && clockOk;
                 if (wantsRepair && !canRepair) {
                     // Say why the run is shipping over a red build. "Do NOT merge" with no
@@ -6519,13 +6300,13 @@ export class OrchestratorLoop {
                         repairFunding: repairFunding.basis,
                         repairReserveUsd: budgetPolicy.repairReserveUsd,
                         repairSpentUsd: Number(Math.max(0, totalCost - repairSpendBaselineUsd).toFixed(4)),
-                        askedForBudget: budgetExtensionRefused,
+                        extensionAvailable: false,
                         remainingMs: Math.max(0, hardDeadlineMs - Date.now()),
                         observedCycleMs: maxCycleMs,
                         // beta.130: distinguishes "the clock said no" from "the clock said
                         // no AND the operator was given the chance to overrule it". Only
                         // the second is a complete account of why a red build shipped.
-                        askedForTime: timeExtensionRefused,
+                        timeExtensionAvailable: false,
                         // beta.131: the ladder used to test the clock BEFORE the ceiling,
                         // so a run that had already spent its one repair reported
                         // `wall_clock` whenever the clock happened to be short too. Session
@@ -9010,339 +8791,6 @@ export class OrchestratorLoop {
         catch (err) {
             this.deps.logger.warn("[loop] abort commit probe failed; assuming there IS work to protect", { sessionId, err: String(err) });
             return true;
-        }
-    }
-    /**
-     * beta.129: pause at the review boundary, ask the operator to buy more wall
-     * clock, and wait IN PLACE for the answer. Returns the seconds granted, or 0
-     * for a decline, an unreadable reply, or silence.
-     *
-     * Waiting in place rather than returning through `finaliseAwaitingClarification`
-     * is the whole trick. That path resumes via a fresh `loop.run`, which re-plans
-     * from scratch -- another lead call, and a plan that need not match the one
-     * the existing commits were written against. Polling the answer column keeps
-     * the cycle counter, the findings history, the worktree and the deadline
-     * arithmetic exactly where they are.
-     *
-     * beta.132: the price of waiting in place is that the question dies with the
-     * process holding it, and b129 had no way to notice -- `a trusted host confirmation` read
-     * the wait window as proof of life and told session 2b4c1d33's operator the
-     * run would pick their answer up. It had already exited. Hence the
-     * heartbeat: every tick below stamps the row, and an answer arriving to a
-     * stale one finishes the ship rather than being promised to nobody.
-     */
-    async askForTimeExtension(p) {
-        const waitSeconds = Math.max(0, this.deps.config.loop.time_extension_wait_seconds ?? 300);
-        const defaultSeconds = Math.max(0, this.deps.config.loop.time_extension_default_seconds ?? 1800);
-        if (waitSeconds <= 0 || defaultSeconds <= 0)
-            return 0;
-        const waitUntilMs = Date.now() + waitSeconds * 1000;
-        const question = renderTimeExtensionQuestion({
-            cycle: p.cycle,
-            blockingFindings: p.blockingFindings,
-            spentUsd: p.spentUsd,
-            budgetUsd: p.budgetUsd,
-            remainingSeconds: Math.round(p.remainingMs / 1000),
-            observedCycleSeconds: Math.round(p.observedCycleMs / 1000),
-            defaultSeconds,
-            waitSeconds,
-            trigger: p.trigger,
-            ciSummary: p.ciSummary,
-        });
-        try {
-            const now = Date.now();
-            const clarificationId = randomUUID();
-            this.deps.state.db.exec("BEGIN IMMEDIATE");
-            pauseActiveDeadline(this.deps.state.db, p.sessionId, now);
-            this.deps.state.db
-                .prepare(`UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
-                               clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
-                               clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`)
-                .run(question, TIME_EXTENSION_SEQ, clarificationId, renderTimeExtensionMarker(waitUntilMs), now, now, p.sessionId);
-            this.deps.state.db.exec("COMMIT");
-        }
-        catch (err) {
-            try {
-                this.deps.state.db.exec("ROLLBACK");
-            }
-            catch { /* no transaction */ }
-            this.deps.logger.warn("[loop] could not post the time-extension question; shipping instead", { sessionId: p.sessionId, err: String(err) });
-            return 0;
-        }
-        this.deps.state.audit("loop.time_extension_requested", {
-            sessionId: p.sessionId, cycle: p.cycle, blockingFindings: p.blockingFindings,
-            spentUsd: Number(p.spentUsd.toFixed(4)), budgetUsd: p.budgetUsd,
-            remainingMs: p.remainingMs, observedCycleMs: p.observedCycleMs,
-            waitSeconds, defaultSeconds, trigger: p.trigger ?? "review",
-        }, p.sessionId);
-        this.deps.interactionLog?.log(p.sessionId, { event: "time_extension_requested", phase: "review", question });
-        // Drives the progress snapshot and the Slack post, which is how the
-        // operator finds out there is a question at all.
-        this.deps.interactionLog?.log(p.sessionId, { event: "state_transition", phase: "unknown", status: "awaiting_clarification" });
-        try {
-            this.deps.deliverProgress?.(p.sessionId, "awaiting_clarification");
-        }
-        catch { /* best effort */ }
-        const clearPause = () => {
-            try {
-                this.deps.state.db
-                    .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_id = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
-                    .run(Date.now(), p.sessionId);
-            }
-            catch (err) {
-                this.deps.logger.warn("[loop] could not clear the time-extension pause", { sessionId: p.sessionId, err: String(err) });
-            }
-        };
-        // beta.132: proof of life, stamped before the first sleep so an answer that
-        // arrives in the first few seconds -- which is what a watching operator
-        // does -- is not mistaken for one shouted at an empty room.
-        this.stampClarificationHeartbeat(p.sessionId);
-        let answer = "";
-        while (Date.now() < waitUntilMs) {
-            const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
-            await new Promise((r) => setTimeout(r, sliceMs));
-            this.stampClarificationHeartbeat(p.sessionId);
-            // The session is resting on a question, not wedged. Without this the
-            // stall watchdog reads a silent five minutes as a hang and fails it.
-            this.markProgress(p.sessionId, "time_extension_wait", "review", {
-                cycle: p.cycle,
-                remainingMs: Math.max(0, waitUntilMs - Date.now()),
-            });
-            try {
-                const r = this.deps.state.db
-                    .prepare(`SELECT clarification_answer AS a FROM sessions WHERE id = ?`)
-                    .get(p.sessionId);
-                if (r?.a && String(r.a).trim()) {
-                    answer = String(r.a).trim();
-                    break;
-                }
-            }
-            catch (err) {
-                this.deps.logger.warn("[loop] time-extension poll failed", { sessionId: p.sessionId, err: String(err) });
-            }
-            // An operator who reaches for :x: rather than answering has answered.
-            const reactions = await this.deps.readReactions(p.sessionId).catch(() => null);
-            if (reactions?.abort)
-                break;
-        }
-        clearPause();
-        this.setStatus(p.sessionId, p.resumeStatus ?? "reviewing");
-        if (!answer) {
-            this.deps.state.audit("loop.time_extension_timeout", { sessionId: p.sessionId, cycle: p.cycle, waitSeconds, trigger: p.trigger ?? "review" }, p.sessionId);
-            return 0;
-        }
-        const parsed = parseTimeExtensionReply(answer, { defaultSeconds });
-        this.deps.state.audit(parsed.approved ? "loop.time_extension_granted" : "loop.time_extension_declined", {
-            sessionId: p.sessionId, cycle: p.cycle,
-            seconds: parsed.seconds, interpretation: parsed.interpretation,
-            trigger: p.trigger ?? "review",
-            answer: answer.slice(0, 300),
-        }, p.sessionId);
-        return parsed.approved ? parsed.seconds : 0;
-    }
-    /**
-     * rc.6: ask the operator to fund a stop the loop is about to make on money.
-     *
-     * Deliberately the same shape as `askForTimeExtension`, down to the bounded
-     * wait, the heartbeat and the resume status, because it is the same act: the
-     * loop has run out of one resource, a human can supply more, and the only
-     * thing standing between them is that nobody thought to ask. Divergence
-     * between the two would be a maintenance trap, not a feature.
-     *
-     * Returns dollars granted, or 0 for declined / unanswered / disabled. Never
-     * throws: a question that cannot be posted must not be worse than not asking,
-     * so every failure path returns 0 and the caller proceeds as it always did.
-     */
-    async askForBudgetExtension(p) {
-        if (this.deps.config.loop.budget_extension_ask_enabled === false)
-            return 0;
-        const waitSeconds = Math.max(0, this.deps.config.loop.budget_extension_wait_seconds ?? 300);
-        if (waitSeconds <= 0)
-            return 0;
-        // A bare "yes" buys one more cycle of whatever this run has actually been
-        // costing. With nothing measured yet there is no honest figure, so fall
-        // back to a fraction of the approved budget rather than inventing one.
-        const defaultUsd = p.observedCycleCostUsd > 0
-            ? Math.round(p.observedCycleCostUsd * 100) / 100
-            : Math.max(5, Math.round(p.policy.authorizedMaximumUsd * 0.2 * 100) / 100);
-        const maxUsd = maxExtensionUsd(p.policy.authorizedMaximumUsd);
-        if (defaultUsd <= 0 || maxUsd <= 0)
-            return 0;
-        const waitUntilMs = Date.now() + waitSeconds * 1000;
-        const question = renderBudgetExtensionQuestion({
-            trigger: p.trigger,
-            cycle: p.cycle,
-            spentUsd: p.spentUsd,
-            authorizedMaximumUsd: p.policy.authorizedMaximumUsd,
-            shortfallUsd: p.shortfallUsd,
-            defaultUsd,
-            waitSeconds,
-            dailyCapUsd: p.dailyCapUsd,
-            ciSummary: p.ciSummary,
-            subTaskTitle: p.subTaskTitle,
-        });
-        try {
-            const now = Date.now();
-            const clarificationId = randomUUID();
-            this.deps.state.db.exec("BEGIN IMMEDIATE");
-            pauseActiveDeadline(this.deps.state.db, p.sessionId, now);
-            this.deps.state.db
-                .prepare(`UPDATE sessions SET status = 'awaiting_clarification', clarification_question = ?,
-                               clarification_seq = ?, clarification_id = ?, clarification_answer = NULL,
-                               clarification_subtask = ?, last_progress_at = ?, updated_at = ? WHERE id = ?`)
-                .run(question, BUDGET_EXTENSION_SEQ, clarificationId, renderBudgetExtensionMarker(waitUntilMs), now, now, p.sessionId);
-            this.deps.state.db.exec("COMMIT");
-        }
-        catch (err) {
-            try {
-                this.deps.state.db.exec("ROLLBACK");
-            }
-            catch { /* no transaction */ }
-            this.deps.logger.warn("[loop] could not post the budget question; proceeding as if unasked", {
-                sessionId: p.sessionId,
-                err: String(err),
-            });
-            return 0;
-        }
-        this.deps.state.audit("loop.budget_extension_requested", {
-            sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger,
-            spentUsd: Number(p.spentUsd.toFixed(4)),
-            authorizedMaximumUsd: p.policy.authorizedMaximumUsd,
-            repairReserveUsd: p.policy.repairReserveUsd,
-            shortfallUsd: Number(p.shortfallUsd.toFixed(4)),
-            waitSeconds, defaultUsd, maxUsd,
-        }, p.sessionId);
-        this.deps.interactionLog?.log(p.sessionId, { event: "budget_extension_requested", phase: "review", question });
-        this.deps.interactionLog?.log(p.sessionId, { event: "state_transition", phase: "unknown", status: "awaiting_clarification" });
-        try {
-            this.deps.deliverProgress?.(p.sessionId, "awaiting_clarification");
-        }
-        catch { /* best effort */ }
-        const clearPause = () => {
-            try {
-                this.deps.state.db
-                    .prepare(`UPDATE sessions SET clarification_question = NULL, clarification_seq = NULL, clarification_id = NULL, clarification_subtask = NULL, clarification_heartbeat_at = NULL, updated_at = ? WHERE id = ?`)
-                    .run(Date.now(), p.sessionId);
-            }
-            catch (err) {
-                this.deps.logger.warn("[loop] could not clear the budget pause", { sessionId: p.sessionId, err: String(err) });
-            }
-        };
-        // beta.132's reasoning, unchanged: stamp before the first sleep so an
-        // answer that arrives in the first few seconds is not read as shouted at
-        // an empty room.
-        this.stampClarificationHeartbeat(p.sessionId);
-        let answer = "";
-        while (Date.now() < waitUntilMs) {
-            const sliceMs = Math.min(5000, Math.max(250, waitUntilMs - Date.now()));
-            await new Promise((r) => setTimeout(r, sliceMs));
-            this.stampClarificationHeartbeat(p.sessionId);
-            this.markProgress(p.sessionId, "budget_extension_wait", "review", {
-                cycle: p.cycle,
-                remainingMs: Math.max(0, waitUntilMs - Date.now()),
-            });
-            try {
-                const r = this.deps.state.db
-                    .prepare(`SELECT clarification_answer AS a FROM sessions WHERE id = ?`)
-                    .get(p.sessionId);
-                if (r?.a && String(r.a).trim()) {
-                    answer = String(r.a).trim();
-                    break;
-                }
-            }
-            catch (err) {
-                this.deps.logger.warn("[loop] budget-extension poll failed", { sessionId: p.sessionId, err: String(err) });
-            }
-            const reactions = await this.deps.readReactions(p.sessionId).catch(() => null);
-            // Either reaction answers the question without typing: :moneybag: IS the
-            // yes this is asking for, and :x: is the no.
-            if (reactions?.abort)
-                break;
-            if (reactions?.budgetBump) {
-                answer = `yes (:moneybag:)`;
-                break;
-            }
-        }
-        clearPause();
-        this.setStatus(p.sessionId, p.resumeStatus ?? "reviewing");
-        if (!answer) {
-            this.deps.state.audit("loop.budget_extension_timeout", { sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger, waitSeconds }, p.sessionId);
-            return 0;
-        }
-        const parsed = parseBudgetExtensionReply(answer, { defaultUsd, maxUsd });
-        this.deps.state.audit(parsed.approved ? "loop.budget_extension_granted" : "loop.budget_extension_declined", {
-            sessionId: p.sessionId, cycle: p.cycle, trigger: p.trigger,
-            usd: parsed.usd, interpretation: parsed.interpretation,
-            clamped: parsed.clamped === true, maxUsd,
-            answer: answer.slice(0, 300),
-        }, p.sessionId);
-        return parsed.approved ? parsed.usd : 0;
-    }
-    /**
-     * rc.6: apply a granted budget extension to the run and to the row.
-     *
-     * Persisted, for the reason beta.130 persisted an extended deadline: a
-     * crash-recovery or a later resume that reverted to the original figure would
-     * stop the run a second time for a reason the operator has already overruled.
-     */
-    applyBudgetGrant(sessionId, previous, grantedUsd) {
-        const raised = Math.round((previous.authorizedMaximumUsd + grantedUsd) * 100) / 100;
-        try {
-            this.deps.state.db
-                .prepare(`UPDATE sessions SET budget_usd = ?, updated_at = ? WHERE id = ?`)
-                .run(raised, Date.now(), sessionId);
-        }
-        catch (err) {
-            this.deps.logger.warn("[loop] could not persist the granted budget; honouring it for this run only", {
-                sessionId,
-                err: String(err),
-            });
-        }
-        const policy = resolveBudgetPolicy({
-            authorizedMaximumUsd: raised,
-            repairReserveRatio: this.deps.config.loop.repair_reserve_ratio,
-        });
-        this.deps.state.audit("loop.budget_extension_applied", { sessionId, grantedUsd, authorizedMaximumUsd: raised, policy: describeBudgetPolicy(policy) }, sessionId);
-        return policy;
-    }
-    /**
-     * beta.130: persist an extended wall clock so a crash-recovery or a later
-     * resume honours what the operator granted instead of reverting to the
-     * default and guillotining the run a second time.
-     */
-    /**
-     * beta.132: say "I am still here" on the row the operator's answer lands on.
-     *
-     * Best-effort by design. A failed stamp reads as a dead listener, which
-     * costs the run its time extension and ships an honest do-not-merge PR --
-     * where the alternative, assuming life, strands the work. This is the safe
-     * direction to fail in.
-     */
-    stampClarificationHeartbeat(sessionId) {
-        try {
-            this.deps.state.db
-                .prepare(`UPDATE sessions SET clarification_heartbeat_at = ? WHERE id = ?`)
-                .run(Date.now(), sessionId);
-        }
-        catch (err) {
-            this.deps.logger.warn("[loop] could not stamp the clarification heartbeat", { sessionId, err: String(err) });
-        }
-    }
-    persistExtendedDeadline(sessionId, totalSeconds) {
-        try {
-            const current = activeDeadlineSnapshot(this.deps.state.db, sessionId);
-            const wantedMs = totalSeconds * 1000;
-            const extraSeconds = Math.max(0, Math.round((wantedMs - current.limitMs) / 1000));
-            if (extraSeconds > 0)
-                extendActiveDeadline(this.deps.state.db, sessionId, extraSeconds);
-            else {
-                this.deps.state.db
-                    .prepare(`UPDATE sessions SET hard_timeout_seconds = ?, updated_at = ? WHERE id = ?`)
-                    .run(totalSeconds, Date.now(), sessionId);
-            }
-        }
-        catch (err) {
-            this.deps.logger.warn("[loop] could not persist the extended wall clock", { sessionId, err: String(err) });
         }
     }
     /**

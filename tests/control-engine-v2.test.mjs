@@ -53,6 +53,16 @@ function readyInput(overrides = {}) {
   };
 }
 
+function seedMergeState(store, id, prNumber) {
+  const repo = new ControlRepository(store.db); let run = autonomous(repo, id);
+  run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "engine", reason: "strict_readiness_passed", pullRequestUrl: `https://example/pr/${prNumber}`, at: 20 });
+  const head = sha("c", 40), readiness = readyInput(), evaluated = evaluatePrReadiness(readiness, 20);
+  store.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,pr_url,published_sha,readiness_digest,spend_usd,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(run.id,2,1,sha("a",40),"{}","[]","[]",sha("9"),"medium","[]",1000,prNumber,`https://example/pr/${prNumber}`,head,evaluated.contentDigest,12,10,20);
+  store.db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(evaluated.contentDigest,run.id,2,evaluated.policyVersion,1,head,JSON.stringify(readiness),"[]",20);
+  const auth = createVerifiedMergeAuthorization({ runId: run.id, actorIdentity: "U1", conversationIdentity: "C1:T1", repository: "acme/repo", baseRef: "main", prNumber, expectedHeadSha: head, publishedSha: head, readinessDigest: evaluated.contentDigest, nonce: `nonce-${id}`, issuedAt: 50, expiresAt: 200 });
+  return { repo, run, head, readiness, auth };
+}
+
 test("autonomous authority continues safe choices and terminally maps expansion", async () => withStore(({ db }) => {
   const repo = new ControlRepository(db); const run = autonomous(repo);
   assert.deepEqual(decideEngineAuthority(run, { kind: "repair", request: request() }), { outcome: "continue", kind: "repair", auditCode: "autonomous_in_envelope" });
@@ -124,11 +134,86 @@ test("ambiguous provider success is reconciled without a second merge side effec
   const service = new InternalMergeService(db, repo, provider, () => 100);
   const auth1 = createVerifiedMergeAuthorization({ runId: run.id, actorIdentity: "U1", conversationIdentity: "C1:T1", repository: "acme/repo", baseRef: "main", prNumber: 2, expectedHeadSha: head, publishedSha: head, readinessDigest: evaluated.contentDigest, nonce: "merge-crash-1", issuedAt: 50, expiresAt: 200 });
   service.registerAuthorization(auth1);
-  assert.deepEqual(await service.merge(auth1.id), { status: "merge_failed", code: "provider_failure" });
+  assert.deepEqual(await service.merge(auth1.id), { status: "already_merged", mergeSha });
   await service.recoverPending();
   assert.equal(mergeCalls, 1);
   assert.equal(repo.getRun(run.id).state, "done");
   assert.equal(db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(run.id).status, "merged");
+}));
+
+test("two SQLite connections race one merge intent but only one provider mutation wins", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "merge-race-")), path = join(dir, "state.db");
+  const first = openStateStoreSync(path), seeded = seedMergeState(first, "merge-race", 3), second = openStateStoreSync(path);
+  let mergeCalls = 0, providerMerged = false;
+  const mergeSha = sha("d", 40);
+  const provider = {
+    inspect: async () => ({ repository: "acme/repo", baseRef: "main", prNumber: 3, headSha: seeded.head, open: !providerMerged, merged: providerMerged, ...(providerMerged ? { mergeSha } : {}), readiness: seeded.readiness }),
+    merge: async () => { mergeCalls++; await new Promise((resolve) => setTimeout(resolve, 75)); providerMerged = true; return { mergeSha }; },
+    verifyMerged: async ({ mergeSha: candidate }) => providerMerged && candidate === mergeSha,
+  };
+  try {
+    const service1 = new InternalMergeService(first.db, seeded.repo, provider, () => 100);
+    service1.registerAuthorization(seeded.auth);
+    const service2 = new InternalMergeService(second.db, new ControlRepository(second.db), provider, () => 100);
+    const [a, b] = await Promise.all([service1.merge(seeded.auth.id), service2.merge(seeded.auth.id)]);
+    assert.equal(mergeCalls, 1);
+    assert.deepEqual(new Set([a.status, b.status]), new Set(["merged", "already_merged"]));
+    assert.equal(first.db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id).status, "merged");
+  } finally { second.close(); first.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("recovery after a post-provider crash records the exact provider merge commit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "merge-crash-")), path = join(dir, "state.db");
+  const first = openStateStoreSync(path), seeded = seedMergeState(first, "merge-crash", 4);
+  const exactMergeSha = sha("e", 40), arbitrarySha = sha("f", 40);
+  let providerMerged = false;
+  const provider = {
+    inspect: async () => ({ repository: "acme/repo", baseRef: "main", prNumber: 4, headSha: seeded.head, open: !providerMerged, merged: providerMerged, ...(providerMerged ? { mergeSha: exactMergeSha } : {}), readiness: seeded.readiness }),
+    merge: async () => { providerMerged = true; return { mergeSha: exactMergeSha }; },
+    verifyMerged: async ({ mergeSha: candidate }) => providerMerged && candidate === exactMergeSha && candidate !== arbitrarySha,
+  };
+  try {
+    const service1 = new InternalMergeService(first.db, seeded.repo, provider, () => 100);
+    service1.registerAuthorization(seeded.auth);
+    first.db.exec("BEGIN IMMEDIATE");
+    first.db.prepare("UPDATE control_engine_merge_intents SET status='merging' WHERE change_id=? AND status='authorized'").run(seeded.run.id);
+    first.db.prepare("UPDATE control_merge_authorizations SET consumed_at=100 WHERE id=? AND consumed_at IS NULL").run(seeded.auth.id);
+    first.db.exec("COMMIT");
+    await provider.merge(); // provider side effect happened; process crashes before recording its response
+    first.close();
+    const recovered = openStateStoreSync(path);
+    try {
+      const service2 = new InternalMergeService(recovered.db, new ControlRepository(recovered.db), provider, () => 101);
+      await service2.recoverPending();
+      const intent = recovered.db.prepare("SELECT status,provider_merge_sha FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id);
+      assert.deepEqual({ ...intent }, { status: "merged", provider_merge_sha: exactMergeSha });
+      assert.equal(new ControlRepository(recovered.db).getRun(seeded.run.id).state, "done");
+    } finally { recovered.close(); }
+  } finally { try { first.close(); } catch {} rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("terminal merge failure cannot be retried or later laundered into done", async () => withStore(async ({ db }) => {
+  const store = { db }, seeded = seedMergeState(store, "merge-terminal", 5); let mergeCalls = 0, providerMerged = false;
+  const provider = { inspect: async () => ({ repository: "acme/repo", baseRef: "main", prNumber: 5, headSha: seeded.head, open: !providerMerged, merged: providerMerged, ...(providerMerged ? { mergeSha: sha("e", 40) } : {}), readiness: seeded.readiness }), merge: async () => { mergeCalls++; return { mergeSha: "not-a-provider-sha" }; }, verifyMerged: async () => providerMerged };
+  const service = new InternalMergeService(db, seeded.repo, provider, () => 100);
+  service.registerAuthorization(seeded.auth);
+  assert.deepEqual(await service.merge(seeded.auth.id), { status: "merge_failed", code: "verification_failed" });
+  providerMerged = true;
+  assert.deepEqual(await service.merge(seeded.auth.id), { status: "refused", code: "merge_attestation_required" });
+  assert.equal(mergeCalls, 1);
+  assert.equal(seeded.repo.getRun(seeded.run.id).state, "failed");
+  assert.equal(db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id).status, "verification_failed");
+}));
+
+test("live stale-head refusal terminalizes the consumed merge intent instead of stranding awaiting_merge", async () => withStore(async ({ db }) => {
+  const store = { db }, seeded = seedMergeState(store, "merge-stale", 6);
+  const provider = { inspect: async () => ({ repository: "acme/repo", baseRef: "main", prNumber: 6, headSha: sha("d", 40), open: true, merged: false, readiness: seeded.readiness }), merge: async () => { throw new Error("must not mutate"); }, verifyMerged: async () => false };
+  const service = new InternalMergeService(db, seeded.repo, provider, () => 100);
+  service.registerAuthorization(seeded.auth);
+  assert.deepEqual(await service.merge(seeded.auth.id), { status: "refused", code: "stale_pr_head" });
+  assert.equal(seeded.repo.getRun(seeded.run.id).state, "failed");
+  assert.equal(seeded.repo.getRun(seeded.run.id).terminalCode, "stale_pr_head");
+  assert.equal(db.prepare("SELECT status FROM control_engine_merge_intents WHERE change_id=?").get(seeded.run.id).status, "verification_failed");
 }));
 
 test("recovery scans only autonomous runs and preserves the confirmed authority hash", async () => withStore(async (store) => {

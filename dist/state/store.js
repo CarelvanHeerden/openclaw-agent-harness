@@ -105,9 +105,6 @@ export function openStateStoreSync(pathHint) {
         // done/failed/aborted -- so b120's "preserved, go and get your commits"
         // promise expired at the next container bounce.
         { table: "sessions", column: "worktree_preserved", type: "INTEGER" }, // 1 = abort kept this worktree on purpose
-        // beta.132: liveness for the one pause the loop does not return from. The
-        // window alone said "still listening" about a process that had exited.
-        { table: "sessions", column: "clarification_heartbeat_at", type: "INTEGER" }, // ms; stamped on every poll tick
         // rc.3: the revise baseline. A focused revision needs two review windows --
         // the whole PR for correctness, and only what the revision committed for
         // scope -- and neither can be recovered from branch state after the fact.

@@ -39,10 +39,6 @@
         "authorised_users"
       ],
       "properties": {
-        "listener_enabled": {
-          "type": "boolean",
-          "description": "Removed and ignored. The ordinary product is driven only through the four control-plane tools. Retained temporarily so older configuration files continue to validate."
-        },
         "channel": {
           "type": "string",
           "description": "Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only, since beta.34 removed the listener."

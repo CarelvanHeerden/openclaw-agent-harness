@@ -59,7 +59,6 @@ setting it REPLACES the default rather than extending it.
 
 #### `slack`
 
-- **`slack.listener_enabled`** — `boolean`, no default; unset unless you set it. Removed and ignored. The ordinary product is driven only through the four control-plane tools. Retained temporarily so older configuration files continue to validate.
 - **`slack.channel`** — `string`, default `"C0XXXXXXXXX"`. Slack channel ID (e.g. C0DEVCHAN). Optional: outbound posting only, since beta.34 removed the listener.
 - **`slack.authorised_users`** — `string[]`, default `["U000000"]`. Slack user IDs allowed to open sessions or drop control reactions
 

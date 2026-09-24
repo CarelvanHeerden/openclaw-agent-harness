@@ -70,13 +70,6 @@ CREATE TABLE IF NOT EXISTS sessions (
   -- session is terminal, and `aborted` is terminal, so without this the
   -- "preserved, go and get your commits" promise expired at the next restart.
   worktree_preserved       INTEGER,           -- 1 = abort kept this worktree on purpose
-  -- beta.132: proof that a loop is still sitting on a time-extension question.
-  -- That pause is unlike every other one: the loop does not return, it polls
-  -- this row in place. a trusted host confirmation used to infer "still listening" from the
-  -- five-minute window alone, which is only true while the process lives.
-  -- Session 2b4c1d33 answered 28 seconds in, to a listener that had already
-  -- died, and was told the run would pick it up. Nothing did.
-  clarification_heartbeat_at INTEGER,         -- ms; stamped on every poll tick
   -- rc.3: the four fixed points a REVISE session is judged against. A focused
   -- revision has two different questions to answer and they need two different
   -- windows: "is the PR correct" spans the whole feature, "did this revision

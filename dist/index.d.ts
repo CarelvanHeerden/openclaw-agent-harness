@@ -7,8 +7,7 @@
  *   2. Open the state store (SQLite)
  *   3. Wire real subsystems (SDK, git, github, vercel, slack)
  *   4. Register runtime tools (harness_* namespace)
- *   5. Register Slack message hook (message_received)
- *   6. Register cron / service (retention prune, recovery, reaction poller)
+ *   5. Register cron / service (retention prune and recovery)
  *
  * Shape mirrors memory-hybrid.
  */
@@ -16,8 +15,6 @@ import type { HarnessConfig, TokenPointer } from "./config.js";
 import { openStateStore } from "./state/store.js";
 import { InteractionLog } from "./state/interaction-log.js";
 import { OrchestratorLoop } from "./orchestrator/loop.js";
-import { SlackChannelListener } from "./slack/channel-listener.js";
-import { Dispatcher } from "./slack/dispatcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
 import { RouteOverlay } from "./auth/route-overlay.js";
@@ -171,8 +168,6 @@ export interface HarnessRuntime {
      * that survives worktree release + container restart. Read via harness_logs.
      */
     interactionLog: InteractionLog;
-    listener: SlackChannelListener;
-    dispatcher: Dispatcher;
     slack: SlackAdapter;
     git: GitAdapter;
     creds: CredentialAdapter;
@@ -181,8 +176,8 @@ export interface HarnessRuntime {
     /** beta.110: set when the vault could not be opened; surfaced by `harness_health`. */
     vaultError?: string;
     /**
-     * Classify + crystallise a raw request into a structured brief. Shared by
-     * the optional Slack dispatcher and the agent-callable `harness_run` tool.
+     * Classify + crystallise a raw request into a structured brief for the
+     * internal execution path.
      * Returns a discriminated union: a `brief` ready to run, a `clarify`
      * question to put back to the requester, or a `reject` with reason.
      */
@@ -400,9 +395,7 @@ export declare function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRunt
  * after {@link bootstrapHarnessSync} has returned control to the OpenClaw
  * loader. Handles anything that requires network / vault I/O:
  *
- *   - fetching the Slack bot token from the credential vault and starting
- *     the reactions poller
- *   - session recovery (mark stale sessions as interrupted, notify Slack)
+ *   - session recovery and provider readiness checks
  *
  * The returned promise is stored on `runtime.asyncBootstrap` so teardown
  * can await it if it needs to (e.g. to ensure recovery notifies have

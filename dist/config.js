@@ -342,21 +342,6 @@ function mergeDeep(base, override) {
     return out;
 }
 /**
- * PURE: did this config carry the removed `slack.listener_enabled` key?
- *
- * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
- * and the parsed config can no longer answer. Bootstrap uses this to warn once
- * that the setting does nothing, which is the whole of what it should do -- the
- * old behaviour was to refuse startup unless a channel was supplied for a
- * listener that was deleted ninety-nine releases ago.
- */
-export function declaresRemovedListenerFlag(input) {
-    const slack = input?.slack;
-    if (!slack || typeof slack !== "object")
-        return false;
-    return Object.prototype.hasOwnProperty.call(slack, "listener_enabled");
-}
-/**
  * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
  *
  * Kept as data rather than prose because three things must agree on the list:
@@ -368,8 +353,7 @@ export const REMOVED_LOOP_KEYS = ["subtask_concurrency", "parallel_independent_s
  * PURE: which removed parallelism keys did this config carry?
  *
  * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
- * the parsed config can no longer answer -- the same shape as
- * {@link declaresRemovedListenerFlag}.
+ * the parsed config can no longer answer.
  *
  * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
  * validates an operator's config against that manifest with
@@ -386,10 +370,6 @@ export function declaresRemovedParallelKeys(input) {
 }
 export function parseHarnessConfig(input) {
     const merged = mergeDeep(DEFAULTS, input);
-    // An old config may still carry `slack.listener_enabled`. Accept it and drop
-    // it: the schemas keep the property so such a config still validates, but
-    // nothing downstream should be able to read a setting nothing obeys.
-    delete merged.slack.listener_enabled;
     // v2.0.0: same treatment for the parallelism keys. Dropping them here is what
     // stops a stale `subtask_concurrency: 4` from reading as live configuration
     // in a dump or a log when nothing obeys it any more.
@@ -399,7 +379,7 @@ export function parseHarnessConfig(input) {
     // Hard validation on safety-critical fields.
     //
     // `authorised_users` is always required: it gates who may invoke the
-    // harness via agent tool calls, and who may drop control reactions.
+    // harness via the control-plane tools.
     if (merged.slack.authorised_users.length === 0) {
         throw new Error("harness.slack.authorised_users must contain at least one Slack user id");
     }

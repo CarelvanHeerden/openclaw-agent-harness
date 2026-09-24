@@ -1481,63 +1481,6 @@ export declare class OrchestratorLoop {
      */
     private abortHasSalvageableCommits;
     /**
-     * beta.129: pause at the review boundary, ask the operator to buy more wall
-     * clock, and wait IN PLACE for the answer. Returns the seconds granted, or 0
-     * for a decline, an unreadable reply, or silence.
-     *
-     * Waiting in place rather than returning through `finaliseAwaitingClarification`
-     * is the whole trick. That path resumes via a fresh `loop.run`, which re-plans
-     * from scratch -- another lead call, and a plan that need not match the one
-     * the existing commits were written against. Polling the answer column keeps
-     * the cycle counter, the findings history, the worktree and the deadline
-     * arithmetic exactly where they are.
-     *
-     * beta.132: the price of waiting in place is that the question dies with the
-     * process holding it, and b129 had no way to notice -- `a trusted host confirmation` read
-     * the wait window as proof of life and told session 2b4c1d33's operator the
-     * run would pick their answer up. It had already exited. Hence the
-     * heartbeat: every tick below stamps the row, and an answer arriving to a
-     * stale one finishes the ship rather than being promised to nobody.
-     */
-    private askForTimeExtension;
-    /**
-     * rc.6: ask the operator to fund a stop the loop is about to make on money.
-     *
-     * Deliberately the same shape as `askForTimeExtension`, down to the bounded
-     * wait, the heartbeat and the resume status, because it is the same act: the
-     * loop has run out of one resource, a human can supply more, and the only
-     * thing standing between them is that nobody thought to ask. Divergence
-     * between the two would be a maintenance trap, not a feature.
-     *
-     * Returns dollars granted, or 0 for declined / unanswered / disabled. Never
-     * throws: a question that cannot be posted must not be worse than not asking,
-     * so every failure path returns 0 and the caller proceeds as it always did.
-     */
-    private askForBudgetExtension;
-    /**
-     * rc.6: apply a granted budget extension to the run and to the row.
-     *
-     * Persisted, for the reason beta.130 persisted an extended deadline: a
-     * crash-recovery or a later resume that reverted to the original figure would
-     * stop the run a second time for a reason the operator has already overruled.
-     */
-    private applyBudgetGrant;
-    /**
-     * beta.130: persist an extended wall clock so a crash-recovery or a later
-     * resume honours what the operator granted instead of reverting to the
-     * default and guillotining the run a second time.
-     */
-    /**
-     * beta.132: say "I am still here" on the row the operator's answer lands on.
-     *
-     * Best-effort by design. A failed stamp reads as a dead listener, which
-     * costs the run its time extension and ships an honest do-not-merge PR --
-     * where the alternative, assuming life, strands the work. This is the safe
-     * direction to fail in.
-     */
-    private stampClarificationHeartbeat;
-    private persistExtendedDeadline;
-    /**
      * beta.131: give an unroutable CI failure somebody to belong to.
      *
      * b127 folds CI findings into the review and lets the deterministic router

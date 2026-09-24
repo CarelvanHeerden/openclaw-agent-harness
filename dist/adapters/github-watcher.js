@@ -51,8 +51,10 @@ export class PrMergedWatcher {
             if (!info)
                 continue;
             try {
-                const ghToken = await this.opts.resolveGhToken(row.repo, row.requester);
-                const state = await this.fetchPrState(info.owner, info.repo, info.number, ghToken);
+                const credential = await this.opts.resolveGhToken(row.repo, row.requester);
+                const ghToken = typeof credential === "string" ? credential : credential.token;
+                const apiBase = typeof credential === "string" ? "https://api.github.com" : credential.apiBase;
+                const state = await this.fetchPrState(info.owner, info.repo, info.number, ghToken, apiBase);
                 if (!state)
                     continue;
                 if (state.state === "closed" || state.merged) {
@@ -72,9 +74,9 @@ export class PrMergedWatcher {
         }
         return closed;
     }
-    async fetchPrState(owner, repo, number, ghToken) {
+    async fetchPrState(owner, repo, number, ghToken, apiBase) {
         const fetchFn = this.opts.fetchImpl ?? fetch;
-        const res = await fetchFn(`https://api.github.com/repos/${owner}/${repo}/pulls/${number}`, {
+        const res = await fetchFn(`${apiBase}/repos/${owner}/${repo}/pulls/${number}`, {
             headers: {
                 Authorization: `Bearer ${ghToken}`,
                 Accept: "application/vnd.github+json",
@@ -151,9 +153,17 @@ export class PrMergedWatcher {
     }
 }
 export function parsePrUrl(url) {
-    const m = url.match(/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/);
-    if (!m)
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:")
+            return null;
+        const m = parsed.pathname.match(/^\/([^/]+)\/([^/]+)\/pull\/(\d+)\/?$/);
+        if (!m)
+            return null;
+        return { owner: m[1], repo: m[2], number: Number(m[3]) };
+    }
+    catch {
         return null;
-    return { owner: m[1], repo: m[2], number: Number(m[3]) };
+    }
 }
 //# sourceMappingURL=github-watcher.js.map

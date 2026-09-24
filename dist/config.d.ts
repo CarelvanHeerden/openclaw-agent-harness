@@ -392,18 +392,9 @@ export interface LogConfig {
     retention_days: number;
 }
 export interface SlackConfig {
-    /**
-     * NOTE: `listener_enabled` is deliberately absent. beta.34 removed the
-     * autonomous Slack listener; beta.133 removed the setting, because a key that
-     * can be configured but not obeyed is worse than no key at all -- it made the
-     * harness refuse to start over a prerequisite for a mode it does not have.
-     * Existing configs may still carry it: the JSON schema still accepts the key
-     * (both schemas are `additionalProperties: false`, so dropping it there would
-     * turn an old config into a validation failure), `parseHarnessConfig`
-     * discards it, and bootstrap warns once.
-     */
-    /** Outbound posting target. Optional; there is nothing to listen on. */
+    /** Optional outbound notification target. */
     channel: string;
+    /** Host-authenticated Slack actors allowed to use the control plane. */
     authorised_users: string[];
 }
 export interface BudgetsConfig {
@@ -614,29 +605,6 @@ export interface LoopConfig {
     lead_timeout_seconds: number;
     session_hard_timeout_seconds: number;
     /**
-     * beta.129: when the wall clock will not fit another cycle but the findings
-     * are not finished, ASK the operator for more time instead of silently
-     * landing a half-reviewed branch.
-     *
-     * Session d48ba433 hit the 2h ceiling with $18 of its $40 unspent and no way
-     * to say "keep going" -- the confirmation gate can raise money mid-flight and
-     * nothing could raise time. Disabling this restores the b120 behaviour of
-     * shipping whatever exists.
-     */
-    time_extension_ask_enabled?: boolean;
-    /**
-     * beta.129: how long the loop waits, in place, for an answer to that question
-     * before giving up and shipping. Bounded on purpose: an unanswered question
-     * must never be the reason a deliverable is not on GitHub. Default 300s.
-     */
-    time_extension_wait_seconds?: number;
-    /**
-     * beta.129: seconds granted when the operator says yes without naming a
-     * figure. A reply carrying its own time clause ("2 more hours") wins.
-     * Default 1800.
-     */
-    time_extension_default_seconds?: number;
-    /**
      * rc.6: fraction of the approved session budget held back for CI repair and
      * the verification tail, carved out before implementation starts spending.
      *
@@ -648,22 +616,6 @@ export interface LoopConfig {
      * a reserve larger than half the budget starves ordinary work. Default 0.3.
      */
     repair_reserve_ratio: number;
-    /**
-     * rc.6: may the loop ASK for more money when a money-based stop is about to
-     * refuse useful work? The `:moneybag:` reaction has always granted the same
-     * authority; this asks for it at the moment of the decision rather than
-     * relying on somebody watching. Never applies to the per-user monthly cap,
-     * which stays an outright refusal. Default true; false restores the silent
-     * refusals of rc.5 and earlier.
-     */
-    budget_extension_ask_enabled?: boolean;
-    /**
-     * rc.6: how long the loop waits, in place, for an answer to that question.
-     * Bounded for beta.129's reason: an unanswered question must never be why a
-     * deliverable is missing. On timeout the loop does exactly what it would have
-     * done without asking. Default 300s.
-     */
-    budget_extension_wait_seconds?: number;
     /**
      * beta.40: stuck-loop reclaim threshold (seconds). The beta.38 re-entrancy
      * guard (`runningSessions`) is module-scoped and survives a plugin
@@ -1683,16 +1635,6 @@ export interface PatAuthConfig {
  */
 export declare function validatePatHierarchy(pr: PatRoutingConfig): void;
 /**
- * PURE: did this config carry the removed `slack.listener_enabled` key?
- *
- * beta.133. Read off the RAW input, because `parseHarnessConfig` drops the key
- * and the parsed config can no longer answer. Bootstrap uses this to warn once
- * that the setting does nothing, which is the whole of what it should do -- the
- * old behaviour was to refuse startup unless a channel was supplied for a
- * listener that was deleted ninety-nine releases ago.
- */
-export declare function declaresRemovedListenerFlag(input: unknown): boolean;
-/**
  * v2.0.0: `loop` keys that parallel sub-task dispatch owned, now removed.
  *
  * Kept as data rather than prose because three things must agree on the list:
@@ -1704,8 +1646,7 @@ export declare const REMOVED_LOOP_KEYS: readonly ["subtask_concurrency", "parall
  * PURE: which removed parallelism keys did this config carry?
  *
  * v2.0.0. Read off the RAW input, because `parseHarnessConfig` drops them and
- * the parsed config can no longer answer -- the same shape as
- * {@link declaresRemovedListenerFlag}.
+ * the parsed config can no longer answer.
  *
  * These keys MUST stay declared in `openclaw.plugin.json`. The gateway
  * validates an operator's config against that manifest with

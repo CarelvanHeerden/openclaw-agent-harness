@@ -7,8 +7,7 @@
  *   2. Open the state store (SQLite)
  *   3. Wire real subsystems (SDK, git, github, vercel, slack)
  *   4. Register runtime tools (harness_* namespace)
- *   5. Register Slack message hook (message_received)
- *   6. Register cron / service (retention prune, recovery, reaction poller)
+ *   5. Register cron / service (retention prune and recovery)
  *
  * Shape mirrors memory-hybrid.
  */
@@ -19,7 +18,7 @@ import { existsSync, mkdirSync, realpathSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 import type { HarnessConfig, TokenPointer } from "./config.js";
-import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedListenerFlag, declaresRemovedParallelKeys } from "./config.js";
+import { parseHarnessConfig, assessBudgetCoherence, declaresRemovedParallelKeys } from "./config.js";
 import { openStateStore, openStateStoreSync } from "./state/store.js";
 import { decideDrainAction, type DrainProgressSample } from "./state/teardown-drain.js";
 import { decideRecoveryResume } from "./state/recovery-guard.js";
@@ -30,8 +29,6 @@ import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, isAtLeastMedium, normaliseSeverity } from "./orchestrator/finding-classify.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import type { DatabaseSync } from "node:sqlite";
-import { SlackChannelListener, type SlackMessageEvent } from "./slack/channel-listener.js";
-import { Dispatcher } from "./slack/dispatcher.js";
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
 import { PatRouter } from "./auth/pat-router.js";
@@ -237,8 +234,6 @@ export interface HarnessRuntime {
    * that survives worktree release + container restart. Read via harness_logs.
    */
   interactionLog: InteractionLog;
-  listener: SlackChannelListener;
-  dispatcher: Dispatcher;
   slack: SlackAdapter;
   git: GitAdapter;
   creds: CredentialAdapter;
@@ -247,8 +242,8 @@ export interface HarnessRuntime {
   /** beta.110: set when the vault could not be opened; surfaced by `harness_health`. */
   vaultError?: string;
   /**
-   * Classify + crystallise a raw request into a structured brief. Shared by
-   * the optional Slack dispatcher and the agent-callable `harness_run` tool.
+   * Classify + crystallise a raw request into a structured brief for the
+   * internal execution path.
    * Returns a discriminated union: a `brief` ready to run, a `clarify`
    * question to put back to the requester, or a `reject` with reason.
    */
@@ -463,9 +458,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
   const rawConfig = (api.pluginConfig ?? api.getConfig?.() ?? {}) as unknown;
   const config = parseHarnessConfig(rawConfig);
 
-  // Crystalliser closure. Shared by the (optional) Slack dispatcher AND the
-  // agent-callable `harness_run` tool, so the agent-orchestrated path uses
-  // exactly the same classify -> refine pipeline as the autonomous listener.
+  // Crystalliser closure used by the internal execution path.
   const crystallise: HarnessRuntime["crystallise"] = async (userText, concepts) => {
     const result = await crystallisePrompt(
       userText,
@@ -1878,25 +1871,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
 
   });
 
-  const dispatcher = new Dispatcher({
-    config,
-    state,
-    loop,
-    logger: api.logger,
-    crystallise,
-    slackReply: (channel, threadTs, text) => slack.replyInThread(channel, threadTs, text),
-    slackReact: (channel, ts, name) => slack.addReaction(channel, ts, name),
-  });
-
-  const listener = new SlackChannelListener({
-    config,
-    state,
-    dispatcher,
-    logger: api.logger,
-  });
-
   const runtime: HarnessRuntime = {
-    config, state, budget, pat, loop, interactionLog, listener, dispatcher, slack, git, creds,
+    config, state, budget, pat, loop, interactionLog, slack, git, creds,
     effectiveBackendRoutes, ensureBackendReady,
     vault, vaultError: vaultOpenError,
     crystallise,
@@ -2131,8 +2107,8 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         SELECT run_id FROM control_proposals WHERE pr_number = ? AND run_id IN (SELECT id FROM control_runs WHERE repository = ?)
       )`).get(prNumber, repository) as { requester_id?: string } | undefined;
       if (!run?.requester_id) throw new Error("Control requester is unavailable");
-      const { token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
-      const merged = await mergePullRequest({ repoFullName: repository, prNumber, ghToken, method: "squash", expectedHeadSha });
+      const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
+      const merged = await mergePullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase, method: "squash", expectedHeadSha });
       if (!merged.merged || !merged.sha) throw new Error(merged.message || "Provider did not merge the pull request");
       return { mergeSha: merged.sha };
     },
@@ -2143,7 +2119,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       if (!run?.requester_id) return false;
       const { route, token: ghToken } = await resolveBoundControlCredential(repository, prNumber, run.requester_id);
       const pr = await getPullRequest({ repoFullName: repository, prNumber, ghToken, apiBase: route.apiBase });
-      return pr.merged && mergeSha.length >= 40;
+      return /^[a-f0-9]{40}$/i.test(mergeSha) && pr.merged && pr.mergeCommitSha === mergeSha;
     },
   };
   const internalMergeService = new InternalMergeService(state.db, controlRepository, controlMergeProvider);
@@ -2269,7 +2245,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       change.assertCurrent();
       const existingSession = state.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(change.changeId) as
         { status: string; pr_number: number | null; final_pr_url: string | null; published_sha: string | null; published_at:number|null } | undefined;
-      const terminalLegacyPublication = existingSession && ["done","failed","aborted","accounting_incomplete"].includes(existingSession.status) && existingSession.pr_number && existingSession.final_pr_url && existingSession.published_sha && existingSession.published_at;
+      const terminalLegacyPublication = existingSession && ["done","failed","aborted"].includes(existingSession.status) && existingSession.pr_number && existingSession.final_pr_url && existingSession.published_sha && existingSession.published_at;
       const outcome = terminalLegacyPublication
         ? { status: "shipped" as const, sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
         : await runtime.loop.runConfirmedControl(change.changeId, controlledBrief, authorize, async (action) => {
@@ -2298,10 +2274,9 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const ci = await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
       const findings = review?.findings ? JSON.parse(review.findings) as ReviewFinding[] : [];
       const pullRequestFiles: Array<{ filename: string; status: string; patch?: string }> = [];
-      const apiBase = route.apiBase ?? "https://api.github.com";
       for (let page = 1; page <= 30; page += 1) {
         const filesCredential = await boundProviderCredential("test");
-        const response = await fetch(`${apiBase}/repos/${change.repositoryIdentity}/pulls/${Number(row.pr_number)}/files?per_page=100&page=${page}`, {
+        const response = await fetch(`${filesCredential.route.apiBase}/repos/${change.repositoryIdentity}/pulls/${Number(row.pr_number)}/files?per_page=100&page=${page}`, {
           headers: { Authorization: `Bearer ${filesCredential.token}`, Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "openclaw-agent-harness/control-plane" },
         });
         if (!response.ok) throw new Error(`pull_request_files_unavailable:${response.status}`);
@@ -2393,69 +2368,6 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     for (const d of disposeOkfHooks) runtime.disposers.push(d);
   }
 
-  // Subscribe to inbound Slack messages.
-  //
-  // The SDK exposes TWO distinct concepts here:
-  //   * `api.on(event, handler)` -- lightweight event-bus subscribe, the
-  //     path hybrid-memory uses for `message_received`. Returns an
-  //     unsubscribe fn. This is what we want for reacting to inbound
-  //     Slack messages.
-  //   * `api.registerHook(events, handler, opts)` -- registers a NAMED,
-  //     enumerable, first-class plugin hook (shows up in
-  //     `openclaw plugins list ... hooks`). Requires `opts.name`.
-  //
-  // We prefer `api.on` (matches hybrid-memory's pattern for this exact
-  // event) and fall back to `api.registerHook` with a proper `opts.name`
-  // if only the latter is present. Older mock APIs may expose neither.
-  //
-  // Handler itself is async; only `register()` needs to be sync, which
-  // this code is (we do NOT await api.on / api.registerHook here).
-  const messageHandler = async (event: unknown) => {
-    const slackEvt = event as { channel?: { provider?: string }; payload?: SlackMessageEvent } | undefined;
-    if (!slackEvt?.payload) return;
-    if (slackEvt.channel?.provider !== "slack") return;
-    await listener.handle(slackEvt.payload);
-  };
-
-  // AGENT-ORCHESTRATED BY DEFAULT.
-  //
-  // By default (`slack.listener_enabled: false`) the harness does NOT
-  // subscribe to inbound Slack messages. The OpenClaw agent owns the
-  // conversation and drives the harness by calling its tools
-  // (`harness_run`, `harness_start_session`, `harness_status`, ...). This
-  // avoids the plugin competing with the OpenClaw agent for the same
-  // messages, and keeps the agent as the single orchestrator.
-  //
-  // Autonomous mode (`slack.listener_enabled: true`) is opt-in: the plugin
-  // then treats allow-listed messages in `slack.channel` as dev requests.
-  // beta.34: the harness Slack LISTENER is removed. The harness is a pure
-  // tool-driven engine: the OpenClaw agent is the SOLE operator and drives it
-  // via harness_run / harness_start_session / harness_merge_pr / ... The
-  // harness NEVER subscribes to inbound Slack messages, so:
-  //   - it can never be independently addressed in a channel (the privileged
-  //     surface — PATs, PR merges — is only reachable through the agent's tool
-  //     layer, which carries the agent's auth/approval context);
-  //   - the bot-to-bot loop risk is structurally eliminated (no two OpenClaws
-  //     talking in a channel).
-  // beta.133: `slack.listener_enabled` is no longer part of the config at all.
-  // The key is still accepted from older configs and discarded during parse, so
-  // the question "was it set?" can only be asked of the RAW input. Progress
-  // posting to a channel/thread explicitly passed into a tool call still
-  // works via the dispatcher/slack adapter — that's OUTBOUND only.
-  void messageHandler; // retained for potential future use; never subscribed.
-  if (declaresRemovedListenerFlag(rawConfig)) {
-    api.logger.warn(
-      "[harness] slack.listener_enabled was removed in beta.133 and has been IGNORED since beta.34, " +
-        "when the Slack listener was deleted. The harness is tool-driven only (drive it via " +
-        "harness_run / harness_start_session / harness_merge_pr). Remove this config key.",
-    );
-  } else {
-    api.logger.info(
-      "[harness] tool-driven mode -- the harness does NOT listen to Slack. " +
-        "Drive it via harness_run / harness_start_session / harness_merge_pr tools.",
-    );
-  }
-
   // v2.0.0: parallel sub-task dispatch is gone. Warn rather than refuse: a
   // config naming these keys is not wrong, it is old, and refusing it would
   // take the plugin offline over a setting that no longer does anything.
@@ -2501,7 +2413,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         // so on the vault-less Staging container every poll failed even though
         // GH_TOKEN was set -- merged PRs were never noticed and their
         // worktrees never released.
-        return resolveGitToken(resolution);
+        return { token: await resolveGitToken(resolution), apiBase: resolution.apiBase };
       },
     });
     if (api.registerService) {
@@ -2616,9 +2528,7 @@ export function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
  * after {@link bootstrapHarnessSync} has returned control to the OpenClaw
  * loader. Handles anything that requires network / vault I/O:
  *
- *   - fetching the Slack bot token from the credential vault and starting
- *     the reactions poller
- *   - session recovery (mark stale sessions as interrupted, notify Slack)
+ *   - session recovery and provider readiness checks
  *
  * The returned promise is stored on `runtime.asyncBootstrap` so teardown
  * can await it if it needs to (e.g. to ensure recovery notifies have
@@ -3261,9 +3171,7 @@ function renderPrBody(
 }
 
 async function teardown(runtime: HarnessRuntime, api: HarnessPluginApi): Promise<void> {
-  // Wait for the async bootstrap phase to complete before tearing things
-  // down. Otherwise the reactions poller could try to start after we've
-  // closed the DB, or recovery could try to notify after `slack` is gone.
+  // Wait for the async bootstrap phase to complete before tearing things down.
   if (runtime.asyncBootstrap) {
     try {
       await runtime.asyncBootstrap;
@@ -3424,7 +3332,7 @@ export default definePluginEntry({
    *
    * We therefore do all sync setup (config parse, DB open, tool/hook/
    * service registration) inline in this call, and kick off the async
-   * phase (Slack token fetch, reactions poller, session recovery) as
+   * phase (provider readiness and session recovery) as
    * a fire-and-forget promise stored on `runtime.asyncBootstrap`.
    * Teardown awaits that promise so nothing runs on a closed DB.
    *

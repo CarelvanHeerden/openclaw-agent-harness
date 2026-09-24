@@ -175,7 +175,7 @@ export async function postPrComment(input) {
  * fail fast with a clear Slack error instead of dying mid-worker.
  */
 export async function verifyRepoAccess(input) {
-    const url = `https://api.github.com/repos/${input.repoFullName}`;
+    const url = `${input.apiBase ?? "https://api.github.com"}/repos/${input.repoFullName}`;
     const res = await fetch(url, {
         headers: {
             Authorization: `Bearer ${input.ghToken}`,
@@ -208,6 +208,7 @@ export async function getPullRequest(input) {
         headSha: j.head.sha,
         state: j.state,
         merged: j.merged,
+        mergeCommitSha: j.merge_commit_sha ?? null,
         mergeable: j.mergeable,
         baseBranch: j.base.ref,
         headRepoFullName: j.head.repo?.full_name ?? null,
@@ -718,7 +719,7 @@ export function extractFailureExcerpt(raw) {
 }
 /** beta.34: merge a PR (squash by default). Returns the merge commit SHA. */
 export async function mergePullRequest(input) {
-    const res = await fetch(`https://api.github.com/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
+    const res = await fetch(`${input.apiBase ?? "https://api.github.com"}/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
         method: "PUT",
         headers: { ...GH_HEADERS(input.ghToken), "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -103,3 +103,25 @@ test("getPullRequest: returns head sha + merged state",
       assert.equal(pr.baseBranch, "main");
     } finally { restore(); }
   });
+
+test("GitHub Enterprise merge and PR reads stay on the configured API host with the enterprise token",
+  { skip: getCombinedStatus === null }, async () => {
+    const original = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (url, init = {}) => {
+      calls.push({ url: String(url), authorization: init.headers?.Authorization });
+      if (String(url).endsWith("/merge")) return json({ merged: true, sha: "a".repeat(40), message: "ok" });
+      return json({ head: { sha: "b".repeat(40), ref: "feature", repo: { full_name: "o/r" } }, state: "closed", merged: true, merge_commit_sha: "a".repeat(40), mergeable: null, base: { ref: "main" } });
+    };
+    try {
+      const apiBase = "https://ghe.example/api/v3";
+      const token = "enterprise-only-token";
+      await mergePullRequest({ repoFullName: "o/r", prNumber: 7, ghToken: token, apiBase });
+      const pr = await getPullRequest({ repoFullName: "o/r", prNumber: 7, ghToken: token, apiBase });
+      assert.equal(pr.mergeCommitSha, "a".repeat(40));
+      assert.equal(calls.length, 2);
+      assert.ok(calls.every((call) => call.url.startsWith(`${apiBase}/repos/o/r/`)));
+      assert.ok(calls.every((call) => call.authorization === `Bearer ${token}`));
+      assert.ok(calls.every((call) => !call.url.startsWith("https://api.github.com")));
+    } finally { globalThis.fetch = original; }
+  });

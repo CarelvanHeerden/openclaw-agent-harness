@@ -77,12 +77,12 @@ A confirmation attestation binds all of the following values exactly:
 The canonical binding digest is domain-separated and versioned:
 
 ```text
-SHA-256("control-plane-confirm/v1\n" + canonical-json(binding))
+SHA-256("control-plane-confirm/v2\n" + canonical-json(binding))
 ```
 
 Canonical JSON uses UTF-8, sorted object keys, preserved array order, integers for time values, decimal strings for money, normalized repository/base identities, and no omitted-vs-null ambiguity.
 
-Confirmation is an atomic compare-and-swap from `prepared` to `accepted`. The attestation is consumed in the same transaction as the state transition and durable execution intent. A replay, expired receipt, changed proposal, changed base revision, wrong actor, wrong conversation, wrong repository, wrong operation, or already-consumed nonce fails closed and starts no work.
+Confirmation is an atomic compare-and-swap from `prepared` to the internal autonomous execution state, exposed publicly as `running`. The attestation is consumed in the same transaction as the state transition and durable execution intent. A replay, expired receipt, changed proposal, changed base revision, wrong actor, wrong conversation, wrong repository, wrong operation, or already-consumed nonce fails closed and starts no work.
 
 A successful response is concise:
 
@@ -90,8 +90,8 @@ A successful response is concise:
 {
   "ok": true,
   "changeId": "chg_…",
-  "state": "accepted",
-  "summary": "Change accepted and started."
+  "state": "running",
+  "summary": "Change confirmed and running autonomously."
 }
 ```
 
@@ -102,8 +102,7 @@ There is no post-confirmation `awaiting_clarification` path. Confirmation is the
 `harness_change_result` is idempotent and safe to call at any time. It returns one of these product states:
 
 - `prepared` — waiting for the one confirmation;
-- `accepted` — confirmation durably committed and execution queued;
-- `running` — implementation/review/publication is active;
+- `running` — confirmation is durably committed and implementation/review/publication is queued or active;
 - `pr_ready` — terminal success, PR proven ready under section 6;
 - `failed` — terminal failure with no hidden question or resumable user decision;
 - `merged` — terminal merge success;
@@ -163,7 +162,7 @@ request -> preparing -> prepared
                          |   |
           expiry/cancel  |   | trusted confirmation + CAS
                          |   v
-                         +-> accepted -> running
+                         +----------> running
                                           |  |
                      any terminal fault   |  | readiness predicates all true
                                           v  v
@@ -180,17 +179,16 @@ Normative transition table:
 |---|---|---|---|---|
 | none | prepare | validation succeeds | prepared | persist immutable proposal |
 | none/preparing | validation failure | any envelope check fails | failed | persist safe failure |
-| prepared | confirm | trusted, exact, fresh, unused attestation; CAS wins | accepted | persist consumed nonce and execution intent atomically |
+| prepared | confirm | trusted, exact, fresh, unused attestation; CAS wins | running | persist consumed nonce and durable execution intent atomically; dispatch is recovered from that intent |
 | prepared | expire/cancel | CAS wins | failed | no execution |
-| accepted | dispatcher claim | durable intent exists | running | one execution lease |
 | running | readiness success | every section 6 predicate is true | pr_ready | persist immutable readiness record |
 | running | any bounded fault/escalation | predicate fails or envelope exhausted | failed | stop; preserve recovery evidence |
 | pr_ready | merge | separate trusted attestation; readiness revalidated; CAS wins | merged | at most one provider merge |
 | pr_ready | merge refusal/failure | stale head, bad attestation, failed gate/provider | merge_failed | no retry requiring user clarification |
 
-There are no transitions from `accepted` or `running` back to `prepared`, and none to `awaiting_clarification`, `paused`, `resumable`, or `needs_input`.
+There are no transitions from `running` back to `prepared`, and none to `awaiting_clarification`, `paused`, `resumable`, or `needs_input`.
 
-`prepared`, `failed`, `pr_ready`, `merged`, and `merge_failed` are durable across process restart. `accepted` and `running` are recovered from durable intent/lease records, not from in-memory promises.
+`prepared`, `running`, `failed`, `pr_ready`, `merged`, and `merge_failed` are durable across process restart. `running` is recovered from durable intent/lease records, not from in-memory promises.
 
 ## 5. Failure and escalation rules
 

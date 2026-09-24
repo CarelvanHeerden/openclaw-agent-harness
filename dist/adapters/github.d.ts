@@ -77,6 +77,7 @@ export declare function postPrComment(input: {
 export declare function verifyRepoAccess(input: {
     repoFullName: string;
     ghToken: string;
+    apiBase?: string;
 }): Promise<{
     ok: boolean;
     status: number;
@@ -93,6 +94,7 @@ export declare function getPullRequest(input: {
     headSha: string;
     state: string;
     merged: boolean;
+    mergeCommitSha: string | null;
     mergeable: boolean | null;
     baseBranch: string;
     /**
@@ -265,6 +267,7 @@ export declare function mergePullRequest(input: {
     commitTitle?: string;
     /** Refuse provider-side if the PR head moved after final inspection. */
     expectedHeadSha?: string;
+    apiBase?: string;
 }): Promise<{
     merged: boolean;
     sha: string;

@@ -226,8 +226,8 @@ export async function postPrComment(input: {
  * Sanity-check that a PAT can see a repo. Used at session-start so we
  * fail fast with a clear Slack error instead of dying mid-worker.
  */
-export async function verifyRepoAccess(input: { repoFullName: string; ghToken: string }): Promise<{ ok: boolean; status: number; scopes?: string; reason?: string }> {
-  const url = `https://api.github.com/repos/${input.repoFullName}`;
+export async function verifyRepoAccess(input: { repoFullName: string; ghToken: string; apiBase?: string }): Promise<{ ok: boolean; status: number; scopes?: string; reason?: string }> {
+  const url = `${input.apiBase ?? "https://api.github.com"}/repos/${input.repoFullName}`;
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${input.ghToken}`,
@@ -259,6 +259,7 @@ export async function getPullRequest(input: {
   headSha: string;
   state: string;
   merged: boolean;
+  mergeCommitSha: string | null;
   mergeable: boolean | null;
   baseBranch: string;
   /**
@@ -278,13 +279,14 @@ export async function getPullRequest(input: {
   if (!res.ok) throw new Error(`GitHub get PR #${input.prNumber} failed ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const j = (await res.json()) as {
     head: { sha: string; ref: string; repo: { full_name: string } | null };
-    state: string; merged: boolean; mergeable: boolean | null; base: { ref: string };
+    state: string; merged: boolean; merge_commit_sha?: string | null; mergeable: boolean | null; base: { ref: string };
     draft?: boolean; html_url?: string;
   };
   return {
     headSha: j.head.sha,
     state: j.state,
     merged: j.merged,
+    mergeCommitSha: j.merge_commit_sha ?? null,
     mergeable: j.mergeable,
     baseBranch: j.base.ref,
     headRepoFullName: j.head.repo?.full_name ?? null,
@@ -925,8 +927,9 @@ export async function mergePullRequest(input: {
   commitTitle?: string;
   /** Refuse provider-side if the PR head moved after final inspection. */
   expectedHeadSha?: string;
+  apiBase?: string;
 }): Promise<{ merged: boolean; sha: string; message: string }> {
-  const res = await fetch(`https://api.github.com/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
+  const res = await fetch(`${input.apiBase ?? "https://api.github.com"}/repos/${input.repoFullName}/pulls/${input.prNumber}/merge`, {
     method: "PUT",
     headers: { ...GH_HEADERS(input.ghToken), "Content-Type": "application/json" },
     body: JSON.stringify({
