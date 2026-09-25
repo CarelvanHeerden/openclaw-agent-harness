@@ -11,7 +11,8 @@ const reg=readFileSync(resolve(root,"src/tools/registration.ts"),"utf8");
 
 test("beta55: the only pre-execution human boundary is exact authenticated confirmation",()=>{
   assert.deepEqual(allowedControlTransitions("awaiting_confirmation"),["autonomous_run","failed","cancelled"]);
-  assert.match(reg,/Confirm the exact prepared change in the authenticated conversation/);
+  assert.match(reg,/current authenticated user message plainly approves/);
+  assert.match(reg,/matching fresh raw host event/);
   assert.doesNotMatch(reg,/awaiting_clarification|clarification_answer|harness_answer/);
 });
 

@@ -20,5 +20,6 @@ test("beta49: loose finding text variants and regex remain stable",()=>{
 test("beta49: no dropFindings interaction can mutate a confirmed authority envelope",()=>{
   const reg=readFileSync(resolve(root,"src/tools/registration.ts"),"utf8");
   assert.doesNotMatch(reg,/dropFindings|harness_revise|needsSelection/);
-  assert.match(reg,/Confirm the exact prepared change in the authenticated conversation/);
+  assert.match(reg,/current authenticated user message plainly approves/);
+  assert.match(reg,/matching fresh raw host event/);
 });

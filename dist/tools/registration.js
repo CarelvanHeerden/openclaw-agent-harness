@@ -125,9 +125,9 @@ export function registerHarnessTools(api, runtime) {
     const rt = runtime;
     const definitions = [
         ["harness_prepare_change", (context) => tool("harness_prepare_change", "Prepare one complete repository change for review without starting implementation.", PREPARE_SCHEMA, context, (service, input, trusted) => service.prepare(input, trusted), rt)],
-        ["harness_confirm_change", (context) => tool("harness_confirm_change", "Confirm the exact prepared change in the authenticated conversation.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted), rt, "confirm_change")],
+        ["harness_confirm_change", (context) => tool("harness_confirm_change", "Confirm the exact prepared change after the current authenticated user message plainly approves it. Conversational approval is allowed; the user does not need to repeat a change ID. Authorization still requires the matching fresh raw host event.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted), rt, "confirm_change")],
         ["harness_change_result", (context) => tool("harness_change_result", "Read the safe current or final outcome of a change.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted), rt)],
-        ["harness_merge_change", (context) => tool("harness_merge_change", "Merge a ready pull request after a separate authenticated decision.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted), rt, "merge_change")],
+        ["harness_merge_change", (context) => tool("harness_merge_change", "Merge a ready pull request only after the current authenticated user message plainly authorizes merge. Conversational approval is allowed; authorization still requires the matching fresh raw host event.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted), rt, "merge_change")],
     ];
     for (const [name, build] of definitions) {
         // Function registrations require an explicit name so OpenClaw can bind the

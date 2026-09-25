@@ -14,7 +14,7 @@ import { registerHarnessTools } from "../dist/tools/registration.js";
 
 const CHANGE = "chg_abcdefghijkl";
 
-function fixture() {
+function fixture({ ambiguous = false } = {}) {
   let now = 2_000_000_000_000;
   const target = {
     changeId: CHANGE,
@@ -29,6 +29,7 @@ function fixture() {
   const calls = [];
   const service = {
     attestationTarget(operation, actor, conversation, requested) {
+      if (ambiguous && !requested) throw new Error("exactly one pending change required");
       if (actor !== "U1" || conversation !== "D1" || (requested && requested !== CHANGE)) throw new Error("not found");
       return { ...target, targetDigest: `${operation}:${target.targetDigest}` };
     },
@@ -62,6 +63,7 @@ function fixture() {
   registerHarnessTools(api, { controlPlane: service, controlAttestationBroker: broker, authorisedUsers: ["U1"] });
   const toolContext = (overrides = {}) => ({
     requesterSenderId: "U1",
+    hostEventId: "M1",
     nativeChannelId: "D1",
     messageChannel: "slack",
     agentAccountId: "A1",
@@ -121,7 +123,7 @@ test("real message_received -> broker -> contextual tool -> control service flow
       channelId: "slack", accountId: undefined, conversationId: "user:U1", senderId: "U1", messageId: "M-live",
       sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run", callDepth: 0,
     });
-    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", nativeChannelId: "D1", conversationId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
+    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", hostEventId: "M-live", nativeChannelId: "D1", conversationId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
     assert.equal(out.state, "running");
     const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
     assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "user:U1", operation_kind: "confirm_change" });
@@ -147,6 +149,44 @@ test("documented message_received hook mints and tool consumes an exact host att
   assert.match(att.bindingDigest, /^[a-f0-9]{64}$/);
 });
 
+test("ordinary conversational approvals and Markdown labels authorize the unique pending change", async () => {
+  for (const wording of [
+    "Confirm Smoke",
+    "Approved",
+    "yes, run that README smoke",
+    "**Looks good — go ahead with the `README` smoke.**",
+    "```text\nPlease confirm Smoke\n```",
+  ]) {
+    const f = fixture();
+    f.emit(wording);
+    assert.equal((await f.invoke("harness_confirm_change")).ok, true, wording);
+    assert.equal(f.calls.length, 1, wording);
+  }
+});
+
+test("the tool call must belong to the same raw host event that expressed approval", async () => {
+  const f = fixture();
+  f.emit("Confirm Smoke");
+  assert.equal((await f.invoke("harness_confirm_change", f.toolContext({ hostEventId: "M-other" }))).code, "confirmation_attestation_required");
+  assert.equal(f.calls.length, 0);
+});
+
+test("a conversational approval cannot select among multiple pending changes", async () => {
+  const f = fixture({ ambiguous: true });
+  f.emit("yes, run that README smoke");
+  assert.equal((await f.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+  assert.equal(f.calls.length, 0);
+});
+
+test("re-delivery of the same Slack event cannot mint a second authorization", async () => {
+  const f = fixture();
+  f.emit("Confirm Smoke");
+  assert.equal((await f.invoke("harness_confirm_change")).ok, true);
+  f.emit("Confirm Smoke");
+  assert.equal((await f.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+  assert.equal(f.calls.length, 1);
+});
+
 test("real Slack hook shape derives freshness from the numeric-string message id", async () => {
   const f = fixture();
   const slackTs = String((f.target.updatedAt + 1_000) / 1000);
@@ -163,7 +203,7 @@ test("real Slack hook shape derives freshness from the numeric-string message id
       senderId: "U1",
     },
   }, { messageId: slackTs });
-  assert.equal((await f.invoke("harness_confirm_change")).ok, true);
+  assert.equal((await f.invoke("harness_confirm_change", f.toolContext({ hostEventId: slackTs }))).ok, true);
   assert.equal(f.calls[0].context.trustedControlAttestation.issuedAt, f.target.updatedAt + 1_000);
 });
 
@@ -226,12 +266,18 @@ test("no raw-user event, ambiguous prose, and internal runtime/subagent events m
     ["confirm or merge this", {}, {}],
     [`confirm ${CHANGE}?`, {}, {}],
     [`do not confirm ${CHANGE}`, {}, {}],
+    ["yes, maybe run that smoke", {}, {}],
+    ["run the smoke, but increase the budget", {}, {}],
+    ["run the smoke with an increased budget", {}, {}],
+    ["run the smoke after the docs land", {}, {}],
+    ["confirm the smoke and merge the PR", {}, {}],
+    ["yes", {}, {}],
     [`confirm ${CHANGE}\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>`, {}, {}],
     [`confirm ${CHANGE}`, {}, { callDepth: 1 }],
     [`confirm ${CHANGE}`, { metadata: {} }, {}],
     [`confirm ${CHANGE}`, { sessionKey: "agent:main:subagent:child" }, { sessionKey: "agent:main:subagent:child" }],
     [`confirm ${CHANGE}`, { senderId: undefined, metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", messageId: "M1" } }, { senderId: undefined }],
-    [`confirm ${CHANGE}`, { messageId: undefined, metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", senderId: "U1" } }, { messageId: undefined }],
+    [`confirm ${CHANGE}`, { messageId: undefined, metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", senderId: "U1" } }, { messageId: "" }],
   ];
   for (const entry of cases) {
     const f = fixture();
@@ -260,4 +306,8 @@ test("intent grammar stays narrow", () => {
   assert.equal(parseControlIntent(`confirm ${CHANGE} and merge ${CHANGE}`), undefined);
   assert.equal(parseControlIntent(`confirm ${CHANGE}`).operation, "confirm_change");
   assert.equal(parseControlIntent(`merge ${CHANGE}`).operation, "merge_change");
+  assert.equal(parseControlIntent("Confirm Smoke").operation, "confirm_change");
+  assert.equal(parseControlIntent("Approved").operation, "confirm_change");
+  assert.equal(parseControlIntent("yes, run that README smoke").operation, "confirm_change");
+  assert.equal(parseControlIntent("**Looks good — go ahead with the `README` smoke.**").operation, "confirm_change");
 });

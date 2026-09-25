@@ -29,6 +29,7 @@ export interface InboundConfirmationContext {
 }
 export interface ConfirmationToolContext {
     requesterSenderId?: string;
+    hostEventId?: string;
     nativeChannelId?: string;
     conversationId?: string;
     messageChannel?: string;
@@ -53,9 +54,11 @@ type ParsedIntent = Readonly<{
     modifiers: MaterialModifiers;
 }>;
 /**
- * Deliberately narrow parser. It accepts an explicit confirmation or merge
- * sentence, an optional change id, and only four material modifiers. Unknown
- * prose, negation, questions, multiple ids, or mixed operations are rejected.
+ * Deliberately bounded natural-language parser. It accepts ordinary positive
+ * authorization wording and an optional human label, but never treats a
+ * question, negation, hesitation, mixed operation, or requested contract
+ * change as approval. The label is only descriptive: the broker still resolves
+ * exactly one current target from authenticated host identity and conversation.
  */
 export declare function parseControlIntent(input: string): ParsedIntent | undefined;
 /** In-memory, short-lived, one-shot bridge from a raw host event to a tool call. */
@@ -72,11 +75,13 @@ export declare class ControlAttestationBroker {
     private readonly now;
     private readonly ttlMs;
     private readonly records;
+    private readonly observedEvents;
     constructor(service: ControlPlaneService, now?: () => number, ttlMs?: number);
     observe(event: InboundConfirmationEvent, ctx: InboundConfirmationContext): void;
     consume(operation: ControlOperation, changeId: string, context: ConfirmationToolContext): Attestation;
     private prune;
     private key;
+    private eventKey;
 }
 export {};
 //# sourceMappingURL=attestation-broker.d.ts.map

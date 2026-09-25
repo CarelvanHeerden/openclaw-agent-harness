@@ -160,7 +160,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
     )],
     ["harness_confirm_change", (context) => tool(
       "harness_confirm_change",
-      "Confirm the exact prepared change in the authenticated conversation.",
+      "Confirm the exact prepared change after the current authenticated user message plainly approves it. Conversational approval is allowed; the user does not need to repeat a change ID. Authorization still requires the matching fresh raw host event.",
       CHANGE_ID_SCHEMA,
       context,
       (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted),
@@ -177,7 +177,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
     )],
     ["harness_merge_change", (context) => tool(
       "harness_merge_change",
-      "Merge a ready pull request after a separate authenticated decision.",
+      "Merge a ready pull request only after the current authenticated user message plainly authorizes merge. Conversational approval is allowed; authorization still requires the matching fresh raw host event.",
       CHANGE_ID_SCHEMA,
       context,
       (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted),
