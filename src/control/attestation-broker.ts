@@ -178,7 +178,7 @@ export function parseControlIntent(input: string): ParsedIntent | undefined {
 
   let operation: ControlOperation | undefined;
   const affirmative = "(?:(?:yes|yep|yeah|ok(?:ay)?|sure|looks good|sounds good)\\s*[,;:!-]?\\s*)?";
-  const confirm = new RegExp(`^${affirmative}(?:please\\s+)?(?:i\\s+)?(?:confirm|approve|approved|start|proceed(?:\\s+with)?|run|go\\s+ahead(?:\\s+with)?|do\\s+it)(?:\\s+(?:this|that|the))?(?:\\s+(?:exact\\s+)?(?:prepared\\s+)?change)?\\b`, "i");
+  const confirm = new RegExp(`^${affirmative}(?:please\\s+)?(?:i\\s+)?(?:confirm|approve|approved|start|proceed(?:\\s+with)?|run|go(?:\\s+ahead(?:\\s+with)?|\\s+for\\s+it)|do\\s+it|let['’]?s\\s+do\\s+it)(?:\\s+(?:this|that|the))?(?:\\s+(?:exact\\s+)?(?:prepared\\s+)?change)?\\b`, "i");
   const merge = new RegExp(`^${affirmative}(?:please\\s+)?(?:i\\s+)?(?:authorize\\s+(?:the\\s+)?merge|merge)(?:\\s+of)?(?:\\s+(?:this|that|the))?(?:\\s+(?:ready\\s+)?(?:change|pull\\s+request|pr))?\\b`, "i");
   const confirmMatch = rest.match(confirm);
   const mergeMatch = rest.match(merge);
