@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const output = resolve(root, ".oah-build-integrity.json");
 const check = process.argv.includes("--check");
-const roots = ["src", "dist", "docs", "scripts", ".github", "package.json", "openclaw.plugin.json", "README.md", "LICENSE"];
+const roots = ["src", "dist", "plugin-entry", "docs", "scripts", ".github", "package.json", "openclaw.plugin.json", "README.md", "LICENSE"];
 
 function collect(rel) {
   const absolute = resolve(root, rel);

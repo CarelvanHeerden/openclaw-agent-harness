@@ -7,10 +7,10 @@
   "types": "dist/index.d.ts",
   "openclaw": {
     "extensions": [
-      "./dist/index.js"
+      "./plugin-entry/index.js"
     ],
     "runtimeExtensions": [
-      "./dist/index.js"
+      "./plugin-entry/index.js"
     ],
     "compat": {
       "pluginApi": ">=2026.3.24-beta.2",
@@ -26,6 +26,7 @@
   },
   "files": [
     "dist",
+    "plugin-entry",
     "openclaw.plugin.json",
     "README.md",
     "LICENSE",
@@ -41,7 +42,7 @@
     "scripts/verify-installed-artifact.mjs"
   ],
   "scripts": {
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql && node scripts/gen-build-integrity.mjs",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true});require('node:fs').rmSync('plugin-entry',{recursive:true,force:true})\" && tsc -p tsconfig.json && mkdir -p dist/state && cp src/state/schema.sql dist/state/schema.sql && esbuild dist/index.js --bundle --platform=node --format=esm --target=node22 --external:openclaw --external:openclaw/* --outfile=plugin-entry/index.js && node scripts/gen-build-integrity.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node scripts/test-isolated.mjs",
     "test:no-build": "node --test --test-timeout=300000 tests/*.mjs",
@@ -68,6 +69,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.5.0",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.3"
   },
   "engines": {

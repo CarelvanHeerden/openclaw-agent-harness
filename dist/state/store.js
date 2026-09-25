@@ -21,6 +21,7 @@ function locateSchema() {
     const here = dirname(fileURLToPath(import.meta.url));
     const candidates = [
         resolve(here, "schema.sql"), // colocated with dist/state/store.js
+        resolve(here, "../dist/state/schema.sql"), // bundled plugin-entry/index.js
         resolve(here, "../../src/state/schema.sql"), // dev mode: dist/state -> src/state
         resolve(here, "../state/schema.sql"), // fallback
     ];

@@ -31,7 +31,7 @@ function filesUnder(dir) {
   return out.sort();
 }
 function committedBytes(file) {
-  try { return execFileSync("git", ["show", `HEAD:${file}`], { cwd: root }); }
+  try { return execFileSync("git", ["show", `HEAD:${file}`], { cwd: root, maxBuffer: 128 * 1024 * 1024 }); }
   catch { throw new Error(`refusing to pack non-commit content: ${file}`); }
 }
 function assertPackedContentMatchesCommit(packageRoot) {

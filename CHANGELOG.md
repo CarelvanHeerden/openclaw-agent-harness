@@ -1,5 +1,8 @@
 ## Unreleased — authenticated human command boundary
 
+- Isolate OpenClaw activation behind a self-contained bundled entry so generation
+  capture no longer mistakes virtiofs inode churn for an in-progress source edit.
+
 - Reject agent-tool `answeredBy: "human"` claims; requester identity is not proof
   of a human's explicit approval.
 - Add non-agent `/harness-answer` with full-state review and durable single-use,
