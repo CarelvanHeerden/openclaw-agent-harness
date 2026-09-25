@@ -92,17 +92,24 @@ export function parseControlIntent(input) {
     const affirmative = "(?:(?:yes|yep|yeah|ok(?:ay)?|sure|looks good|sounds good)\\s*[,;:!-]?\\s*)?";
     const confirm = new RegExp(`^${affirmative}(?:please\\s+)?(?:i\\s+)?(?:confirm|approve|approved|start|proceed(?:\\s+with)?|run|go(?:\\s+ahead(?:\\s+with)?|\\s+for\\s+it)|got\\s+for\\s+it|do\\s+it|let['’]?s\\s+do\\s+it)(?:\\s+(?:this|that|the))?(?:\\s+(?:exact\\s+)?(?:prepared\\s+)?change)?\\b`, "i");
     const merge = new RegExp(`^${affirmative}(?:please\\s+)?(?:i\\s+)?(?:authorize\\s+(?:the\\s+)?merge|merge)(?:\\s+of)?(?:\\s+(?:this|that|the))?(?:\\s+(?:ready\\s+)?(?:change|pull\\s+request|pr))?\\b`, "i");
-    const confirmMatch = rest.match(confirm);
-    const mergeMatch = rest.match(merge);
-    if (!!confirmMatch === !!mergeMatch)
-        return undefined;
-    if (confirmMatch) {
+    const bareConfirm = /^(?:yes|yep|yeah|ok(?:ay)?|sure|looks good|sounds good)\s*[.!]*$/i;
+    if (bareConfirm.test(rest)) {
         operation = "confirm_change";
-        rest = rest.slice(confirmMatch[0].length);
+        rest = "";
     }
-    else if (mergeMatch) {
-        operation = "merge_change";
-        rest = rest.slice(mergeMatch[0].length);
+    else {
+        const confirmMatch = rest.match(confirm);
+        const mergeMatch = rest.match(merge);
+        if (!!confirmMatch === !!mergeMatch)
+            return undefined;
+        if (confirmMatch) {
+            operation = "confirm_change";
+            rest = rest.slice(confirmMatch[0].length);
+        }
+        else if (mergeMatch) {
+            operation = "merge_change";
+            rest = rest.slice(mergeMatch[0].length);
+        }
     }
     const modifiers = {};
     rest = rest.replace(/(?:^|[,;])\s*budget(?:\s+is|\s*=|\s*:)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)\s*(?:usd)?\b/gi, (_all, amount) => {

@@ -152,6 +152,7 @@ test("documented message_received hook mints and tool consumes an exact host att
 test("ordinary conversational approvals and Markdown labels authorize the unique pending change", async () => {
   for (const wording of [
     "Confirm Smoke",
+    "Yes",
     "Approved",
     "Go for it.",
     "Please got for it",
@@ -274,7 +275,7 @@ test("no raw-user event, ambiguous prose, and internal runtime/subagent events m
     ["run the smoke with an increased budget", {}, {}],
     ["run the smoke after the docs land", {}, {}],
     ["confirm the smoke and merge the PR", {}, {}],
-    ["yes", {}, {}],
+    ["maybe", {}, {}],
     [`confirm ${CHANGE}\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>`, {}, {}],
     [`confirm ${CHANGE}`, {}, { callDepth: 1 }],
     [`confirm ${CHANGE}`, { metadata: {} }, {}],
@@ -313,6 +314,7 @@ test("intent grammar stays narrow", () => {
   assert.equal(parseControlIntent("Approved").operation, "confirm_change");
   assert.equal(parseControlIntent("yes, run that README smoke").operation, "confirm_change");
   assert.equal(parseControlIntent("**Looks good — go ahead with the `README` smoke.**").operation, "confirm_change");
+  assert.equal(parseControlIntent("Yes").operation, "confirm_change");
   assert.equal(parseControlIntent("Go for it.").operation, "confirm_change");
   assert.equal(parseControlIntent("Please got for it").operation, "confirm_change");
   assert.equal(parseControlIntent("Let's do it.").operation, "confirm_change");
