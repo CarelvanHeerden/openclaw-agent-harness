@@ -1,0 +1,228 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ControlAttestationBroker, parseControlIntent, registerControlAttestationHook } from "../dist/control/attestation-broker.js";
+import { ControlPlaneService } from "../dist/control/service.js";
+import { ControlRepository } from "../dist/control/repository.js";
+import { AutonomousControlEngine } from "../dist/control/engine.js";
+import { InternalMergeService } from "../dist/control/merge.js";
+import { openStateStoreSync } from "../dist/state/store.js";
+import { registerHarnessTools } from "../dist/tools/registration.js";
+
+const CHANGE = "chg_abcdefghijkl";
+
+function fixture() {
+  let now = 2_000_000_000_000;
+  const target = {
+    changeId: CHANGE,
+    targetDigest: "review-digest-1",
+    updatedAt: now - 10_000,
+    expiresAt: now + 900_000,
+    budgetUsd: 12,
+    timeLimitSeconds: 3600,
+    scope: ["src/**"],
+    excludedScope: ["secrets/**"],
+  };
+  const calls = [];
+  const service = {
+    attestationTarget(operation, actor, conversation, requested) {
+      if (actor !== "U1" || conversation !== "D1" || (requested && requested !== CHANGE)) throw new Error("not found");
+      return { ...target, targetDigest: `${operation}:${target.targetDigest}` };
+    },
+    attestationBindingDigest(changeId, attestation) {
+      return createHash("sha256").update(JSON.stringify({ changeId, target: this.attestationTarget(attestation.operation, attestation.actorIdentity, attestation.conversationIdentity, changeId).targetDigest, attestation })).digest("hex");
+    },
+    async confirm(changeId, context) {
+      calls.push({ operation: "confirm", changeId, context });
+      return { ok: true, state: "running" };
+    },
+    async merge(changeId, context) {
+      calls.push({ operation: "merge", changeId, context });
+      return { ok: true, state: "merged" };
+    },
+  };
+  const broker = new ControlAttestationBroker(service, () => now, 60_000);
+  const tools = new Map();
+  let messageHook;
+  const api = {
+    on(name, handler) {
+      assert.equal(name, "message_received");
+      messageHook = handler;
+      return () => { messageHook = undefined; };
+    },
+    registerTool(factory, options) {
+      tools.set(options.name, factory);
+      return () => tools.delete(options.name);
+    },
+  };
+  registerControlAttestationHook(api, broker);
+  registerHarnessTools(api, { controlPlane: service, controlAttestationBroker: broker, authorisedUsers: ["U1"] });
+  const toolContext = (overrides = {}) => ({
+    requesterSenderId: "U1",
+    nativeChannelId: "D1",
+    messageChannel: "slack",
+    agentAccountId: "A1",
+    deliveryContext: { channel: "slack", to: "D1", accountId: "A1", threadId: "T1" },
+    ...overrides,
+  });
+  const emit = (content, overrides = {}, ctxOverrides = {}) => messageHook?.({
+    content,
+    timestamp: now - 100,
+    threadId: "T1",
+    messageId: "M1",
+    senderId: "U1",
+    ...overrides,
+  }, {
+    channelId: "slack",
+    accountId: "A1",
+    conversationId: "D1",
+    senderId: "U1",
+    messageId: overrides.messageId ?? "M1",
+    ...ctxOverrides,
+  });
+  const invoke = (name, context = toolContext()) => tools.get(name)(context).execute({ changeId: CHANGE });
+  return { target, service, broker, calls, emit, invoke, toolContext, tick(ms) { now += ms; } };
+}
+
+test("real message_received -> broker -> contextual tool -> control service flow consumes durable evidence", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "attestation-live-"));
+  const store = openStateStoreSync(join(dir, "state.db"));
+  const repository = new ControlRepository(store.db);
+  let now = 2_000_000_000_000;
+  const engine = new AutonomousControlEngine({ repository, ownerId: "worker", leaseTtlMs: 60_000, now: () => now });
+  const mergeService = new InternalMergeService(store.db, repository, { inspect: async () => { throw new Error("unused"); }, merge: async () => { throw new Error("unused"); }, verifyMerged: async () => false }, () => now);
+  const service = new ControlPlaneService({
+    db: store.db, repository, engine, mergeService, now: () => now,
+    crystallise: async () => ({ kind: "brief", brief: { title: "Exact live confirmation", motivation: "exercise the host path", acceptanceCriteria: ["tested"], filesLikelyTouched: ["src/**"], outOfScope: [], repoHint: "o/r", riskLevel: "medium" } }),
+    resolveRepository: async () => ({ repositoryIdentity: "o/r", baseRef: "main", baseRevision: "a".repeat(40), credentialRoute: "route", policyDigest: "b".repeat(64), securityClass: "medium" }),
+    executeEngine: async () => { throw new Error("stop after durable confirmation"); },
+  });
+  try {
+    const prepared = await service.prepare({ request: "Make one exact bounded change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "D1" });
+    const broker = new ControlAttestationBroker(service, () => now, 60_000);
+    const tools = new Map();
+    let hook;
+    const api = {
+      on(name, handler) { assert.equal(name, "message_received"); hook = handler; return () => {}; },
+      registerTool(factory, options) { tools.set(options.name, factory); return () => {}; },
+    };
+    registerControlAttestationHook(api, broker);
+    registerHarnessTools(api, { controlPlane: service, controlAttestationBroker: broker, authorisedUsers: ["U1"] });
+    now += 100;
+    hook({ content: `confirm ${prepared.changeId}`, timestamp: now, threadId: "T1", messageId: "M-live", senderId: "U1" }, { channelId: "slack", accountId: "A1", conversationId: "D1", senderId: "U1", messageId: "M-live" });
+    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", nativeChannelId: "D1", messageChannel: "slack", agentAccountId: "A1", deliveryContext: { channel: "slack", to: "D1", accountId: "A1", threadId: "T1" } }).execute({ changeId: prepared.changeId });
+    assert.equal(out.state, "running");
+    const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
+    assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "D1", operation_kind: "confirm_change" });
+  } finally {
+    service.dispose();
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("documented message_received hook mints and tool consumes an exact host attestation", async () => {
+  const f = fixture();
+  f.emit(`I confirm the exact prepared change ${CHANGE}.`);
+  assert.deepEqual(await f.invoke("harness_confirm_change"), { ok: true, state: "running" });
+  assert.equal(f.calls.length, 1);
+  const att = f.calls[0].context.trustedControlAttestation;
+  assert.equal(att.provenance, "host_verified");
+  assert.equal(att.operation, "confirm_change");
+  assert.equal(att.actorIdentity, "U1");
+  assert.equal(att.conversationIdentity, "D1");
+  assert.equal(att.hostEventId, "M1");
+  assert.match(att.nonce, /^[A-Za-z0-9_-]+$/);
+  assert.match(att.bindingDigest, /^[a-f0-9]{64}$/);
+});
+
+test("broker authorization is one-time and replay fails closed", async () => {
+  const f = fixture();
+  f.emit(`confirm ${CHANGE}`);
+  assert.equal((await f.invoke("harness_confirm_change")).ok, true);
+  assert.deepEqual(await f.invoke("harness_confirm_change"), {
+    ok: false,
+    code: "confirmation_attestation_required",
+    summary: "A fresh raw-user confirmation event is required.",
+  });
+  assert.equal(f.calls.length, 1);
+});
+
+test("changed reviewed state, stale events, and expired broker records are rejected", async () => {
+  const changed = fixture();
+  changed.emit(`confirm ${CHANGE}`);
+  changed.target.targetDigest = "review-digest-2";
+  assert.equal((await changed.invoke("harness_confirm_change")).code, "stale_confirmation");
+
+  const stale = fixture();
+  stale.emit(`confirm ${CHANGE}`, { timestamp: stale.target.updatedAt });
+  assert.equal((await stale.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+
+  const expired = fixture();
+  expired.emit(`confirm ${CHANGE}`);
+  expired.tick(60_001);
+  assert.equal((await expired.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+});
+
+test("wrong actor, conversation, channel, account, and thread cannot consume", async () => {
+  for (const override of [
+    { requesterSenderId: "U2" },
+    { nativeChannelId: "D2", deliveryContext: { channel: "slack", to: "D2", accountId: "A1", threadId: "T1" } },
+    { messageChannel: "discord", deliveryContext: { channel: "discord", to: "D1", accountId: "A1", threadId: "T1" } },
+    { agentAccountId: "A2", deliveryContext: { channel: "slack", to: "D1", accountId: "A2", threadId: "T1" } },
+    { deliveryContext: { channel: "slack", to: "D1", accountId: "A1", threadId: "T2" } },
+  ]) {
+    const f = fixture();
+    f.emit(`confirm ${CHANGE}`);
+    assert.equal((await f.invoke("harness_confirm_change", f.toolContext(override))).ok, false);
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("material modifiers are rejected unless they exactly match prepared state", async () => {
+  const mismatch = fixture();
+  mismatch.emit(`confirm ${CHANGE}, budget $50`);
+  assert.equal((await mismatch.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+
+  const exact = fixture();
+  exact.emit(`confirm ${CHANGE}, budget $12; time limit 3600 seconds; scope [src/**]; excluded scope [secrets/**]`);
+  assert.equal((await exact.invoke("harness_confirm_change")).ok, true);
+});
+
+test("no raw-user event, ambiguous prose, internal events, and runtime/subagent events mint nothing", async () => {
+  const cases = [
+    undefined,
+    ["confirm or merge this", {}, {}],
+    [`confirm ${CHANGE}?`, {}, {}],
+    [`do not confirm ${CHANGE}`, {}, {}],
+    [`confirm ${CHANGE}\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>`, {}, {}],
+    [`confirm ${CHANGE}`, {}, { callDepth: 1 }],
+    [`confirm ${CHANGE}`, { runId: "run-internal" }, {}],
+    [`confirm ${CHANGE}`, { senderId: undefined }, { senderId: undefined }],
+    [`confirm ${CHANGE}`, { messageId: undefined }, { messageId: undefined }],
+  ];
+  for (const entry of cases) {
+    const f = fixture();
+    if (entry) f.emit(...entry);
+    assert.equal((await f.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+    assert.equal(f.calls.length, 0);
+  }
+});
+
+test("merge intent is independently parsed and operation-bound", async () => {
+  const f = fixture();
+  f.emit(`I authorize the merge of this ready pull request ${CHANGE}.`);
+  assert.equal((await f.invoke("harness_merge_change")).ok, true);
+  assert.equal(f.calls[0].context.trustedControlAttestation.operation, "merge_change");
+});
+
+test("intent grammar stays narrow", () => {
+  assert.equal(parseControlIntent("please think about confirming"), undefined);
+  assert.equal(parseControlIntent("confirm, but increase scope"), undefined);
+  assert.equal(parseControlIntent(`confirm ${CHANGE} and merge ${CHANGE}`), undefined);
+  assert.equal(parseControlIntent(`confirm ${CHANGE}`).operation, "confirm_change");
+  assert.equal(parseControlIntent(`merge ${CHANGE}`).operation, "merge_change");
+});

@@ -34,6 +34,16 @@ export interface PrepareChangeInput {
     budgetUsd?: number;
     timeLimitSeconds?: number;
 }
+export interface AttestationTarget {
+    changeId: string;
+    targetDigest: string;
+    updatedAt: number;
+    expiresAt: number;
+    budgetUsd: number;
+    timeLimitSeconds: number;
+    scope: readonly string[];
+    excludedScope: readonly string[];
+}
 export interface RepositoryResolution {
     repositoryIdentity: string;
     baseRef: string;
@@ -106,6 +116,9 @@ export declare class ControlPlaneService {
     prepare(input: PrepareChangeInput, context: TrustedControlContext): Promise<Record<string, unknown>>;
     confirm(changeId: string, context: TrustedControlContext): Promise<Record<string, unknown>>;
     result(changeId: string, context: TrustedControlContext): Record<string, unknown>;
+    /** Resolve one exact pending state for a host-observed human intent. */
+    attestationTarget(operation: ControlOperation, actorIdentity: string, conversationIdentity: string, requestedChangeId?: string): AttestationTarget;
+    attestationBindingDigest(changeId: string, att: ConfirmationAttestation): string;
     merge(changeId: string, context: TrustedControlContext): Promise<Record<string, unknown>>;
     private dispatch;
     private persistDispatchCompletion;
@@ -114,8 +127,8 @@ export declare class ControlPlaneService {
     private assertProposalConsistency;
     private requireAttestation;
     private consumeAttestation;
-    private confirmBindingDigest;
-    private mergeBindingDigest;
+    confirmBindingDigest(id: string, att?: ConfirmationAttestation): string;
+    mergeBindingDigest(id: string, att: NonNullable<TrustedControlContext["trustedControlAttestation"]>): string;
     private summary;
 }
 export {};

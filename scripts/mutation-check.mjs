@@ -60,6 +60,32 @@ let ran = 0;
 
 const MUTATIONS = [
   {
+    // Without the raw inbound hook there is no independent human evidence;
+    // confirmations must remain unavailable rather than trusting model args.
+    name: "rc.13 host attestation: documented raw message hook is registered",
+    file: "dist/control/attestation-broker.js",
+    find: 'const disposer = api.on("message_received", (event, context) => {',
+    replace: 'const disposer = undefined; if (false) { void event; void context;',
+    tests: ["tests/control-attestation-broker.test.mjs", "tests/sdk-compliance.test.mjs"],
+  },
+  {
+    // Reintroducing a context-supplied attestation is the live blocker in
+    // reverse: it gives model/runtime arguments authority the host never saw.
+    name: "rc.13 host attestation: tools consume only broker-minted evidence",
+    file: "dist/tools/registration.js",
+    find: '? runtime.controlAttestationBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)',
+    replace: '? context.trustedControlAttestation',
+    tests: ["tests/control-attestation-broker.test.mjs", "tests/rc13-human-provenance.test.mjs"],
+  },
+  {
+    // A broker record is authorization, not a reusable session capability.
+    name: "rc.13 host attestation: matching authorization is consumed once",
+    file: "dist/control/attestation-broker.js",
+    find: "        if (record)\n            this.records.delete(key);",
+    replace: "        if (false)\n            this.records.delete(key);",
+    tests: ["tests/control-attestation-broker.test.mjs"],
+  },
+  {
     // Repository hosts compare owner/repository identities case-insensitively.
     // Reverting the canonical comparison recreates the live control-plane
     // failure where a lower-cased request cannot match mixed-case config.

@@ -187,6 +187,24 @@ export class ControlPlaneService {
         throw new ControlError("change_not_found", "The change was not found."); const publicState = run.state === "awaiting_confirmation" ? "prepared" : run.state === "autonomous_run" ? "running" : run.state === "awaiting_merge" ? "merging" : run.state === "done" ? "merged" : run.state === "failed" && run.terminalCode === "merge_failed" ? "merge_failed" : run.state; const result = { ok: true, changeId, state: publicState, summary: p.terminal_summary ?? this.summary(run.state), createdAt: new Date(run.createdAt).toISOString(), updatedAt: new Date(run.updatedAt).toISOString() }; if (run.state === "pr_ready" && p.pr_url)
         result.pullRequest = { url: p.pr_url }; if (run.state === "failed")
         result.code = run.terminalCode ?? "execution_failed"; return result; }
+    /** Resolve one exact pending state for a host-observed human intent. */
+    attestationTarget(operation, actorIdentity, conversationIdentity, requestedChangeId) {
+        const state = operation === "confirm_change" ? "awaiting_confirmation" : "pr_ready";
+        const rows = requestedChangeId
+            ? this.deps.db.prepare(`SELECT id FROM control_runs WHERE id=? AND requester_id=? AND conversation_id=? AND state=?`).all(requestedChangeId, actorIdentity, conversationIdentity, state)
+            : this.deps.db.prepare(`SELECT id FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity, conversationIdentity, state);
+        if (rows.length !== 1)
+            throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "The human intent does not identify exactly one pending change.");
+        const changeId = rows[0].id, run = this.deps.repository.getRun(changeId), p = this.proposal(changeId);
+        if (!run || !p || run.requesterId !== actorIdentity || run.conversationId !== conversationIdentity || run.state !== state)
+            throw new ControlError("stale_confirmation", "The pending state changed.");
+        const scope = parseList(p.scope_json), excludedScope = parseList(p.excluded_scope_json);
+        const targetDigest = operation === "confirm_change" ? this.confirmBindingDigest(changeId) : controlDigest(MERGE_DOMAIN, { changeId, version: run.version, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, publishedSha: p.published_sha, readinessDigest: p.readiness_digest });
+        return { changeId, targetDigest, updatedAt: run.updatedAt, expiresAt: operation === "confirm_change" ? p.proposal_expires_at : this.now() + this.ttl, budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope, excludedScope };
+    }
+    attestationBindingDigest(changeId, att) {
+        return att.operation === "confirm_change" ? this.confirmBindingDigest(changeId, att) : this.mergeBindingDigest(changeId, att);
+    }
     async merge(changeId, context) {
         const { actor, conversation } = contextIdentity(context);
         const run = this.deps.repository.getRun(changeId);

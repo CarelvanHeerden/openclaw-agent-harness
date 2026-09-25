@@ -31,6 +31,16 @@ export interface TrustedControlContext {
   }>;
 }
 export interface PrepareChangeInput { request: string; repository: string; baseRef?: string; scope?: string[]; excludedScope?: string[]; budgetUsd?: number; timeLimitSeconds?: number }
+export interface AttestationTarget {
+  changeId: string;
+  targetDigest: string;
+  updatedAt: number;
+  expiresAt: number;
+  budgetUsd: number;
+  timeLimitSeconds: number;
+  scope: readonly string[];
+  excludedScope: readonly string[];
+}
 export interface RepositoryResolution { repositoryIdentity: string; baseRef: string; baseRevision: string; credentialRoute: string; policyDigest: string; securityClass: "low" | "medium" | "high" }
 export interface ExecuteControlInput {
   changeId: string; brief: CrystallisedBrief; actorIdentity: string; conversationIdentity: string;
@@ -137,6 +147,24 @@ export class ControlPlaneService {
 
   result(changeId:string,context:TrustedControlContext):Record<string,unknown>{ const {actor,conversation}=contextIdentity(context); const run=this.deps.repository.getRun(changeId); const p=this.proposal(changeId); if(!run||!p||run.requesterId!==actor||run.conversationId!==conversation) throw new ControlError("change_not_found","The change was not found."); const publicState=run.state==="awaiting_confirmation"?"prepared":run.state==="autonomous_run"?"running":run.state==="awaiting_merge"?"merging":run.state==="done"?"merged":run.state==="failed"&&run.terminalCode==="merge_failed"?"merge_failed":run.state; const result:Record<string,unknown>={ok:true,changeId,state:publicState,summary:p.terminal_summary??this.summary(run.state),createdAt:new Date(run.createdAt).toISOString(),updatedAt:new Date(run.updatedAt).toISOString()}; if(run.state==="pr_ready"&&p.pr_url) result.pullRequest={url:p.pr_url}; if(run.state==="failed") result.code=run.terminalCode??"execution_failed"; return result; }
 
+  /** Resolve one exact pending state for a host-observed human intent. */
+  attestationTarget(operation:ControlOperation,actorIdentity:string,conversationIdentity:string,requestedChangeId?:string):AttestationTarget {
+    const state=operation==="confirm_change"?"awaiting_confirmation":"pr_ready";
+    const rows=requestedChangeId
+      ? this.deps.db.prepare(`SELECT id FROM control_runs WHERE id=? AND requester_id=? AND conversation_id=? AND state=?`).all(requestedChangeId,actorIdentity,conversationIdentity,state) as Array<{id:string}>
+      : this.deps.db.prepare(`SELECT id FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity,conversationIdentity,state) as Array<{id:string}>;
+    if(rows.length!==1) throw new ControlError(operation==="merge_change"?"merge_attestation_required":"confirmation_attestation_required","The human intent does not identify exactly one pending change.");
+    const changeId=rows[0]!.id,run=this.deps.repository.getRun(changeId),p=this.proposal(changeId);
+    if(!run||!p||run.requesterId!==actorIdentity||run.conversationId!==conversationIdentity||run.state!==state) throw new ControlError("stale_confirmation","The pending state changed.");
+    const scope=parseList(p.scope_json),excludedScope=parseList(p.excluded_scope_json);
+    const targetDigest=operation==="confirm_change"?this.confirmBindingDigest(changeId):controlDigest(MERGE_DOMAIN,{changeId,version:run.version,repository:run.repository,baseRef:run.baseRef,prNumber:p.pr_number,publishedSha:p.published_sha,readinessDigest:p.readiness_digest});
+    return {changeId,targetDigest,updatedAt:run.updatedAt,expiresAt:operation==="confirm_change"?p.proposal_expires_at:this.now()+this.ttl,budgetUsd:run.authorityEnvelope.limits.budgetUsd,timeLimitSeconds:Math.floor(run.authorityEnvelope.limits.activeTimeMs/1000),scope,excludedScope};
+  }
+
+  attestationBindingDigest(changeId:string,att:ConfirmationAttestation):string {
+    return att.operation==="confirm_change"?this.confirmBindingDigest(changeId,att):this.mergeBindingDigest(changeId,att);
+  }
+
   async merge(changeId:string,context:TrustedControlContext):Promise<Record<string,unknown>> {
     const {actor,conversation}=contextIdentity(context); const run=this.deps.repository.getRun(changeId); const p=this.proposal(changeId);
     if(!run||!p) throw new ControlError("change_not_found","The change was not found.");
@@ -175,7 +203,7 @@ export class ControlPlaneService {
   private assertProposalConsistency(id:string):void{const run=this.deps.repository.getRun(id);const p=this.proposal(id);if(!run||!p)throw new ControlError("stale_confirmation","The proposal changed after review.");let brief:unknown,scope:unknown,excluded:unknown,assumptions:unknown;try{brief=JSON.parse(p.brief_json);scope=JSON.parse(p.scope_json);excluded=JSON.parse(p.excluded_scope_json);assumptions=JSON.parse(p.assumptions_json);}catch{throw new ControlError("stale_confirmation","The proposal is not canonical.");}if(digest(brief)!==run.briefDigest||stable(scope)!==stable(run.authorityEnvelope.scope.paths)||!Array.isArray(excluded)||!Array.isArray(assumptions)||p.policy_version!==CONTROL_PLANE_CONTRACT_VERSION)throw new ControlError("stale_confirmation","The proposal changed after review.");}
   private requireAttestation(operation:ControlOperation,context:TrustedControlContext):NonNullable<TrustedControlContext["trustedControlAttestation"]>{const att=context.trustedControlAttestation;if(!att||att.version!==2||att.provenance!=="host_verified"||att.operation!==operation)throw new ControlError(operation==="merge_change"?"merge_attestation_required":"confirmation_attestation_required","An independently verified host attestation is required.");return att;}
   private consumeAttestation(id:string,att:NonNullable<TrustedControlContext["trustedControlAttestation"]>,now:number):void{this.deps.db.prepare(`INSERT INTO control_host_attestations (id,run_id,operation_kind,provenance,actor_identity,conversation_identity,host_event_id,nonce,binding_digest,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(randomUUID(),id,att.operation,att.provenance,att.actorIdentity,att.conversationIdentity,att.hostEventId,att.nonce,att.bindingDigest,att.issuedAt,att.expiresAt,now);}
-  private confirmBindingDigest(id:string,att?:ConfirmationAttestation):string{const run=this.deps.repository.getRun(id);const p=this.proposal(id);if(!run||!p)return"";const reviewDigest=controlDigest(CONFIRM_DOMAIN,{changeId:id,version:run.version,requesterId:run.requesterId,conversationId:run.conversationId,repository:run.repository,baseRef:run.baseRef,authorityEnvelope:run.authorityEnvelope,proposal:{generation:p.generation,confirmable:p.confirmable,baseRevision:p.base_revision,brief:JSON.parse(p.brief_json),scope:JSON.parse(p.scope_json),excludedScope:JSON.parse(p.excluded_scope_json),credentialRouteDigest:p.credential_route_digest,securityClass:p.security_class,assumptions:JSON.parse(p.assumptions_json),expiresAt:p.proposal_expires_at,policyVersion:p.policy_version,minimumRuntimeVersion:p.minimum_runtime_version,createdAt:p.created_at}});return att?confirmationAttestationDigest(reviewDigest,att):reviewDigest;}
-  private mergeBindingDigest(id:string,att:NonNullable<TrustedControlContext["trustedControlAttestation"]>):string{const run=this.deps.repository.getRun(id);const p=this.proposal(id);if(!run||!p)return"";return controlDigest(MERGE_DOMAIN,{changeId:id,version:run.version,repository:run.repository,baseRef:run.baseRef,prNumber:p.pr_number,publishedSha:p.published_sha,readinessDigest:p.readiness_digest,actorIdentity:att.actorIdentity,conversationIdentity:att.conversationIdentity,hostEventId:att.hostEventId,nonce:att.nonce,issuedAt:att.issuedAt,expiresAt:att.expiresAt});}
+  confirmBindingDigest(id:string,att?:ConfirmationAttestation):string{const run=this.deps.repository.getRun(id);const p=this.proposal(id);if(!run||!p)return"";const reviewDigest=controlDigest(CONFIRM_DOMAIN,{changeId:id,version:run.version,requesterId:run.requesterId,conversationId:run.conversationId,repository:run.repository,baseRef:run.baseRef,authorityEnvelope:run.authorityEnvelope,proposal:{generation:p.generation,confirmable:p.confirmable,baseRevision:p.base_revision,brief:JSON.parse(p.brief_json),scope:JSON.parse(p.scope_json),excludedScope:JSON.parse(p.excluded_scope_json),credentialRouteDigest:p.credential_route_digest,securityClass:p.security_class,assumptions:JSON.parse(p.assumptions_json),expiresAt:p.proposal_expires_at,policyVersion:p.policy_version,minimumRuntimeVersion:p.minimum_runtime_version,createdAt:p.created_at}});return att?confirmationAttestationDigest(reviewDigest,att):reviewDigest;}
+  mergeBindingDigest(id:string,att:NonNullable<TrustedControlContext["trustedControlAttestation"]>):string{const run=this.deps.repository.getRun(id);const p=this.proposal(id);if(!run||!p)return"";return controlDigest(MERGE_DOMAIN,{changeId:id,version:run.version,repository:run.repository,baseRef:run.baseRef,prNumber:p.pr_number,publishedSha:p.published_sha,readinessDigest:p.readiness_digest,actorIdentity:att.actorIdentity,conversationIdentity:att.conversationIdentity,hostEventId:att.hostEventId,nonce:att.nonce,issuedAt:att.issuedAt,expiresAt:att.expiresAt});}
   private summary(state:string):string{return state==="awaiting_confirmation"?"Ready for confirmation.":state==="autonomous_run"?"The change is in progress.":state==="pr_ready"?"The pull request is ready.":state==="done"?"The pull request was merged.":"The change did not complete.";}
 }

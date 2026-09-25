@@ -220,15 +220,14 @@ test("sdk: dist does not register the invalid dotted event 'message.received'", 
     false,
     'dist/index.js has CODE referencing the invalid dotted event "message.received". Use only "message_received" (underscore) -- the dotted name is not in the runtime PLUGIN_HOOK_NAMES and is silently ignored.',
   );
-  // beta.34: the Slack LISTENER was removed. The harness is tool-driven only
-  // and must NOT subscribe to inbound messages at all -- so the code must NOT
-  // register any message hook (neither dotted nor underscore). This makes the
-  // privileged surface (PATs, PR merges) reachable ONLY through the agent's
-  // tool layer, and structurally eliminates the bot-to-bot loop risk.
+  // Control confirmations now require a raw host-observed inbound event. The
+  // typed underscore hook is the only bridge; it observes intent but never
+  // sends messages or bypasses the four-tool control plane.
+  const brokerCode = readFileSync(resolve(repoRoot, "dist/control/attestation-broker.js"), "utf8");
   assert.equal(
-    /\.on\(\s*["']message_received["']|registerHook\(\s*\[\s*["']message_received["']/.test(codeOnly),
-    false,
-    'beta.34 removed the Slack listener: dist/index.js must NOT subscribe to "message_received" (no api.on / registerHook for it). The harness is tool-driven only.',
+    /\.on\(\s*["']message_received["']/.test(`${codeOnly}\n${brokerCode}`),
+    true,
+    'the built plugin must subscribe to the documented message_received hook for one-shot host attestations.',
   );
 });
 

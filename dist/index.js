@@ -32,6 +32,7 @@ import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { ControlError, ControlPlaneService } from "./control/service.js";
+import { ControlAttestationBroker, registerControlAttestationHook } from "./control/attestation-broker.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
@@ -1917,6 +1918,8 @@ function bootstrapHarnessSync(api) {
             };
         },
     });
+    runtime.controlAttestationBroker = new ControlAttestationBroker(runtime.controlPlane);
+    runtime.disposers.push(registerControlAttestationHook(api, runtime.controlAttestationBroker));
     runtime.disposers.push(() => runtime.controlPlane?.dispose());
     runtime.disposers.push(() => backendRouter?.dispose());
     runtime.disposers.push(verifiedClaude.cleanup);

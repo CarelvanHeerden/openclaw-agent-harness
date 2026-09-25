@@ -23,11 +23,17 @@ export interface HarnessToolContext {
     workspaceId?: string;
     hostEventId?: string;
     receivedAt?: number;
-    trustedControlAttestation?: import("./control/service.js").TrustedControlContext["trustedControlAttestation"];
     senderIsOwner?: boolean;
     sessionKey?: string;
     sessionId?: string;
     messageChannel?: string;
+    agentAccountId?: string;
+    deliveryContext?: {
+        channel?: string;
+        to?: string;
+        accountId?: string;
+        threadId?: string;
+    };
 }
 export interface HarnessToolDefinition {
     name: string;
@@ -59,7 +65,9 @@ export interface HarnessPluginApi {
      * a Node EventEmitter; hybrid-memory uses this for `message_received`,
      * `agent_end`, etc. Returns an unsubscribe function.
      */
-    on?: (event: string, handler: (payload: unknown) => unknown) => (() => void) | undefined;
+    on?: (event: string, handler: (event: unknown, context?: unknown) => unknown) => (() => void) | {
+        dispose?: () => void;
+    } | undefined;
     /**
      * Register a named hook on the OpenClaw plugin registry.
      *

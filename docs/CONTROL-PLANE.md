@@ -95,7 +95,7 @@ Validation failure is terminal for that prepare attempt. It is reserved for a no
 
 ### 2.2 Confirm
 
-The user confirms the proposal in the same authenticated conversation. The host creates an unforgeable confirmation attestation. The public tool input identifies the prepared change and decision only; actor identity, conversation identity, authorization, message/event identity, and receipt authenticity come from trusted host context.
+The user confirms the proposal in the same authenticated conversation. The plugin observes OpenClaw's typed `message_received` hook and independently parses only a narrow explicit confirmation sentence. A process-local broker resolves exactly one pending change, binds the host-observed sender, channel/account/conversation/thread, message ID, timestamp, operation, nonce, and current review digest, and permits one matching tool call for at most 60 seconds. The public tool input carries only `changeId`; model arguments and invented tool-context fields cannot supply the attestation. Missing hooks/events, nested/runtime/subagent messages, ambiguous or negated prose, stale state, replay, identity or conversation mismatch, and unknown material modifiers fail closed.
 
 A confirmation attestation binds all of the following values exactly:
 
@@ -114,7 +114,7 @@ A confirmation attestation binds all of the following values exactly:
 - expiry;
 - unique host event/message identity and one-use nonce.
 
-`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. The host needs no database access or private service method: it combines that public review digest with its independently authenticated event metadata to create the attestation `bindingDigest`.
+`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. At hook time the broker recomputes that digest from current state and combines it with independently authenticated event metadata to create the attestation `bindingDigest`. If the message includes budget, time, scope, or excluded-scope modifiers, each must exactly equal the prepared state; otherwise no broker record is minted.
 
 Both digests are domain-separated and versioned:
 

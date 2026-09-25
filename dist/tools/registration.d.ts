@@ -1,5 +1,6 @@
 import type { HarnessPluginApi } from "../index.js";
 import { ControlPlaneService } from "../control/service.js";
+import type { ControlAttestationBroker } from "../control/attestation-broker.js";
 /** Stable terminal envelope failures. */
 export declare const CONTROL_TERMINAL_CODES: readonly ["budget_exceeded", "time_exceeded", "scope_escalation", "path_violation", "security_escalation", "credential_escalation"];
 /**
@@ -14,6 +15,7 @@ export declare const CONTROL_CONFIRMATION_DOMAIN = "control-plane-confirm/v2";
 export declare const CONTROL_ATTESTATION_ERRORS: readonly ["confirmation_attestation_required", "stale_confirmation", "wrong_actor", "wrong_conversation", "already_confirmed", "confirmation_replayed", "merge_attestation_required", "stale_pr_head", "already_merged"];
 type ControlRuntime = {
     controlPlane?: ControlPlaneService;
+    controlAttestationBroker?: ControlAttestationBroker;
     authorisedUsers?: readonly string[];
 };
 /**

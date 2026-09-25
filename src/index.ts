@@ -42,6 +42,7 @@ import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { ControlError, ControlPlaneService } from "./control/service.js";
+import { ControlAttestationBroker, registerControlAttestationHook } from "./control/attestation-broker.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
@@ -112,11 +113,12 @@ export interface HarnessToolContext {
   workspaceId?: string;
   hostEventId?: string;
   receivedAt?: number;
-  trustedControlAttestation?: import("./control/service.js").TrustedControlContext["trustedControlAttestation"];
   senderIsOwner?: boolean;
   sessionKey?: string;
   sessionId?: string;
   messageChannel?: string;
+  agentAccountId?: string;
+  deliveryContext?: { channel?: string; to?: string; accountId?: string; threadId?: string };
 }
 
 export interface HarnessToolDefinition {
@@ -146,7 +148,7 @@ export interface HarnessPluginApi {
    * a Node EventEmitter; hybrid-memory uses this for `message_received`,
    * `agent_end`, etc. Returns an unsubscribe function.
    */
-  on?: (event: string, handler: (payload: unknown) => unknown) => (() => void) | undefined;
+  on?: (event: string, handler: (event: unknown, context?: unknown) => unknown) => (() => void) | { dispose?: () => void } | undefined;
   /**
    * Register a named hook on the OpenClaw plugin registry.
    *
@@ -290,6 +292,8 @@ interface HarnessRuntime {
   mergePr: (args: { sessionId: string; authenticatedActor?: string; repairBudgetUsd?: number }) => Promise<MergePrResult>;
   /** Ordinary-user control plane. Authority is accepted only through trusted host context. */
   controlPlane?: ControlPlaneService;
+  /** One-shot bridge from host-observed raw inbound intent to control tools. */
+  controlAttestationBroker?: ControlAttestationBroker;
   /**
    * rc.4: associate an EXISTING pull request with the session that produced it,
    * after a failure lost the association.
@@ -2285,6 +2289,8 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       };
     },
   });
+  runtime.controlAttestationBroker = new ControlAttestationBroker(runtime.controlPlane);
+  runtime.disposers.push(registerControlAttestationHook(api, runtime.controlAttestationBroker));
   runtime.disposers.push(() => runtime.controlPlane?.dispose());
   runtime.disposers.push(() => backendRouter?.dispose());
   runtime.disposers.push(verifiedClaude.cleanup);

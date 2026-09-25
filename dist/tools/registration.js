@@ -81,7 +81,7 @@ function serviceFor(runtime) {
         throw new ControlError("control_unavailable", "The change service is not available.");
     return service;
 }
-function tool(name, description, parameters, context, run, runtime) {
+function tool(name, description, parameters, context, run, runtime, attestedOperation) {
     return {
         name,
         description,
@@ -90,15 +90,16 @@ function tool(name, description, parameters, context, run, runtime) {
         async execute(inputOrCallId, paramsOrContext, executionContext) {
             try {
                 const call = invocation(inputOrCallId, paramsOrContext, executionContext);
-                // Only the context captured by the host while constructing the tool is
-                // trusted. Execution arguments are model/user-controlled data and must
-                // never supply identity or mint a "host_verified" attestation when the
-                // host did not provide one.
+                // Only host-captured identity is trusted. The attestation comes solely
+                // from the one-shot inbound-event broker; execution/model arguments and
+                // invented context fields can never mint or supply it.
                 const trusted = {
                     requesterSenderId: context.requesterSenderId,
                     conversationId: trustedConversationId(context),
                     workspaceId: context.workspaceId,
-                    trustedControlAttestation: context.trustedControlAttestation,
+                    trustedControlAttestation: attestedOperation
+                        ? runtime.controlAttestationBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)
+                        : undefined,
                 };
                 const actor = trusted.requesterSenderId?.trim() ?? "";
                 if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
@@ -122,9 +123,9 @@ export function registerHarnessTools(api, runtime) {
     const rt = runtime;
     const definitions = [
         ["harness_prepare_change", (context) => tool("harness_prepare_change", "Prepare one complete repository change for review without starting implementation.", PREPARE_SCHEMA, context, (service, input, trusted) => service.prepare(input, trusted), rt)],
-        ["harness_confirm_change", (context) => tool("harness_confirm_change", "Confirm the exact prepared change in the authenticated conversation.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted), rt)],
+        ["harness_confirm_change", (context) => tool("harness_confirm_change", "Confirm the exact prepared change in the authenticated conversation.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted), rt, "confirm_change")],
         ["harness_change_result", (context) => tool("harness_change_result", "Read the safe current or final outcome of a change.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted), rt)],
-        ["harness_merge_change", (context) => tool("harness_merge_change", "Merge a ready pull request after a separate authenticated decision.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted), rt)],
+        ["harness_merge_change", (context) => tool("harness_merge_change", "Merge a ready pull request after a separate authenticated decision.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted), rt, "merge_change")],
     ];
     for (const [name, build] of definitions) {
         // Function registrations require an explicit name so OpenClaw can bind the

@@ -1,5 +1,6 @@
 import type { HarnessPluginApi, HarnessToolContext, HarnessToolDefinition } from "../index.js";
-import { ControlError, ControlPlaneService, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
+import { ControlError, ControlPlaneService, type ControlOperation, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
+import type { ControlAttestationBroker } from "../control/attestation-broker.js";
 
 /** Stable terminal envelope failures. */
 export const CONTROL_TERMINAL_CODES = [
@@ -89,7 +90,7 @@ function safeFailure(error: unknown): Record<string, unknown> {
   return { ok: false, code: "control_unavailable", summary: "The change service is temporarily unavailable." };
 }
 
-type ControlRuntime = { controlPlane?: ControlPlaneService; authorisedUsers?: readonly string[] };
+type ControlRuntime = { controlPlane?: ControlPlaneService; controlAttestationBroker?: ControlAttestationBroker; authorisedUsers?: readonly string[] };
 
 function serviceFor(runtime: ControlRuntime): ControlPlaneService {
   const service = runtime.controlPlane;
@@ -104,6 +105,7 @@ function tool(
   context: HarnessToolContext,
   run: (service: ControlPlaneService, input: Record<string, unknown>, trusted: TrustedControlContext) => Promise<unknown> | unknown,
   runtime: ControlRuntime,
+  attestedOperation?: ControlOperation,
 ): HarnessToolDefinition {
   return {
     name,
@@ -113,15 +115,16 @@ function tool(
     async execute(inputOrCallId: unknown, paramsOrContext?: unknown, executionContext?: unknown): Promise<unknown> {
       try {
         const call = invocation(inputOrCallId, paramsOrContext, executionContext);
-        // Only the context captured by the host while constructing the tool is
-        // trusted. Execution arguments are model/user-controlled data and must
-        // never supply identity or mint a "host_verified" attestation when the
-        // host did not provide one.
+        // Only host-captured identity is trusted. The attestation comes solely
+        // from the one-shot inbound-event broker; execution/model arguments and
+        // invented context fields can never mint or supply it.
         const trusted = {
           requesterSenderId: context.requesterSenderId,
           conversationId: trustedConversationId(context),
           workspaceId: context.workspaceId,
-          trustedControlAttestation: context.trustedControlAttestation,
+          trustedControlAttestation: attestedOperation
+            ? runtime.controlAttestationBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)
+            : undefined,
         } satisfies TrustedControlContext;
         const actor = trusted.requesterSenderId?.trim() ?? "";
         if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
@@ -160,6 +163,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
       context,
       (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted),
       rt,
+      "confirm_change",
     )],
     ["harness_change_result", (context) => tool(
       "harness_change_result",
@@ -176,6 +180,7 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
       context,
       (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted),
       rt,
+      "merge_change",
     )],
   ];
 
