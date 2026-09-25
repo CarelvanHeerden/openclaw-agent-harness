@@ -101,7 +101,6 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
     const { temp, artifact, tarball } = packed;
     const installDir = join(temp, "install");
     mkdirSync(installDir);
-    writeFileSync(join(installDir, "package.json"), JSON.stringify({ private: true }));
 
     assert.ok(artifact.bundled?.includes("@anthropic-ai/claude-agent-sdk"), "the SDK must share the bundled fixed peer graph");
     assert.ok(
@@ -109,8 +108,18 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
       "platform-specific Claude binaries must be selected for the consumer platform, not frozen into the publisher-platform tarball",
     );
 
-    run("npm", ["install", "--ignore-scripts", "--omit=dev", tarball], installDir, { npm_config_cache: join(temp, "npm-cache") });
-    const packageRoot = join(installDir, "node_modules", "openclaw-agent-harness");
+    run("tar", ["-xzf", tarball, "-C", installDir], temp);
+    const packageRoot = join(installDir, "package");
+    run("npm", ["install", "--ignore-scripts", "--omit=dev", "--package-lock=false"], packageRoot, {
+      npm_config_cache: join(temp, "npm-cache"),
+    });
+    for (const added of [
+      "node_modules/.package-lock.json",
+      "node_modules/which/CHANGELOG.md",
+      "node_modules/opencode-ai/package.json",
+    ]) {
+      assert.equal(existsSync(join(packageRoot, added)), true, `faithful OpenClaw-style install is missing ${added}`);
+    }
     const publishedManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
     assert.equal(publishedManifest.scripts, undefined, "development-only lifecycle, test, schema, and lint commands must not be published");
     for (const absent of ["test-isolated.mjs", "gen-config-schema.mjs", "gen-config-reference.mjs"]) {
@@ -157,6 +166,20 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
       rmSync(join(packageRoot, "node_modules", "zod", "package.json"));
       symlinkSync(external, join(packageRoot, "node_modules", "zod", "package.json"));
     }, /artifact contains unsupported filesystem entry: node_modules\/zod\/package\.json/);
+    rejectMutation(join(packageRoot, "node_modules", "which", "CHANGELOG.md"), (original) => {
+      writeFileSync(join(packageRoot, "node_modules", "which", "CHANGELOG.md"), Buffer.concat([original, Buffer.from("\nmutation\n")]));
+    }, /package-manager-added dependency content is not bound to the tested commit/);
+    rejectMutation(join(packageRoot, "node_modules", "opencode-ai", "postinstall.mjs"), (original) => {
+      writeFileSync(join(packageRoot, "node_modules", "opencode-ai", "postinstall.mjs"), Buffer.concat([original, Buffer.from("\nmutation\n")]));
+    }, /package-manager-added dependency content is not bound to the tested commit/);
+    rejectMutation(join(packageRoot, "node_modules", ".package-lock.json"), (original) => {
+      writeFileSync(join(packageRoot, "node_modules", ".package-lock.json"), Buffer.concat([original, Buffer.from(" \n")]));
+    }, /installed package-manager lock metadata is not canonical/);
+    rejectMutation(join(packageRoot, "node_modules", ".package-lock.json"), (original) => {
+      const lock = JSON.parse(original.toString("utf8"));
+      lock.packages["node_modules/which"].version = "2.0.2-mutated";
+      writeFileSync(join(packageRoot, "node_modules", ".package-lock.json"), `${JSON.stringify(lock, null, 2)}\n`);
+    }, /installed package-manager lock metadata is not bound to the tested commit: node_modules\/which/);
     rejectMutation(join(packageRoot, "README.md"), () => {
       rmSync(join(packageRoot, "README.md"));
     }, /packaged file list is missing README\.md/);
@@ -171,6 +194,15 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
       assert.match(rejected.stderr, /packaged first-party file is not bound to the tested commit: unexpected-artifact\.txt/);
     } finally {
       rmSync(extraPath, { force: true });
+    }
+    const extraDependencyPath = join(packageRoot, "node_modules", "which", "unexpected.js");
+    try {
+      writeFileSync(extraDependencyPath, "unexpected dependency bytes\n");
+      const rejected = verify();
+      assert.notEqual(rejected.status, 0);
+      assert.match(rejected.stderr, /installed dependency has no authenticated source: node_modules\/which\/unexpected\.js/);
+    } finally {
+      rmSync(extraDependencyPath, { force: true });
     }
 
     const originalOpenCodeSize = statSync(result.openCodeCommand).size;
@@ -217,7 +249,10 @@ test("the exact tarball clean-installs, audits, and runs consumer-platform Claud
     assert.equal(openCode.source, "dependency");
     assert.match(run(openCode.command, ["--version"], installDir), /^1\.18\.23\s*$/);
 
-    const audit = spawnSync("npm", ["audit", "--omit=dev", "--json"], { cwd: installDir, encoding: "utf8", timeout: 300_000, env: { ...process.env, npm_config_cache: join(temp, "npm-cache") } });
+    run("npm", ["install", "--package-lock-only", "--ignore-scripts", "--omit=dev"], packageRoot, {
+      npm_config_cache: join(temp, "npm-cache"),
+    });
+    const audit = spawnSync("npm", ["audit", "--omit=dev", "--json"], { cwd: packageRoot, encoding: "utf8", timeout: 300_000, env: { ...process.env, npm_config_cache: join(temp, "npm-cache") } });
     const auditReport = JSON.parse(audit.stdout);
     assert.equal(audit.status, 0, audit.stdout || audit.stderr);
     assert.deepEqual(auditReport.metadata.vulnerabilities, { info: 0, low: 0, moderate: 0, high: 0, critical: 0, total: 0 });

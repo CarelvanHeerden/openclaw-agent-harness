@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "files": 5,
+  "digest": "c052b1fe0174776e383ff988bad71ec86893fa0eca52f9ec4d8edb6cbb10272c",
+  "entries": [
+    "625f0f619133f89bbbb2abe37369613dfa1885eba1e50d02170deb62bb42cb6b  node_modules/opencode-ai/LICENSE",
+    "21c366f53283d5b5e1cdbbec2aafc98286b4c1075a4c3d5afd5ce1f5c9bf46dd  node_modules/opencode-ai/bin/opencode.exe",
+    "3c0c8378e8cdcd5c6bad4f8786060b8a765255b9aee9eee5c24ec33ec1e8278c  node_modules/opencode-ai/package.json",
+    "5a7c990fe552e76b16422cdba3f4b0550590c7a487f7932c773362f74317c87b  node_modules/opencode-ai/postinstall.mjs",
+    "89bc599ca0b3a119d711c62855b2e3619b734bf371ef55dcc049454313f9904e  node_modules/which/CHANGELOG.md"
+  ]
+}

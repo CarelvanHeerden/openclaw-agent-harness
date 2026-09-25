@@ -5,6 +5,7 @@ import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSyn
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { contentManifest, publishedPackageBytes } from "./package-artifact-policy.mjs";
 
 const expectedRoot = resolve(process.argv[2] ?? process.cwd());
@@ -56,6 +57,70 @@ function sha(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
+function manifestEntries(manifest, label, prefix = "") {
+  if (manifest.version !== 1 || !Array.isArray(manifest.entries)) {
+    throw new Error(`${label} is stale or invalid`);
+  }
+  const entries = new Map();
+  for (const entry of manifest.entries) {
+    const match = /^([a-f0-9]{64})  (.+)$/.exec(entry);
+    if (!match || entries.has(`${prefix}${match[2]}`)) throw new Error(`${label} is stale or invalid`);
+    entries.set(`${prefix}${match[2]}`, match[1]);
+  }
+  const digest = createHash("sha256").update(manifest.entries.join("\n")).digest("hex");
+  if (
+    (manifest.files !== undefined && manifest.files !== entries.size) ||
+    (manifest.digest !== undefined && manifest.digest !== digest)
+  ) {
+    throw new Error(`${label} is stale or invalid`);
+  }
+  return entries;
+}
+
+function assertExactFiles(installedFiles, expectedEntries, label) {
+  for (const [file, expectedSha] of expectedEntries) {
+    if (!installedFiles.includes(file) || sha(resolve(installedRoot, file)) !== expectedSha) {
+      throw new Error(`${label}: ${file}`);
+    }
+  }
+}
+
+function verifyInstallLock(installedFiles, committedLock) {
+  const lockPath = resolve(installedRoot, "node_modules/.package-lock.json");
+  if (!existsSync(lockPath)) return;
+  const lockBytes = readFileSync(lockPath, "utf8");
+  const lock = JSON.parse(lockBytes);
+  if (lockBytes !== `${JSON.stringify(lock, null, 2)}\n` || lock.lockfileVersion !== 3 || lock.requires !== true) {
+    throw new Error("installed package-manager lock metadata is not canonical");
+  }
+  if (Object.keys(lock).some((key) => !["lockfileVersion", "requires", "packages"].includes(key))) {
+    throw new Error("installed package-manager lock metadata contains unexpected fields");
+  }
+  const installedPackageKeys = Object.keys(committedLock.packages ?? {})
+    .filter((key) => key.startsWith("node_modules/") && installedFiles.includes(`${key}/package.json`))
+    .sort();
+  const lockKeys = Object.keys(lock.packages ?? {}).sort();
+  if (installedPackageKeys.length !== lockKeys.length || installedPackageKeys.some((key, index) => key !== lockKeys[index])) {
+    throw new Error("installed package-manager lock metadata does not describe the exact dependency tree");
+  }
+  for (const key of lockKeys) {
+    const committed = committedLock.packages?.[key];
+    if (!committed) throw new Error(`installed package-manager lock metadata is not bound to the tested commit: ${key}`);
+    const expected = structuredClone(committed);
+    const actual = lock.packages[key];
+    for (const field of ["resolved", "integrity"]) {
+      if (expected.inBundle === true && !(field in actual)) delete expected[field];
+    }
+    if (key.startsWith("node_modules/@anthropic-ai/claude-agent-sdk-") && !("libc" in expected)) {
+      const packageJson = JSON.parse(readFileSync(resolve(installedRoot, key, "package.json"), "utf8"));
+      if (packageJson.libc !== undefined) expected.libc = packageJson.libc;
+    }
+    if (!isDeepStrictEqual(actual, expected)) {
+      throw new Error(`installed package-manager lock metadata is not bound to the tested commit: ${key}`);
+    }
+  }
+}
+
 const expectedPackage = JSON.parse(readFileSync(resolve(expectedRoot, "package.json"), "utf8"));
 const installedPackageBytes = readFileSync(resolve(installedRoot, "package.json"));
 const installedPackage = JSON.parse(installedPackageBytes);
@@ -85,21 +150,78 @@ const committedBytes = (file) => {
   catch { throw new Error(`packaged first-party file is not bound to the tested commit: ${file}`); }
 };
 const dependencyFiles = installedFiles.filter((file) => file.startsWith("node_modules/"));
-const dependencyManifest = contentManifest(installedRoot, dependencyFiles);
 const expectedDependencyManifest = JSON.parse(committedBytes("scripts/package-dependency-manifest.json").toString("utf8"));
-const dependencyMismatch = expectedDependencyManifest.entries?.findIndex(
-  (entry, index) => entry !== dependencyManifest.entries[index],
-) ?? -1;
-if (
-  expectedDependencyManifest.version !== 1 ||
-  expectedDependencyManifest.files !== dependencyManifest.files ||
-  expectedDependencyManifest.digest !== dependencyManifest.digest ||
-  expectedDependencyManifest.entries?.length !== dependencyManifest.entries.length ||
-  dependencyMismatch !== -1
-) {
-  throw new Error("bundled dependency content is not bound to the tested commit");
+const expectedDependencyEntries = manifestEntries(
+  expectedDependencyManifest,
+  "bundled dependency manifest",
+);
+const installAdditionsManifest = JSON.parse(
+  committedBytes("scripts/package-install-additions-manifest.json").toString("utf8"),
+);
+const installAdditionEntries = manifestEntries(
+  installAdditionsManifest,
+  "package-manager install additions manifest",
+);
+const expectedNativePackages = JSON.parse(
+  committedBytes("scripts/claude-native-package-manifest.json").toString("utf8"),
+);
+const expectedOpenCodePackages = JSON.parse(
+  committedBytes("scripts/opencode-native-package-manifest.json").toString("utf8"),
+);
+const nativeInstallEntries = new Map();
+const nativeInstallPackages = new Map();
+for (const [name, manifest] of Object.entries({
+  ...(expectedNativePackages.packages ?? {}),
+  ...(expectedOpenCodePackages.packages ?? {}),
+})) {
+  const packageEntries = manifestEntries(
+    { version: 1, files: manifest.files, digest: manifest.digest, entries: manifest.entries },
+    `native package manifest for ${name}`,
+    `node_modules/${name}/`,
+  );
+  nativeInstallPackages.set(`node_modules/${name}/`, packageEntries);
+  for (const [file, digest] of packageEntries) {
+    if (nativeInstallEntries.has(file)) throw new Error(`duplicate native package manifest entry: ${file}`);
+    nativeInstallEntries.set(file, digest);
+  }
 }
-const entries = installedFiles.filter((file) => file !== ".oah-artifact.json").map((file) => {
+assertExactFiles(installedFiles, expectedDependencyEntries, "bundled dependency content is not bound to the tested commit");
+const hasLocalInstallLayout = dependencyFiles.some((file) => (
+  file === "node_modules/.package-lock.json" ||
+  installAdditionEntries.has(file) ||
+  nativeInstallEntries.has(file)
+));
+if (hasLocalInstallLayout) {
+  assertExactFiles(installedFiles, installAdditionEntries, "package-manager-added dependency content is not bound to the tested commit");
+}
+for (const [prefix, packageEntries] of nativeInstallPackages) {
+  const present = dependencyFiles.filter((file) => file.startsWith(prefix));
+  if (!present.length) continue;
+  const packageName = prefix.slice("node_modules/".length, -1);
+  const label = packageName.startsWith("opencode-")
+    ? "OpenCode native package content is not bound to the tested commit"
+    : "Claude SDK native package content is not bound to the tested commit";
+  if (present.length !== packageEntries.size || present.some((file) => !packageEntries.has(file))) {
+    throw new Error(`${label}: ${packageName}`);
+  }
+  assertExactFiles(installedFiles, packageEntries, label);
+}
+for (const file of dependencyFiles) {
+  if (
+    file === "node_modules/.package-lock.json" ||
+    expectedDependencyEntries.has(file) ||
+    installAdditionEntries.has(file) ||
+    nativeInstallEntries.has(file)
+  ) continue;
+  throw new Error(`installed dependency has no authenticated source: ${file}`);
+}
+verifyInstallLock(installedFiles, JSON.parse(committedBytes("package-lock.json").toString("utf8")));
+const installAddedFiles = new Set([
+  "node_modules/.package-lock.json",
+  ...installAdditionEntries.keys(),
+  ...nativeInstallEntries.keys(),
+]);
+const entries = installedFiles.filter((file) => file !== ".oah-artifact.json" && !installAddedFiles.has(file)).map((file) => {
   const installed = sha(resolve(installedRoot, file));
   if (!file.startsWith("node_modules/")) {
     const expected = file === "package.json" ? publishedPackageBytes(committedBytes(file)) : committedBytes(file);
@@ -131,7 +253,6 @@ if (
 }
 const openCodePackageRoot = dirname(dirname(openCode.command));
 const openCodePackage = JSON.parse(readFileSync(resolve(openCodePackageRoot, "package.json"), "utf8"));
-const expectedOpenCodePackages = JSON.parse(committedBytes("scripts/opencode-native-package-manifest.json").toString("utf8"));
 const expectedOpenCodePackage = expectedOpenCodePackages.packages?.[openCodePackage.name];
 const expectedOpenCodeLock = JSON.parse(committedBytes("package-lock.json").toString("utf8")).packages?.[`node_modules/${openCodePackage.name}`];
 if (
@@ -176,9 +297,6 @@ const consumerNodeModules = resolve(installedRoot, "..");
 if (!isWithin(consumerNodeModules, nativePackageRoot)) {
   throw new Error(`Claude SDK native package did not resolve from the exact consumer installation: ${nativePackageRoot}`);
 }
-const expectedNativePackages = JSON.parse(
-  committedBytes("scripts/claude-native-package-manifest.json").toString("utf8"),
-);
 const expectedNativePackage = expectedNativePackages.packages?.[nativePackageName];
 const expectedLock = JSON.parse(committedBytes("package-lock.json").toString("utf8"));
 const expectedLockPackage = expectedLock.packages?.[`node_modules/${nativePackageName}`];
