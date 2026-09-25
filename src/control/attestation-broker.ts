@@ -121,8 +121,13 @@ function thread(value: unknown): string {
 }
 
 function timestampMs(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
-  return value < 100_000_000_000 ? Math.trunc(value * 1000) : Math.trunc(value);
+  const numeric = typeof value === "number"
+    ? value
+    : typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value.trim())
+      ? Number(value.trim())
+      : NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+  return numeric < 100_000_000_000 ? Math.trunc(numeric * 1000) : Math.trunc(numeric);
 }
 
 function list(value: string): string[] | undefined {
@@ -285,7 +290,10 @@ export class ControlAttestationBroker {
     const metadata = record(event.metadata);
     const actorIdentity = text(ctx.senderId) || text(event.senderId) || text(metadata.senderId);
     const hostEventId = text(ctx.messageId) || text(event.messageId) || text(metadata.messageId);
-    const issuedAt = timestampMs(event.timestamp);
+    // OpenClaw's public message hook only projects numeric timestamps. Slack's
+    // native event timestamp/message id is a numeric string, so use that
+    // host-issued id when the projected timestamp is absent.
+    const issuedAt = timestampMs(event.timestamp) ?? timestampMs(hostEventId);
     const binding = inboundBinding(event, ctx);
     const content = text(event.content);
     if (!actorIdentity || !hostEventId || !issuedAt || !binding || !content) return;

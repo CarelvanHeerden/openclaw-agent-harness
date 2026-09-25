@@ -147,6 +147,26 @@ test("documented message_received hook mints and tool consumes an exact host att
   assert.match(att.bindingDigest, /^[a-f0-9]{64}$/);
 });
 
+test("real Slack hook shape derives freshness from the numeric-string message id", async () => {
+  const f = fixture();
+  const slackTs = String((f.target.updatedAt + 1_000) / 1000);
+  f.emit(`confirm ${CHANGE}`, {
+    timestamp: undefined,
+    messageId: slackTs,
+    metadata: {
+      provider: "slack",
+      surface: "slack",
+      originatingChannel: "slack",
+      originatingTo: "D1",
+      threadId: "T1",
+      messageId: slackTs,
+      senderId: "U1",
+    },
+  }, { messageId: slackTs });
+  assert.equal((await f.invoke("harness_confirm_change")).ok, true);
+  assert.equal(f.calls[0].context.trustedControlAttestation.issuedAt, f.target.updatedAt + 1_000);
+});
+
 test("broker authorization is one-time and replay fails closed", async () => {
   const f = fixture();
   f.emit(`confirm ${CHANGE}`);
