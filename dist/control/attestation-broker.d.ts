@@ -30,6 +30,7 @@ export interface InboundConfirmationContext {
 export interface ConfirmationToolContext {
     requesterSenderId?: string;
     hostEventId?: string;
+    sessionKey?: string;
     nativeChannelId?: string;
     conversationId?: string;
     messageChannel?: string;

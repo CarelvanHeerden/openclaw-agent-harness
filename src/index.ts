@@ -111,6 +111,7 @@ export interface HarnessToolContext {
   /** Legacy/test projection retained for compatible hosts. */
   conversationId?: string;
   workspaceId?: string;
+  /** Optional on hosts that project the exact inbound event id to tools. */
   hostEventId?: string;
   receivedAt?: number;
   senderIsOwner?: boolean;

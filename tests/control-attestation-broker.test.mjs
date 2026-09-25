@@ -64,6 +64,7 @@ function fixture({ ambiguous = false } = {}) {
   const toolContext = (overrides = {}) => ({
     requesterSenderId: "U1",
     hostEventId: "M1",
+    sessionKey: "agent:main:slack:direct:U1",
     nativeChannelId: "D1",
     messageChannel: "slack",
     agentAccountId: "A1",
@@ -84,6 +85,7 @@ function fixture({ ambiguous = false } = {}) {
     conversationId: "D1",
     senderId: "U1",
     messageId: overrides.messageId ?? "M1",
+    sessionKey: "agent:main:slack:direct:U1",
     ...ctxOverrides,
   });
   const invoke = (name, context = toolContext()) => tools.get(name)(context).execute({ changeId: CHANGE });
@@ -123,7 +125,7 @@ test("real message_received -> broker -> contextual tool -> control service flow
       channelId: "slack", accountId: undefined, conversationId: "user:U1", senderId: "U1", messageId: "M-live",
       sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run", callDepth: 0,
     });
-    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", hostEventId: "M-live", nativeChannelId: "D1", conversationId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
+    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", sessionKey: "agent:main:slack:direct:U1", nativeChannelId: "D1", conversationId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
     assert.equal(out.state, "running");
     const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
     assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "user:U1", operation_kind: "confirm_change" });
@@ -172,6 +174,20 @@ test("the tool call must belong to the same raw host event that expressed approv
   const f = fixture();
   f.emit("Confirm Smoke");
   assert.equal((await f.invoke("harness_confirm_change", f.toolContext({ hostEventId: "M-other" }))).code, "confirmation_attestation_required");
+  assert.equal(f.calls.length, 0);
+});
+
+test("the public OpenClaw tool context consumes by exact originating session when no host event id is projected", async () => {
+  const f = fixture();
+  f.emit("Confirm Smoke");
+  assert.equal((await f.invoke("harness_confirm_change", f.toolContext({ hostEventId: undefined }))).ok, true);
+  assert.equal(f.calls[0].context.trustedControlAttestation.hostEventId, "M1");
+});
+
+test("a raw confirmation cannot cross OpenClaw sessions when the tool context omits host event id", async () => {
+  const f = fixture();
+  f.emit("Confirm Smoke");
+  assert.equal((await f.invoke("harness_confirm_change", f.toolContext({ hostEventId: undefined, sessionKey: "agent:main:slack:direct:other" }))).code, "confirmation_attestation_required");
   assert.equal(f.calls.length, 0);
 });
 

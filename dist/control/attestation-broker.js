@@ -241,13 +241,14 @@ export class ControlAttestationBroker {
         const metadata = record(event.metadata);
         const actorIdentity = text(ctx.senderId) || text(event.senderId) || text(metadata.senderId);
         const hostEventId = text(ctx.messageId) || text(event.messageId) || text(metadata.messageId);
+        const sessionKey = text(ctx.sessionKey) || text(event.sessionKey);
         // OpenClaw's public message hook only projects numeric timestamps. Slack's
         // native event timestamp/message id is a numeric string, so use that
         // host-issued id when the projected timestamp is absent.
         const issuedAt = timestampMs(event.timestamp) ?? timestampMs(hostEventId);
         const binding = inboundBinding(event, ctx);
         const content = text(event.content);
-        if (!actorIdentity || !hostEventId || !issuedAt || !binding || !content)
+        if (!actorIdentity || !hostEventId || !sessionKey || !issuedAt || !binding || !content)
             return;
         const senderIds = [ctx.senderId, event.senderId, metadata.senderId].map(text).filter(Boolean);
         const messageIds = [ctx.messageId, event.messageId, metadata.messageId].map(text).filter(Boolean);
@@ -291,6 +292,7 @@ export class ControlAttestationBroker {
             changeId: target.changeId,
             actorIdentity,
             binding,
+            sessionKey,
             attestation,
             targetDigest: target.targetDigest,
             expiresAt,
@@ -300,8 +302,9 @@ export class ControlAttestationBroker {
         this.prune();
         const actorIdentity = text(context.requesterSenderId);
         const hostEventId = text(context.hostEventId);
+        const sessionKey = text(context.sessionKey);
         const binding = toolBinding(context);
-        if (!actorIdentity || !hostEventId || !binding) {
+        if (!actorIdentity || !sessionKey || !binding) {
             throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "A fresh raw-user confirmation event is required.");
         }
         const key = this.key(actorIdentity, operation, changeId);
@@ -310,7 +313,12 @@ export class ControlAttestationBroker {
         // shot even when the state changed or downstream validation rejects it.
         if (record)
             this.records.delete(key);
-        if (!record || record.expiresAt < this.now() || record.attestation.hostEventId !== hostEventId || !sameBinding(record.binding, binding)) {
+        // OpenClaw's public plugin-tool context does not project the inbound
+        // message id. Bind the one-shot raw-event capability to the authenticated
+        // actor, exact conversation and originating session instead. Newer hosts
+        // may additionally project hostEventId; when present it must match.
+        if (!record || record.expiresAt < this.now() || record.sessionKey !== sessionKey ||
+            (hostEventId && record.attestation.hostEventId !== hostEventId) || !sameBinding(record.binding, binding)) {
             throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "A fresh raw-user confirmation event is required.");
         }
         const current = this.service.attestationTarget(operation, actorIdentity, binding.conversationId, changeId);
