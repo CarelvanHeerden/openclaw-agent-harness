@@ -102,7 +102,7 @@ test("real message_received -> broker -> contextual tool -> control service flow
     executeEngine: async () => { throw new Error("stop after durable confirmation"); },
   });
   try {
-    const prepared = await service.prepare({ request: "Make one exact bounded change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "D1" });
+    const prepared = await service.prepare({ request: "Make one exact bounded change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "user:U1" });
     const broker = new ControlAttestationBroker(service, () => now, 60_000);
     const tools = new Map();
     let hook;
@@ -116,15 +116,15 @@ test("real message_received -> broker -> contextual tool -> control service flow
     hook({
       from: "slack:U1", content: `confirm ${prepared.changeId}`, timestamp: now, messageId: "M-live", senderId: "U1",
       sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run",
-      metadata: { to: "slack:D1", provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "slack:D1", messageId: "M-live", senderId: "U1" },
+      metadata: { to: "user:U1", provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "user:U1", messageId: "M-live", senderId: "U1" },
     }, {
-      channelId: "slack", accountId: undefined, conversationId: "slack:D1", senderId: "U1", messageId: "M-live",
+      channelId: "slack", accountId: undefined, conversationId: "user:U1", senderId: "U1", messageId: "M-live",
       sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run", callDepth: 0,
     });
-    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", nativeChannelId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "D1", accountId: "default" } }).execute({ changeId: prepared.changeId });
+    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", nativeChannelId: "D1", conversationId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
     assert.equal(out.state, "running");
     const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
-    assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "D1", operation_kind: "confirm_change" });
+    assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "user:U1", operation_kind: "confirm_change" });
   } finally {
     service.dispose();
     store.close();

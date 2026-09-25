@@ -80,9 +80,11 @@ function invocation(inputOrCallId: unknown, paramsOrContext?: unknown, execution
 }
 
 function trustedConversationId(context: HarnessToolContext): string | undefined {
-  // OpenClaw exposes the active platform conversation as nativeChannelId.
-  // conversationId is retained for compatible hosts and tests only.
-  return context.nativeChannelId?.trim() || context.conversationId?.trim() || undefined;
+  // Use the same canonical route target projected to message_received hooks.
+  // In Slack DMs OpenClaw exposes deliveryContext.to as `user:<id>` while
+  // nativeChannelId is the transport channel (`D...`); mixing those identities
+  // makes a genuine raw-user confirmation impossible to consume.
+  return context.deliveryContext?.to?.trim() || context.conversationId?.trim() || context.nativeChannelId?.trim() || undefined;
 }
 
 function safeFailure(error: unknown): Record<string, unknown> {

@@ -223,7 +223,9 @@ function inboundBinding(event: InboundConfirmationEvent, ctx: InboundConfirmatio
 
 function toolBinding(ctx: ConfirmationToolContext): ConversationBinding | undefined {
   const channelId = channel(ctx.messageChannel || ctx.deliveryContext?.channel);
-  const conversationId = conversation(ctx.nativeChannelId || ctx.conversationId || ctx.deliveryContext?.to, channelId);
+  // Match the canonical route conversation used by message_received. Slack DMs
+  // project `user:<id>` here while nativeChannelId is the transport `D...` id.
+  const conversationId = conversation(ctx.deliveryContext?.to || ctx.conversationId || ctx.nativeChannelId, channelId);
   if (!channelId || !conversationId) return undefined;
   const deliveryChannel = channel(ctx.deliveryContext?.channel);
   const deliveryConversation = conversation(ctx.deliveryContext?.to, channelId);

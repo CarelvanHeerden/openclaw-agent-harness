@@ -28,7 +28,7 @@ function openClawRegistrationHost() {
   };
 }
 
-test("OpenClaw contextual registration binds live requester and native conversation", async () => {
+test("OpenClaw contextual registration binds live requester and canonical route conversation", async () => {
   const calls = [];
   const host = openClawRegistrationHost();
   registerHarnessTools(host.api, {
@@ -45,7 +45,12 @@ test("OpenClaw contextual registration binds live requester and native conversat
     "harness_prepare_change",
   ]);
 
-  const liveContext = { requesterSenderId: "U-live", nativeChannelId: "D-live" };
+  const liveContext = {
+    requesterSenderId: "U-live",
+    nativeChannelId: "D-live",
+    conversationId: "D-live",
+    deliveryContext: { channel: "slack", to: "user:U-live", accountId: "default" },
+  };
   await host.materialize("harness_prepare_change", liveContext).execute({
     request: "Make a bounded repository change.",
     repository: "owner/repo",
@@ -61,7 +66,7 @@ test("OpenClaw contextual registration binds live requester and native conversat
       operation: "prepare",
       context: {
         requesterSenderId: "U-live",
-        conversationId: "D-live",
+        conversationId: "user:U-live",
         workspaceId: undefined,
         trustedControlAttestation: undefined,
       },
@@ -70,7 +75,7 @@ test("OpenClaw contextual registration binds live requester and native conversat
       operation: "confirm",
       context: {
         requesterSenderId: "U-live",
-        conversationId: "D-live",
+        conversationId: "user:U-live",
         workspaceId: undefined,
         trustedControlAttestation: undefined,
       },
