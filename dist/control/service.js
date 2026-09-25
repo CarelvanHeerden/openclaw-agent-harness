@@ -137,8 +137,8 @@ export class ControlPlaneService {
         if (conversation !== run.conversationId || att.conversationIdentity !== run.conversationId)
             throw new ControlError("wrong_conversation", "The confirmation must come from the preparing conversation.");
         const now = this.now();
-        if (att.issuedAt <= proposal.created_at || att.expiresAt < now || att.issuedAt > now || proposal.proposal_expires_at < now)
-            throw new ControlError("stale_confirmation", "The confirmation expired.");
+        if (proposal.confirmable !== 1 || att.issuedAt <= proposal.created_at || att.expiresAt < now || att.issuedAt > now || proposal.proposal_expires_at < now)
+            throw new ControlError("stale_confirmation", "The proposal expired or is no longer confirmable.");
         let expected = "";
         try {
             expected = this.confirmBindingDigest(changeId, att);
@@ -154,6 +154,9 @@ export class ControlPlaneService {
             if (!current || current.version !== run.version || current.state !== "awaiting_confirmation")
                 throw new ControlError("stale_confirmation", "The proposal changed after review.");
             this.assertProposalConsistency(changeId);
+            const liveProposal = this.proposal(changeId);
+            if (!liveProposal || liveProposal.confirmable !== 1 || liveProposal.proposal_expires_at < now)
+                throw new ControlError("stale_confirmation", "The proposal expired or is no longer confirmable.");
             let liveDigest = "";
             try {
                 liveDigest = this.confirmBindingDigest(changeId, att);
@@ -190,13 +193,18 @@ export class ControlPlaneService {
     /** Resolve one exact pending state for a host-observed human intent. */
     attestationTarget(operation, actorIdentity, conversationIdentity, requestedChangeId) {
         const state = operation === "confirm_change" ? "awaiting_confirmation" : "pr_ready";
-        const rows = requestedChangeId
-            ? this.deps.db.prepare(`SELECT id FROM control_runs WHERE id=? AND requester_id=? AND conversation_id=? AND state=?`).all(requestedChangeId, actorIdentity, conversationIdentity, state)
-            : this.deps.db.prepare(`SELECT id FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity, conversationIdentity, state);
+        const now = this.now();
+        const rows = operation === "confirm_change"
+            ? requestedChangeId
+                ? this.deps.db.prepare(`SELECT r.id FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE r.id=? AND r.requester_id=? AND r.conversation_id=? AND r.state=? AND p.confirmable=1 AND p.proposal_expires_at>=?`).all(requestedChangeId, actorIdentity, conversationIdentity, state, now)
+                : this.deps.db.prepare(`SELECT r.id FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE r.requester_id=? AND r.conversation_id=? AND r.state=? AND p.confirmable=1 AND p.proposal_expires_at>=? ORDER BY r.updated_at DESC LIMIT 2`).all(actorIdentity, conversationIdentity, state, now)
+            : requestedChangeId
+                ? this.deps.db.prepare(`SELECT id FROM control_runs WHERE id=? AND requester_id=? AND conversation_id=? AND state=?`).all(requestedChangeId, actorIdentity, conversationIdentity, state)
+                : this.deps.db.prepare(`SELECT id FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity, conversationIdentity, state);
         if (rows.length !== 1)
             throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "The human intent does not identify exactly one pending change.");
         const changeId = rows[0].id, run = this.deps.repository.getRun(changeId), p = this.proposal(changeId);
-        if (!run || !p || run.requesterId !== actorIdentity || run.conversationId !== conversationIdentity || run.state !== state)
+        if (!run || !p || run.requesterId !== actorIdentity || run.conversationId !== conversationIdentity || run.state !== state || (operation === "confirm_change" && (p.confirmable !== 1 || p.proposal_expires_at < now)))
             throw new ControlError("stale_confirmation", "The pending state changed.");
         const scope = parseList(p.scope_json), excludedScope = parseList(p.excluded_scope_json);
         const targetDigest = operation === "confirm_change" ? this.confirmBindingDigest(changeId) : controlDigest(MERGE_DOMAIN, { changeId, version: run.version, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, publishedSha: p.published_sha, readinessDigest: p.readiness_digest });

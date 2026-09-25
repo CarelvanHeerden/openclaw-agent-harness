@@ -128,12 +128,13 @@ export class ControlPlaneService {
     const {actor,conversation}=contextIdentity(context); const run=this.deps.repository.getRun(changeId); const proposal=this.proposal(changeId); if(!run||!proposal) throw new ControlError("change_not_found","The prepared change was not found.");
     if(run.state!=="awaiting_confirmation") throw new ControlError(run.state==="autonomous_run"||run.state==="pr_ready"||run.state==="done"?"already_confirmed":"stale_confirmation","This proposal can no longer be confirmed.");
     const att=this.requireAttestation("confirm_change",context); if(actor!==run.requesterId||att.actorIdentity!==run.requesterId) throw new ControlError("wrong_actor","The confirmation must come from the preparing requester."); if(conversation!==run.conversationId||att.conversationIdentity!==run.conversationId) throw new ControlError("wrong_conversation","The confirmation must come from the preparing conversation.");
-    const now=this.now(); if(att.issuedAt<=proposal.created_at||att.expiresAt<now||att.issuedAt>now||proposal.proposal_expires_at<now) throw new ControlError("stale_confirmation","The confirmation expired."); let expected="";try{expected=this.confirmBindingDigest(changeId,att);}catch{throw new ControlError("stale_confirmation","The proposal is not canonical.");}if(att.bindingDigest!==expected) throw new ControlError("stale_confirmation","The proposal changed after review.");
+    const now=this.now(); if(proposal.confirmable!==1||att.issuedAt<=proposal.created_at||att.expiresAt<now||att.issuedAt>now||proposal.proposal_expires_at<now) throw new ControlError("stale_confirmation","The proposal expired or is no longer confirmable."); let expected="";try{expected=this.confirmBindingDigest(changeId,att);}catch{throw new ControlError("stale_confirmation","The proposal is not canonical.");}if(att.bindingDigest!==expected) throw new ControlError("stale_confirmation","The proposal changed after review.");
     this.deps.db.exec("BEGIN IMMEDIATE");
     try {
       const current=this.deps.db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(changeId) as {state:string;version:number}|undefined;
       if(!current||current.version!==run.version||current.state!=="awaiting_confirmation") throw new ControlError("stale_confirmation","The proposal changed after review.");
       this.assertProposalConsistency(changeId);
+      const liveProposal=this.proposal(changeId); if(!liveProposal||liveProposal.confirmable!==1||liveProposal.proposal_expires_at<now) throw new ControlError("stale_confirmation","The proposal expired or is no longer confirmable.");
       let liveDigest="";try{liveDigest=this.confirmBindingDigest(changeId,att);}catch{throw new ControlError("stale_confirmation","The proposal is not canonical.");}if(att.bindingDigest!==liveDigest) throw new ControlError("stale_confirmation","The proposal changed after review.");
       this.consumeAttestation(changeId,att,now);
       const changed=this.deps.db.prepare(`UPDATE control_runs SET state='autonomous_run',version=version+1,updated_at=? WHERE id=? AND state='awaiting_confirmation' AND version=?`).run(now,changeId,run.version);
@@ -150,12 +151,17 @@ export class ControlPlaneService {
   /** Resolve one exact pending state for a host-observed human intent. */
   attestationTarget(operation:ControlOperation,actorIdentity:string,conversationIdentity:string,requestedChangeId?:string):AttestationTarget {
     const state=operation==="confirm_change"?"awaiting_confirmation":"pr_ready";
-    const rows=requestedChangeId
-      ? this.deps.db.prepare(`SELECT id FROM control_runs WHERE id=? AND requester_id=? AND conversation_id=? AND state=?`).all(requestedChangeId,actorIdentity,conversationIdentity,state) as Array<{id:string}>
-      : this.deps.db.prepare(`SELECT id FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity,conversationIdentity,state) as Array<{id:string}>;
+    const now=this.now();
+    const rows=operation==="confirm_change"
+      ? requestedChangeId
+        ? this.deps.db.prepare(`SELECT r.id FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE r.id=? AND r.requester_id=? AND r.conversation_id=? AND r.state=? AND p.confirmable=1 AND p.proposal_expires_at>=?`).all(requestedChangeId,actorIdentity,conversationIdentity,state,now) as Array<{id:string}>
+        : this.deps.db.prepare(`SELECT r.id FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE r.requester_id=? AND r.conversation_id=? AND r.state=? AND p.confirmable=1 AND p.proposal_expires_at>=? ORDER BY r.updated_at DESC LIMIT 2`).all(actorIdentity,conversationIdentity,state,now) as Array<{id:string}>
+      : requestedChangeId
+        ? this.deps.db.prepare(`SELECT id FROM control_runs WHERE id=? AND requester_id=? AND conversation_id=? AND state=?`).all(requestedChangeId,actorIdentity,conversationIdentity,state) as Array<{id:string}>
+        : this.deps.db.prepare(`SELECT id FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity,conversationIdentity,state) as Array<{id:string}>;
     if(rows.length!==1) throw new ControlError(operation==="merge_change"?"merge_attestation_required":"confirmation_attestation_required","The human intent does not identify exactly one pending change.");
     const changeId=rows[0]!.id,run=this.deps.repository.getRun(changeId),p=this.proposal(changeId);
-    if(!run||!p||run.requesterId!==actorIdentity||run.conversationId!==conversationIdentity||run.state!==state) throw new ControlError("stale_confirmation","The pending state changed.");
+    if(!run||!p||run.requesterId!==actorIdentity||run.conversationId!==conversationIdentity||run.state!==state||(operation==="confirm_change"&&(p.confirmable!==1||p.proposal_expires_at<now))) throw new ControlError("stale_confirmation","The pending state changed.");
     const scope=parseList(p.scope_json),excludedScope=parseList(p.excluded_scope_json);
     const targetDigest=operation==="confirm_change"?this.confirmBindingDigest(changeId):controlDigest(MERGE_DOMAIN,{changeId,version:run.version,repository:run.repository,baseRef:run.baseRef,prNumber:p.pr_number,publishedSha:p.published_sha,readinessDigest:p.readiness_digest});
     return {changeId,targetDigest,updatedAt:run.updatedAt,expiresAt:operation==="confirm_change"?p.proposal_expires_at:this.now()+this.ttl,budgetUsd:run.authorityEnvelope.limits.budgetUsd,timeLimitSeconds:Math.floor(run.authorityEnvelope.limits.activeTimeMs/1000),scope,excludedScope};
