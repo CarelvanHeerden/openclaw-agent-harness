@@ -78,6 +78,12 @@ function invocation(inputOrCallId: unknown, paramsOrContext?: unknown, execution
   return { input: (inputOrCallId ?? {}) as Record<string, unknown>, context: (paramsOrContext ?? executionContext ?? {}) as TrustedControlContext };
 }
 
+function trustedConversationId(context: HarnessToolContext): string | undefined {
+  // OpenClaw exposes the active platform conversation as nativeChannelId.
+  // conversationId is retained for compatible hosts and tests only.
+  return context.nativeChannelId?.trim() || context.conversationId?.trim() || undefined;
+}
+
 function safeFailure(error: unknown): Record<string, unknown> {
   if (error instanceof ControlError) return { ok: false, code: error.code, summary: error.message };
   return { ok: false, code: "control_unavailable", summary: "The change service is temporarily unavailable." };
@@ -113,7 +119,7 @@ function tool(
         // host did not provide one.
         const trusted = {
           requesterSenderId: context.requesterSenderId,
-          conversationId: context.conversationId,
+          conversationId: trustedConversationId(context),
           workspaceId: context.workspaceId,
           trustedControlAttestation: context.trustedControlAttestation,
         } satisfies TrustedControlContext;
@@ -174,7 +180,9 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
   ];
 
   for (const [name, build] of definitions) {
-    disposers.push(toDispose(api.registerTool(contextualToolFactory(name, build))));
+    // Function registrations require an explicit name so OpenClaw can bind the
+    // declared contract and materialize the factory with live turn context.
+    disposers.push(toDispose(api.registerTool(contextualToolFactory(name, build), { name })));
   }
 
   return () => {

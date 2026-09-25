@@ -60,6 +60,25 @@ let ran = 0;
 
 const MUTATIONS = [
   {
+    // OpenClaw does not infer a function registration's catalog name from
+    // properties attached to the function. Without the explicit option the
+    // live contextual factory is not registered under its declared contract.
+    name: "rc.13 live context: contextual tools register with explicit OpenClaw names",
+    file: "dist/tools/registration.js",
+    find: "api.registerTool(contextualToolFactory(name, build), { name })",
+    replace: "api.registerTool(contextualToolFactory(name, build))",
+    tests: ["tests/tool-registration-context.test.mjs"],
+  },
+  {
+    // The host's active platform conversation is nativeChannelId. Falling
+    // back to the legacy test-only field recreates the live Slack smoke block.
+    name: "rc.13 live context: native channel identity reaches the control plane",
+    file: "dist/tools/registration.js",
+    find: "conversationId: trustedConversationId(context),",
+    replace: "conversationId: context.conversationId,",
+    tests: ["tests/tool-registration-context.test.mjs"],
+  },
+  {
     // Found by a real smoke run, not by review: the ledger recorded the
     // CONFIGURED worker model for a turn OpenCode served. The A/B matrix reads
     // this column, so the mutation is not "a label is wrong" -- it is one

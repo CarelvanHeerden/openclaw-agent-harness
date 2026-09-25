@@ -105,6 +105,9 @@ import { assertDowngradeSafe } from "./state/runtime-compat.js";
 export interface HarnessToolContext {
   /** Authenticated identities supplied by OpenClaw, never tool arguments. */
   requesterSenderId?: string;
+  /** Host-trusted active platform conversation identifier. */
+  nativeChannelId?: string;
+  /** Legacy/test projection retained for compatible hosts. */
   conversationId?: string;
   workspaceId?: string;
   hostEventId?: string;
@@ -136,7 +139,7 @@ export interface HarnessPluginApi {
   };
   registerTool: (
     definition: HarnessToolDefinition | ((context: HarnessToolContext) => HarnessToolDefinition),
-    options?: unknown,
+    options?: { name?: string; names?: string[]; optional?: boolean },
   ) => (() => void) | { dispose?: () => void; unregister?: () => void };
   /**
    * Subscribe to a lifecycle event on the OpenClaw event bus. Same shape as

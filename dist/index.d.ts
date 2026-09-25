@@ -16,6 +16,9 @@ import { type CredentialRecord } from "./adapters/credential-vault.js";
 export interface HarnessToolContext {
     /** Authenticated identities supplied by OpenClaw, never tool arguments. */
     requesterSenderId?: string;
+    /** Host-trusted active platform conversation identifier. */
+    nativeChannelId?: string;
+    /** Legacy/test projection retained for compatible hosts. */
     conversationId?: string;
     workspaceId?: string;
     hostEventId?: string;
@@ -43,7 +46,11 @@ export interface HarnessPluginApi {
         error: (msg: string, meta?: unknown) => void;
         debug?: (msg: string, meta?: unknown) => void;
     };
-    registerTool: (definition: HarnessToolDefinition | ((context: HarnessToolContext) => HarnessToolDefinition), options?: unknown) => (() => void) | {
+    registerTool: (definition: HarnessToolDefinition | ((context: HarnessToolContext) => HarnessToolDefinition), options?: {
+        name?: string;
+        names?: string[];
+        optional?: boolean;
+    }) => (() => void) | {
         dispose?: () => void;
         unregister?: () => void;
     };
