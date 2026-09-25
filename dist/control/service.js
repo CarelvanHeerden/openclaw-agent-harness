@@ -210,6 +210,24 @@ export class ControlPlaneService {
         const targetDigest = operation === "confirm_change" ? this.confirmBindingDigest(changeId) : controlDigest(MERGE_DOMAIN, { changeId, version: run.version, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, publishedSha: p.published_sha, readinessDigest: p.readiness_digest });
         return { changeId, targetDigest, updatedAt: run.updatedAt, expiresAt: operation === "confirm_change" ? p.proposal_expires_at : this.now() + this.ttl, budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope, excludedScope };
     }
+    /**
+     * Bind an unqualified raw-user intent to the latest uniquely-created pending
+     * state that already existed when the host received the message. This choice
+     * is made before, and independently of, any model-authored tool arguments.
+     */
+    attestationTargetForEvent(operation, actorIdentity, conversationIdentity, issuedAt, requestedChangeId) {
+        if (requestedChangeId)
+            return this.attestationTarget(operation, actorIdentity, conversationIdentity, requestedChangeId);
+        if (!Number.isSafeInteger(issuedAt) || issuedAt <= 0)
+            throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "The human intent does not identify a valid pending change.");
+        const state = operation === "confirm_change" ? "awaiting_confirmation" : "pr_ready", now = this.now();
+        const rows = operation === "confirm_change"
+            ? this.deps.db.prepare(`SELECT r.id,r.updated_at FROM control_runs r JOIN control_proposals p ON p.run_id=r.id WHERE r.requester_id=? AND r.conversation_id=? AND r.state=? AND r.updated_at<? AND p.confirmable=1 AND p.proposal_expires_at>=? ORDER BY r.updated_at DESC LIMIT 2`).all(actorIdentity, conversationIdentity, state, issuedAt, now)
+            : this.deps.db.prepare(`SELECT id,updated_at FROM control_runs WHERE requester_id=? AND conversation_id=? AND state=? AND updated_at<? ORDER BY updated_at DESC LIMIT 2`).all(actorIdentity, conversationIdentity, state, issuedAt);
+        if (rows.length === 0 || rows.length > 1 && rows[0].updated_at === rows[1].updated_at)
+            throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "The human intent does not identify one latest pending change.");
+        return this.attestationTarget(operation, actorIdentity, conversationIdentity, rows[0].id);
+    }
     attestationBindingDigest(changeId, att) {
         return att.operation === "confirm_change" ? this.confirmBindingDigest(changeId, att) : this.mergeBindingDigest(changeId, att);
     }

@@ -29,9 +29,12 @@ function fixture({ ambiguous = false } = {}) {
   const calls = [];
   const service = {
     attestationTarget(operation, actor, conversation, requested) {
-      if (ambiguous && !requested) throw new Error("exactly one pending change required");
       if (actor !== "U1" || conversation !== "D1" || (requested && requested !== CHANGE)) throw new Error("not found");
       return { ...target, targetDigest: `${operation}:${target.targetDigest}` };
+    },
+    attestationTargetForEvent(operation, actor, conversation, issuedAt, requested) {
+      if (ambiguous && !requested) throw new Error("latest pending change is tied");
+      return this.attestationTarget(operation, actor, conversation, requested ?? CHANGE);
     },
     attestationBindingDigest(changeId, attestation) {
       return createHash("sha256").update(JSON.stringify({ changeId, target: this.attestationTarget(attestation.operation, attestation.actorIdentity, attestation.conversationIdentity, changeId).targetDigest, attestation })).digest("hex");
@@ -88,11 +91,11 @@ function fixture({ ambiguous = false } = {}) {
     sessionKey: "agent:main:slack:direct:U1",
     ...ctxOverrides,
   });
-  const invoke = (name, context = toolContext()) => tools.get(name)(context).execute({ changeId: CHANGE });
+  const invoke = (name, context = toolContext(), changeId = CHANGE) => tools.get(name)(context).execute({ changeId });
   return { target, service, broker, calls, emit, invoke, toolContext, tick(ms) { now += ms; } };
 }
 
-test("real message_received -> broker -> contextual tool -> control service flow consumes durable evidence", async () => {
+test("actual Slack DM hook and tool contexts bind bare Confirm to the latest pending change", async () => {
   const dir = mkdtempSync(join(tmpdir(), "attestation-live-"));
   const store = openStateStoreSync(join(dir, "state.db"));
   const repository = new ControlRepository(store.db);
@@ -106,7 +109,9 @@ test("real message_received -> broker -> contextual tool -> control service flow
     executeEngine: async () => { throw new Error("stop after durable confirmation"); },
   });
   try {
-    const prepared = await service.prepare({ request: "Make one exact bounded change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "user:U1" });
+    await service.prepare({ request: "Keep an older pending change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "user:U1" });
+    now += 10;
+    const prepared = await service.prepare({ request: "Make the latest exact bounded change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "user:U1" });
     const broker = new ControlAttestationBroker(service, () => now, 60_000);
     const tools = new Map();
     let hook;
@@ -117,18 +122,19 @@ test("real message_received -> broker -> contextual tool -> control service flow
     registerControlAttestationHook(api, broker);
     registerHarnessTools(api, { controlPlane: service, controlAttestationBroker: broker, authorisedUsers: ["U1"] });
     now += 100;
+    const slackMessageId = String(now / 1000);
     hook({
-      from: "slack:U1", content: `confirm ${prepared.changeId}`, timestamp: now, messageId: "M-live", senderId: "U1",
-      sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run",
-      metadata: { to: "user:U1", provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "user:U1", messageId: "M-live", senderId: "U1" },
+      from: "slack:U1", content: "Confirm", timestamp: now, messageId: slackMessageId, senderId: "U1",
+      sessionKey: "agent:main:slack:direct:u1",
+      metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "user:U1", messageId: slackMessageId, senderId: "U1" },
     }, {
-      channelId: "slack", accountId: undefined, conversationId: "user:U1", senderId: "U1", messageId: "M-live",
-      sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run", callDepth: 0,
+      channelId: "slack", accountId: "default", conversationId: "user:U1", senderId: "U1", messageId: slackMessageId,
+      sessionKey: "agent:main:slack:direct:u1",
     });
-    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", sessionKey: "agent:main:slack:direct:U1", nativeChannelId: "D1", conversationId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
+    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", sessionKey: "agent:main:slack:direct:u1", nativeChannelId: "D0123456789", messageChannel: "slack", agentAccountId: "default", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
     assert.equal(out.state, "running");
     const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
-    assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "user:U1", operation_kind: "confirm_change" });
+    assert.deepEqual({ ...durable }, { host_event_id: slackMessageId, actor_identity: "U1", conversation_identity: "user:U1", operation_kind: "confirm_change" });
   } finally {
     service.dispose();
     store.close();
@@ -237,6 +243,14 @@ test("broker authorization is one-time and replay fails closed", async () => {
     summary: "A fresh raw-user confirmation event is required.",
   });
   assert.equal(f.calls.length, 1);
+});
+
+test("a model-selected different change cannot redirect and burns the raw-event capability", async () => {
+  const f = fixture();
+  f.emit("Confirm Smoke");
+  assert.equal((await f.invoke("harness_confirm_change", f.toolContext(), "chg_otherpending12")).code, "confirmation_attestation_required");
+  assert.equal((await f.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
+  assert.equal(f.calls.length, 0);
 });
 
 test("changed reviewed state, stale events, and expired broker records are rejected", async () => {

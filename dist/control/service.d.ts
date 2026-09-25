@@ -118,6 +118,12 @@ export declare class ControlPlaneService {
     result(changeId: string, context: TrustedControlContext): Record<string, unknown>;
     /** Resolve one exact pending state for a host-observed human intent. */
     attestationTarget(operation: ControlOperation, actorIdentity: string, conversationIdentity: string, requestedChangeId?: string): AttestationTarget;
+    /**
+     * Bind an unqualified raw-user intent to the latest uniquely-created pending
+     * state that already existed when the host received the message. This choice
+     * is made before, and independently of, any model-authored tool arguments.
+     */
+    attestationTargetForEvent(operation: ControlOperation, actorIdentity: string, conversationIdentity: string, issuedAt: number, requestedChangeId?: string): AttestationTarget;
     attestationBindingDigest(changeId: string, att: ConfirmationAttestation): string;
     merge(changeId: string, context: TrustedControlContext): Promise<Record<string, unknown>>;
     private dispatch;

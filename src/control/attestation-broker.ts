@@ -344,7 +344,7 @@ export class ControlAttestationBroker {
     if (!intent) return;
     let target: ReturnType<ControlPlaneService["attestationTarget"]>;
     try {
-      target = this.service.attestationTarget(intent.operation, actorIdentity, binding.conversationId, intent.changeId);
+      target = this.service.attestationTargetForEvent(intent.operation, actorIdentity, binding.conversationId, issuedAt, intent.changeId);
     } catch {
       return;
     }
@@ -388,15 +388,26 @@ export class ControlAttestationBroker {
       throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "A fresh raw-user confirmation event is required.");
     }
     const key = this.key(actorIdentity, operation, changeId);
-    const record = this.records.get(key);
+    let record = this.records.get(key);
+    if (!record) {
+      // An unqualified human confirmation was already bound to one exact
+      // target by host-observed chronology. A model-selected different id must
+      // not redirect it, and the attempt still burns the one-shot capability.
+      record = [...this.records.values()].find((candidate) =>
+        candidate.actorIdentity === actorIdentity &&
+        candidate.attestation.operation === operation &&
+        candidate.sessionKey === sessionKey &&
+        (!hostEventId || candidate.attestation.hostEventId === hostEventId) &&
+        sameBinding(candidate.binding, binding));
+    }
     // Delete before any state lookup: a matching broker authorization is one
     // shot even when the state changed or downstream validation rejects it.
-    if (record) this.records.delete(key);
+    if (record) this.records.delete(this.key(record.actorIdentity, record.attestation.operation, record.changeId));
     // OpenClaw's public plugin-tool context does not project the inbound
     // message id. Bind the one-shot raw-event capability to the authenticated
     // actor, exact conversation and originating session instead. Newer hosts
     // may additionally project hostEventId; when present it must match.
-    if (!record || record.expiresAt < this.now() || record.sessionKey !== sessionKey ||
+    if (!record || record.changeId !== changeId || record.expiresAt < this.now() || record.sessionKey !== sessionKey ||
       (hostEventId && record.attestation.hostEventId !== hostEventId) || !sameBinding(record.binding, binding)) {
       throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "A fresh raw-user confirmation event is required.");
     }
