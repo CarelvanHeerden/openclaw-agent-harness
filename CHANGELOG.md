@@ -2,6 +2,9 @@
 
 - Isolate OpenClaw activation behind a self-contained bundled entry so generation
   capture no longer mistakes virtiofs inode churn for an in-progress source edit.
+- Deterministically minify that entry, preserve function names and bounded line
+  lengths for useful stacks, and tree-shake unused Claude SDK exports so live
+  dependency capture fits within constrained activation memory.
 
 - Reject agent-tool `answeredBy: "human"` claims; requester identity is not proof
   of a human's explicit approval.
