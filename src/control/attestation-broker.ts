@@ -14,7 +14,15 @@ export interface InboundConfirmationEvent {
   senderId?: unknown;
   sessionKey?: unknown;
   runId?: unknown;
-  metadata?: unknown;
+  metadata?: {
+    provider?: unknown;
+    surface?: unknown;
+    originatingChannel?: unknown;
+    originatingTo?: unknown;
+    threadId?: unknown;
+    messageId?: unknown;
+    senderId?: unknown;
+  } | unknown;
 }
 
 export interface InboundConfirmationContext {
@@ -84,6 +92,32 @@ const INTERNAL_MARKERS = [
 
 function text(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function channel(value: unknown): string {
+  return text(value).toLowerCase();
+}
+
+function account(value: unknown): string {
+  return text(value).toLowerCase() || "default";
+}
+
+function conversation(value: unknown, channelId: string): string {
+  let normalized = text(value);
+  const prefix = `${channelId}:`;
+  while (channelId && normalized.toLowerCase().startsWith(prefix)) normalized = normalized.slice(prefix.length);
+  return normalized;
+}
+
+function thread(value: unknown): string {
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return text(value);
 }
 
 function timestampMs(value: unknown): number | undefined {
@@ -170,27 +204,43 @@ function exactModifiers(
 }
 
 function inboundBinding(event: InboundConfirmationEvent, ctx: InboundConfirmationContext): ConversationBinding | undefined {
-  const channel = text(ctx.channelId);
-  const conversationId = text(ctx.conversationId);
-  if (!channel || !conversationId) return undefined;
+  const metadata = record(event.metadata);
+  const channelId = channel(ctx.channelId);
+  const conversationId = conversation(ctx.conversationId || metadata.originatingTo, channelId);
+  if (!channelId || !conversationId) return undefined;
   return {
-    channel,
-    accountId: text(ctx.accountId),
+    channel: channelId,
+    accountId: account(ctx.accountId),
     conversationId,
-    threadId: text(event.threadId),
+    threadId: thread(event.threadId ?? metadata.threadId),
   };
 }
 
 function toolBinding(ctx: ConfirmationToolContext): ConversationBinding | undefined {
-  const conversationId = text(ctx.nativeChannelId) || text(ctx.conversationId) || text(ctx.deliveryContext?.to);
-  const channel = text(ctx.messageChannel) || text(ctx.deliveryContext?.channel);
-  if (!channel || !conversationId) return undefined;
+  const channelId = channel(ctx.messageChannel || ctx.deliveryContext?.channel);
+  const conversationId = conversation(ctx.nativeChannelId || ctx.conversationId || ctx.deliveryContext?.to, channelId);
+  if (!channelId || !conversationId) return undefined;
+  const deliveryChannel = channel(ctx.deliveryContext?.channel);
+  const deliveryConversation = conversation(ctx.deliveryContext?.to, channelId);
+  if (deliveryChannel && deliveryChannel !== channelId) return undefined;
+  if (deliveryConversation && deliveryConversation !== conversationId) return undefined;
   return {
-    channel,
-    accountId: text(ctx.agentAccountId) || text(ctx.deliveryContext?.accountId),
+    channel: channelId,
+    accountId: account(ctx.agentAccountId || ctx.deliveryContext?.accountId),
     conversationId,
-    threadId: text(ctx.deliveryContext?.threadId),
+    threadId: thread(ctx.deliveryContext?.threadId),
   };
+}
+
+function isExternalInbound(event: InboundConfirmationEvent, ctx: InboundConfirmationContext): boolean {
+  if (Number(ctx.callDepth ?? 0) > 0) return false;
+  const metadata = record(event.metadata);
+  const channelId = channel(ctx.channelId);
+  const surfaces = [metadata.originatingChannel, metadata.provider, metadata.surface].map(channel).filter(Boolean);
+  if (!channelId || surfaces.length === 0 || surfaces.some((surface) => surface !== channelId)) return false;
+  const sessionKey = text(ctx.sessionKey) || text(event.sessionKey);
+  if (/(?:^|:)subagent(?::|$)|(?:^|:)internal-session-effects(?::|$)/i.test(sessionKey)) return false;
+  return true;
 }
 
 function sameBinding(left: ConversationBinding, right: ConversationBinding): boolean {
@@ -231,15 +281,17 @@ export class ControlAttestationBroker {
 
   observe(event: InboundConfirmationEvent, ctx: InboundConfirmationContext): void {
     this.prune();
-    if (Number(ctx.callDepth ?? 0) > 0 || text(ctx.runId) || text(event.runId)) return;
-    const actorIdentity = text(ctx.senderId) || text(event.senderId);
-    const hostEventId = text(ctx.messageId) || text(event.messageId);
+    if (!isExternalInbound(event, ctx)) return;
+    const metadata = record(event.metadata);
+    const actorIdentity = text(ctx.senderId) || text(event.senderId) || text(metadata.senderId);
+    const hostEventId = text(ctx.messageId) || text(event.messageId) || text(metadata.messageId);
     const issuedAt = timestampMs(event.timestamp);
     const binding = inboundBinding(event, ctx);
     const content = text(event.content);
     if (!actorIdentity || !hostEventId || !issuedAt || !binding || !content) return;
-    if (text(ctx.senderId) && text(event.senderId) && text(ctx.senderId) !== text(event.senderId)) return;
-    if (text(ctx.messageId) && text(event.messageId) && text(ctx.messageId) !== text(event.messageId)) return;
+    const senderIds = [ctx.senderId, event.senderId, metadata.senderId].map(text).filter(Boolean);
+    const messageIds = [ctx.messageId, event.messageId, metadata.messageId].map(text).filter(Boolean);
+    if (new Set(senderIds).size > 1 || new Set(messageIds).size > 1) return;
 
     const intent = parseControlIntent(content);
     if (!intent) return;

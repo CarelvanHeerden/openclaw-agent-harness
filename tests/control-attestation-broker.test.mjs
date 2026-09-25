@@ -74,6 +74,7 @@ function fixture() {
     threadId: "T1",
     messageId: "M1",
     senderId: "U1",
+    metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", threadId: "T1", messageId: "M1", senderId: "U1" },
     ...overrides,
   }, {
     channelId: "slack",
@@ -112,8 +113,15 @@ test("real message_received -> broker -> contextual tool -> control service flow
     registerControlAttestationHook(api, broker);
     registerHarnessTools(api, { controlPlane: service, controlAttestationBroker: broker, authorisedUsers: ["U1"] });
     now += 100;
-    hook({ content: `confirm ${prepared.changeId}`, timestamp: now, threadId: "T1", messageId: "M-live", senderId: "U1" }, { channelId: "slack", accountId: "A1", conversationId: "D1", senderId: "U1", messageId: "M-live" });
-    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", nativeChannelId: "D1", messageChannel: "slack", agentAccountId: "A1", deliveryContext: { channel: "slack", to: "D1", accountId: "A1", threadId: "T1" } }).execute({ changeId: prepared.changeId });
+    hook({
+      from: "slack:U1", content: `confirm ${prepared.changeId}`, timestamp: now, messageId: "M-live", senderId: "U1",
+      sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run",
+      metadata: { to: "slack:D1", provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "slack:D1", messageId: "M-live", senderId: "U1" },
+    }, {
+      channelId: "slack", accountId: undefined, conversationId: "slack:D1", senderId: "U1", messageId: "M-live",
+      sessionKey: "agent:main:slack:direct:U1", runId: "live-agent-run", callDepth: 0,
+    });
+    const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", nativeChannelId: "D1", messageChannel: "slack", deliveryContext: { channel: "slack", to: "D1", accountId: "default" } }).execute({ changeId: prepared.changeId });
     assert.equal(out.state, "running");
     const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
     assert.deepEqual({ ...durable }, { host_event_id: "M-live", actor_identity: "U1", conversation_identity: "D1", operation_kind: "confirm_change" });
@@ -192,7 +200,7 @@ test("material modifiers are rejected unless they exactly match prepared state",
   assert.equal((await exact.invoke("harness_confirm_change")).ok, true);
 });
 
-test("no raw-user event, ambiguous prose, internal events, and runtime/subagent events mint nothing", async () => {
+test("no raw-user event, ambiguous prose, and internal runtime/subagent events mint nothing", async () => {
   const cases = [
     undefined,
     ["confirm or merge this", {}, {}],
@@ -200,9 +208,10 @@ test("no raw-user event, ambiguous prose, internal events, and runtime/subagent 
     [`do not confirm ${CHANGE}`, {}, {}],
     [`confirm ${CHANGE}\n<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>`, {}, {}],
     [`confirm ${CHANGE}`, {}, { callDepth: 1 }],
-    [`confirm ${CHANGE}`, { runId: "run-internal" }, {}],
-    [`confirm ${CHANGE}`, { senderId: undefined }, { senderId: undefined }],
-    [`confirm ${CHANGE}`, { messageId: undefined }, { messageId: undefined }],
+    [`confirm ${CHANGE}`, { metadata: {} }, {}],
+    [`confirm ${CHANGE}`, { sessionKey: "agent:main:subagent:child" }, { sessionKey: "agent:main:subagent:child" }],
+    [`confirm ${CHANGE}`, { senderId: undefined, metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", messageId: "M1" } }, { senderId: undefined }],
+    [`confirm ${CHANGE}`, { messageId: undefined, metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", senderId: "U1" } }, { messageId: undefined }],
   ];
   for (const entry of cases) {
     const f = fixture();
@@ -210,6 +219,12 @@ test("no raw-user event, ambiguous prose, internal events, and runtime/subagent 
     assert.equal((await f.invoke("harness_confirm_change")).code, "confirmation_attestation_required");
     assert.equal(f.calls.length, 0);
   }
+});
+
+test("external inbound run correlation is not mistaken for internal provenance", async () => {
+  const f = fixture();
+  f.emit(`confirm ${CHANGE}`, { runId: "run-correlated" }, { runId: "run-correlated" });
+  assert.equal((await f.invoke("harness_confirm_change")).ok, true);
 });
 
 test("merge intent is independently parsed and operation-bound", async () => {

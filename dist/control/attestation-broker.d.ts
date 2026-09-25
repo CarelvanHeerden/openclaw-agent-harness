@@ -7,7 +7,15 @@ export interface InboundConfirmationEvent {
     senderId?: unknown;
     sessionKey?: unknown;
     runId?: unknown;
-    metadata?: unknown;
+    metadata?: {
+        provider?: unknown;
+        surface?: unknown;
+        originatingChannel?: unknown;
+        originatingTo?: unknown;
+        threadId?: unknown;
+        messageId?: unknown;
+        senderId?: unknown;
+    } | unknown;
 }
 export interface InboundConfirmationContext {
     channelId?: unknown;

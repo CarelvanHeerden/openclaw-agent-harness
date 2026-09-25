@@ -60,6 +60,33 @@ let ran = 0;
 
 const MUTATIONS = [
   {
+    // Accepted external turns can carry the active agent run id. Treating that
+    // correlation id as internal provenance recreates the live Slack miss.
+    name: "rc.13 host attestation: external run correlation remains admissible",
+    file: "dist/control/attestation-broker.js",
+    find: "        if (!isExternalInbound(event, ctx))\n            return;",
+    replace: "        if (!isExternalInbound(event, ctx) || text(ctx.runId) || text(event.runId))\n            return;",
+    tests: ["tests/control-attestation-broker.test.mjs"],
+  },
+  {
+    // Raw user authority is accepted only from a channel-backed host event,
+    // not a runtime-shaped event that merely supplies sender/message ids.
+    name: "rc.13 host attestation: external channel provenance is required",
+    file: "dist/control/attestation-broker.js",
+    find: "    if (!channelId || surfaces.length === 0 || surfaces.some((surface) => surface !== channelId))\n        return false;",
+    replace: "    if (!channelId)\n        return false;",
+    tests: ["tests/control-attestation-broker.test.mjs"],
+  },
+  {
+    // The hook and tool factory project Slack conversations differently:
+    // hook routes may be channel-prefixed while nativeChannelId is not.
+    name: "rc.13 host attestation: hook and tool conversation ids normalize identically",
+    file: "dist/control/attestation-broker.js",
+    find: "    while (channelId && normalized.toLowerCase().startsWith(prefix))\n        normalized = normalized.slice(prefix.length);",
+    replace: "    if (false)\n        normalized = normalized.slice(prefix.length);",
+    tests: ["tests/control-attestation-broker.test.mjs"],
+  },
+  {
     // Without the raw inbound hook there is no independent human evidence;
     // confirmations must remain unavailable rather than trusting model args.
     name: "rc.13 host attestation: documented raw message hook is registered",
