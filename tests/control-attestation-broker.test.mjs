@@ -154,6 +154,7 @@ test("ordinary conversational approvals and Markdown labels authorize the unique
     "Confirm Smoke",
     "Approved",
     "Go for it.",
+    "Please got for it",
     "Let's do it.",
     "yes, run that README smoke",
     "**Looks good — go ahead with the `README` smoke.**",
@@ -313,5 +314,6 @@ test("intent grammar stays narrow", () => {
   assert.equal(parseControlIntent("yes, run that README smoke").operation, "confirm_change");
   assert.equal(parseControlIntent("**Looks good — go ahead with the `README` smoke.**").operation, "confirm_change");
   assert.equal(parseControlIntent("Go for it.").operation, "confirm_change");
+  assert.equal(parseControlIntent("Please got for it").operation, "confirm_change");
   assert.equal(parseControlIntent("Let's do it.").operation, "confirm_change");
 });
