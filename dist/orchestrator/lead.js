@@ -10,6 +10,7 @@
  * writes a "review checklist" that the adversary consumes on cycle N.
  */
 import { resolveRepoAlias } from "../crystallise/repo-alias.js";
+import { isRepositoryAllowed } from "../repository-allowlist.js";
 import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 /**
  * beta.108: make a fresh branch name unique to its session, and STABLE for it.
@@ -582,16 +583,7 @@ export async function runLeadPlanner(brief, deps) {
  * allowed by an `owner/*` glob -- i.e. most of them.
  */
 export function isRepoAllowed(repoFullName, allowed) {
-    if (!repoFullName.includes("/"))
-        return false;
-    const owner = repoFullName.split("/")[0];
-    return allowed.some((glob) => {
-        if (glob === repoFullName)
-            return true;
-        if (glob.endsWith("/*") && glob.slice(0, -2) === owner)
-            return true;
-        return false;
-    });
+    return isRepositoryAllowed(repoFullName, allowed);
 }
 export function mandatoryConventionSources(conventions) {
     return (conventions ?? [])
@@ -612,15 +604,7 @@ export function validatePlan(plan, config) {
     if (!plan.repo || !plan.repo.includes("/")) {
         throw new Error(`lead plan repo "${plan.repo}" is not owner/repo`);
     }
-    const owner = plan.repo.split("/")[0];
-    const inAllowList = config.repos.allowed.some((glob) => {
-        if (glob === plan.repo)
-            return true;
-        if (glob.endsWith("/*") && glob.slice(0, -2) === owner)
-            return true;
-        return false;
-    });
-    if (!inAllowList) {
+    if (!isRepoAllowed(plan.repo, config.repos.allowed)) {
         throw new Error(`lead plan repo "${plan.repo}" is not in the allow-list ${JSON.stringify(config.repos.allowed)}`);
     }
     if (!plan.branch.startsWith("harness/")) {

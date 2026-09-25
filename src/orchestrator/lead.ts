@@ -13,6 +13,7 @@
 import type { HarnessConfig } from "../config.js";
 import type { CrystallisedBrief, RepoConvention } from "../crystallise/prompt-refiner.js";
 import { resolveRepoAlias } from "../crystallise/repo-alias.js";
+import { isRepositoryAllowed } from "../repository-allowlist.js";
 import { boundScoutReportDetailed, SCOUT_REPORT_MAX_CHARS } from "./lead-scout.js";
 import type { BranchAllocationDecision } from "../adapters/git-worktree.js";
 
@@ -1050,13 +1051,7 @@ export async function runLeadPlanner(
  * allowed by an `owner/*` glob -- i.e. most of them.
  */
 export function isRepoAllowed(repoFullName: string, allowed: string[]): boolean {
-  if (!repoFullName.includes("/")) return false;
-  const owner = repoFullName.split("/")[0]!;
-  return allowed.some((glob) => {
-    if (glob === repoFullName) return true;
-    if (glob.endsWith("/*") && glob.slice(0, -2) === owner) return true;
-    return false;
-  });
+  return isRepositoryAllowed(repoFullName, allowed);
 }
 
 export function mandatoryConventionSources(conventions: RepoConvention[] | undefined): string[] {
@@ -1087,13 +1082,7 @@ export function validatePlan(
   if (!plan.repo || !plan.repo.includes("/")) {
     throw new Error(`lead plan repo "${plan.repo}" is not owner/repo`);
   }
-  const owner = plan.repo.split("/")[0]!;
-  const inAllowList = config.repos.allowed.some((glob) => {
-    if (glob === plan.repo) return true;
-    if (glob.endsWith("/*") && glob.slice(0, -2) === owner) return true;
-    return false;
-  });
-  if (!inAllowList) {
+  if (!isRepoAllowed(plan.repo, config.repos.allowed)) {
     throw new Error(`lead plan repo "${plan.repo}" is not in the allow-list ${JSON.stringify(config.repos.allowed)}`);
   }
   if (!plan.branch.startsWith("harness/")) {

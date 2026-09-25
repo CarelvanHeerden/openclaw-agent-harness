@@ -60,6 +60,16 @@ let ran = 0;
 
 const MUTATIONS = [
   {
+    // Repository hosts compare owner/repository identities case-insensitively.
+    // Reverting the canonical comparison recreates the live control-plane
+    // failure where a lower-cased request cannot match mixed-case config.
+    name: "rc.13 control plane: repository allow-list comparison is canonical and case-insensitive",
+    file: "dist/repository-allowlist.js",
+    find: "        return allowedRepo.repository === repository.repository;",
+    replace: "        return configured === repoFullName;",
+    tests: ["tests/repository-allowlist-normalization.test.mjs"],
+  },
+  {
     // OpenClaw does not infer a function registration's catalog name from
     // properties attached to the function. Without the explicit option the
     // live contextual factory is not registered under its declared contract.

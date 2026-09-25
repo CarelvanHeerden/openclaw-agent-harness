@@ -1,0 +1,1 @@
+{"version":3,"file":"repository-allowlist.d.ts","sourceRoot":"","sources":["../src/repository-allowlist.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AAEH,KAAK,mBAAmB,GAAG;IAAE,KAAK,EAAE,MAAM,CAAC;IAAC,UAAU,EAAE,MAAM,CAAA;CAAE,CAAC;AAUjE,wBAAgB,2BAA2B,CAAC,KAAK,EAAE,MAAM,GAAG,mBAAmB,GAAG,IAAI,CAQrF;AAcD,wBAAgB,mBAAmB,CAAC,YAAY,EAAE,MAAM,EAAE,OAAO,EAAE,MAAM,EAAE,GAAG,OAAO,CASpF"}

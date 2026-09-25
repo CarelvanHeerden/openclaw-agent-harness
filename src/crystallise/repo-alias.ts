@@ -1,3 +1,5 @@
+import { isRepositoryAllowed } from "../repository-allowlist.js";
+
 /**
  * Deterministic repository-name resolution.
  *
@@ -71,10 +73,8 @@ function normaliseHint(raw: string): { hint: string; wasLocator: boolean } {
 }
 
 /** `owner/repo` exactly, or covered by an `owner/*` glob. Mirrors `isRepoAllowed`. */
-function allowedBy(repoFullName: string, entries: string[], allowed: string[]): boolean {
-  if (entries.includes(repoFullName)) return true;
-  const owner = repoFullName.split("/")[0]!;
-  return allowed.some((glob) => glob.endsWith("/*") && glob.slice(0, -2) === owner);
+function allowedBy(repoFullName: string, allowed: string[]): boolean {
+  return isRepositoryAllowed(repoFullName, allowed);
 }
 
 /**
@@ -107,7 +107,7 @@ export function resolveRepoAlias(hint: string | undefined, allowed: string[]): R
     // something the operator actually allowed; otherwise fall through and match
     // the basename, which is how `/home/node/workspace/StitchGuard` still finds
     // `Stitch-Vercel/StitchGuard`.
-    if (allowedBy(raw, entries, all)) return { kind: "resolved", repo: raw, via: "explicit" };
+    if (allowedBy(raw, all)) return { kind: "resolved", repo: raw, via: "explicit" };
   }
 
   if (entries.length === 0) return { kind: "unresolved" };

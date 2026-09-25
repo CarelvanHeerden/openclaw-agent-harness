@@ -73,7 +73,7 @@ setting it REPLACES the default rather than extending it.
 
 #### `repos`
 
-- **`repos.allowed`** — `string[]`, default `["example-org/example-repo"]`. Repos the harness can touch. Supports owner/repo or owner/* glob.
+- **`repos.allowed`** — `string[]`, default `["example-org/example-repo"]`. Repos the harness can touch. Supports exact owner/repo or owner/*; comparisons are ASCII case-insensitive while still requiring exactly one owner and one repository segment. URLs, filesystem paths, encoded separators, Unicode lookalikes, and extra path segments do not match.
 - **`repos.can_create`** — `boolean`, default `false`.
 - **`repos.create_org`** — `string`, default `""` (empty).
 - **`repos.create_visibility`** — `"private" | "public"`, default `"private"`.

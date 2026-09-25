@@ -1,23 +1,4 @@
-/**
- * Deterministic repository-name resolution.
- *
- * rc.2: a user wrote "StitchGuard" and the harness could not turn that into
- * `Stitch-Vercel/StitchGuard`, even though `repos.allowed` named exactly one
- * repository with that basename. Nothing in `src/` did short-name matching:
- * `resolveScoutRepo` accepted a hint only when it already contained a slash,
- * and otherwise fell back to the allow-list only when the WHOLE list was a
- * single concrete entry. So a perfectly unambiguous name was treated as a
- * missing one, and the classifier's "MISSING which repo" trigger fired.
- *
- * The clarification that followed invented a filesystem path and a worktree to
- * ask about. The invention is fixed elsewhere (clarification-guard.ts); this
- * module removes the reason the question was asked at all.
- *
- * Deliberately deterministic. Repository identity is a lookup against operator
- * configuration, and a model guessing at it is how a run ends up pointed at the
- * wrong codebase -- a failure that looks identical to success from inside the
- * harness until the PR opens somewhere unexpected.
- */
+import { isRepositoryAllowed } from "../repository-allowlist.js";
 /** `owner/repo` with no glob segment -- something we can actually clone. */
 function isConcrete(entry) {
     return entry.includes("/") && !entry.includes("*");
@@ -57,11 +38,8 @@ function normaliseHint(raw) {
     return { hint: trimmed, wasLocator: false };
 }
 /** `owner/repo` exactly, or covered by an `owner/*` glob. Mirrors `isRepoAllowed`. */
-function allowedBy(repoFullName, entries, allowed) {
-    if (entries.includes(repoFullName))
-        return true;
-    const owner = repoFullName.split("/")[0];
-    return allowed.some((glob) => glob.endsWith("/*") && glob.slice(0, -2) === owner);
+function allowedBy(repoFullName, allowed) {
+    return isRepositoryAllowed(repoFullName, allowed);
 }
 /**
  * Turn whatever the requester called the repository into one allowed entry.
@@ -94,7 +72,7 @@ export function resolveRepoAlias(hint, allowed) {
         // something the operator actually allowed; otherwise fall through and match
         // the basename, which is how `/home/node/workspace/StitchGuard` still finds
         // `Stitch-Vercel/StitchGuard`.
-        if (allowedBy(raw, entries, all))
+        if (allowedBy(raw, all))
             return { kind: "resolved", repo: raw, via: "explicit" };
     }
     if (entries.length === 0)

@@ -101,7 +101,7 @@
             "type": "string",
             "pattern": "^[^/\\s]+/[^/\\s]+$|^[^/\\s]+/\\*$"
           },
-          "description": "Repos the harness can touch. Supports owner/repo or owner/* glob."
+          "description": "Repos the harness can touch. Supports exact owner/repo or owner/*; comparisons are ASCII case-insensitive while still requiring exactly one owner and one repository segment. URLs, filesystem paths, encoded separators, Unicode lookalikes, and extra path segments do not match."
         },
         "can_create": {
           "type": "boolean",
