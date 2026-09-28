@@ -11082,19 +11082,19 @@ if(t.state!=="autonomous_run"){return Object.freeze({outcome:"terminate",code:"a
 state}`})}const r=cO(t.authorityEnvelope,e.request);if(r.outcome==="approve"){return Object.freeze({outcome:"continue",kind:e.
 kind,auditCode:"autonomous_in_envelope"})}return Object.freeze({outcome:"terminate",code:QZ[r.reason]??"authority_violat\
 ion",reason:r.reason})}a(hO,"decideEngineAuthority");var Ko=class{static{a(this,"AutonomousControlEngine")}options;now;constructor(e){
-this.options=e;this.now=e.now??Date.now}acquire(e){const r=this.requireRun(e);if(r.state!=="autonomous_run")throw new Error(
-`Run ${e} is not autonomous`);const n=this.options.repository.acquireLease(e,this.options.ownerId,this.options.leaseTtlMs,
-this.now(),Vo(r.authorityEnvelope));if(!n)throw new Error(`Run ${e} already has a live executor`);return n}decide(e,r,n){
-const i=this.requireFencedRun(e,r);const s=hO(i,n);this.options.repository.recordEngineDecision(e,r,s,this.now());if(s.outcome===
-"terminate"){this.options.repository.transitionFenced({runId:e,expectedVersion:i.version,to:"failed",actor:"autonomous_e\
-ngine",reason:s.reason,terminalCode:s.code,lease:r,at:this.now()})}return s}evaluateReadiness(e,r,n){const i=this.requireFencedRun(
-e,r);const s=on(n,this.now());this.options.repository.recordReadiness(e,r,s,this.now());this.options.repository.transitionFenced(
-{runId:e,expectedVersion:i.version,to:s.ready?"pr_ready":"failed",actor:"autonomous_engine",reason:s.ready?"strict_readi\
-ness_passed":s.failures.join(","),...s.ready?{}:{terminalCode:s.failures[0]??"readiness_failed"},lease:r,at:this.now()});
-return s}checkpoint(e,r,n,i){this.requireFencedRun(e,r);this.options.repository.writeVerifiedCheckpoint(e,r,n,i,this.now())}requireRun(e){
-const r=this.options.repository.getRun(e);if(!r)throw new Error(`Unknown control run ${e}`);return r}requireFencedRun(e,r){
-if(r.runId!==e||!this.options.repository.validateLease(r,this.now())){throw new Error(`Stale executor write rejected for\
- ${e}`)}return this.requireRun(e)}};function s_(){return pu()}a(s_,"runningSessionIds");var Hte=Object.freeze({control_plane_contract_version:2,control_plane_schema_version:2,legacy_rc13:"terminal_only",migration:"\
+this.options=e;this.now=e.now??Date.now}acquire(e,r=this.options.leaseTtlMs){const n=this.requireRun(e);if(n.state!=="au\
+tonomous_run")throw new Error(`Run ${e} is not autonomous`);const i=this.options.repository.acquireLease(e,this.options.
+ownerId,Math.max(this.options.leaseTtlMs,r),this.now(),Vo(n.authorityEnvelope));if(!i)throw new Error(`Run ${e} already \
+has a live executor`);return i}decide(e,r,n){const i=this.requireFencedRun(e,r);const s=hO(i,n);this.options.repository.
+recordEngineDecision(e,r,s,this.now());if(s.outcome==="terminate"){this.options.repository.transitionFenced({runId:e,expectedVersion:i.
+version,to:"failed",actor:"autonomous_engine",reason:s.reason,terminalCode:s.code,lease:r,at:this.now()})}return s}evaluateReadiness(e,r,n){
+const i=this.requireFencedRun(e,r);const s=on(n,this.now());this.options.repository.recordReadiness(e,r,s,this.now());this.
+options.repository.transitionFenced({runId:e,expectedVersion:i.version,to:s.ready?"pr_ready":"failed",actor:"autonomous_\
+engine",reason:s.ready?"strict_readiness_passed":s.failures.join(","),...s.ready?{}:{terminalCode:s.failures[0]??"readin\
+ess_failed"},lease:r,at:this.now()});return s}checkpoint(e,r,n,i){this.requireFencedRun(e,r);this.options.repository.writeVerifiedCheckpoint(
+e,r,n,i,this.now())}requireRun(e){const r=this.options.repository.getRun(e);if(!r)throw new Error(`Unknown control run ${e}`);
+return r}requireFencedRun(e,r){if(r.runId!==e||!this.options.repository.validateLease(r,this.now())){throw new Error(`St\
+ale executor write rejected for ${e}`)}return this.requireRun(e)}};function s_(){return pu()}a(s_,"runningSessionIds");var Hte=Object.freeze({control_plane_contract_version:2,control_plane_schema_version:2,legacy_rc13:"terminal_only",migration:"\
 idempotent",verified_checkpoint:true,lease_owner:true,lease_expires_at:true,lease_generation:true,merge_provider_idempotency:true});
 var Wte=Object.freeze(["budget_exceeded","time_exceeded","scope_escalation","path_violation","security_escalation","cred\
 ential_escalation"]);import{stat as mu}from"node:fs/promises";import{existsSync as e5}from"node:fs";import{resolve as gu}from"node:path";function fO(t){const{git:e,pat:r,config:n,resolveGitToken:i}=t;return({plan:s,requester:o,worktreePath:l,baseSha:c})=>{const d=r.
@@ -11558,35 +11558,35 @@ merge(u.id);if(h.status==="merged"||h.status==="already_merged")return{ok:true,c
 equest merged.",...h.mergeSha?{mergeSha:h.mergeSha}:{}};if(h.status==="merge_in_progress")return{ok:true,changeId:e,state:"\
 merging",summary:"Merge accepted; provider reconciliation is still in progress."};if(h.status==="merge_failed")throw new Pe(
 "merge_failed","The merge failed after authorization; the failure was recorded durably.");throw new Pe(h.code,"Merge rea\
-diness changed; merge refused.")}async dispatch(e){const r=this.now();const n=`controller:${h_()}`;const i=this.deps.db.
-prepare(`UPDATE control_dispatch_intents SET status='running',lease_owner=?,lease_fence=lease_fence+1,lease_expires_at=?\
-,attempts=attempts+1,updated_at=? WHERE run_id=? AND status IN ('pending','running') AND (status='pending' OR lease_expi\
-res_at<?)`).run(n,r+this.dispatchLeaseMs,r,e,r);if(Number(i.changes)!==1)return;const s=this.deps.db.prepare(`SELECT lea\
-se_fence FROM control_dispatch_intents WHERE run_id=?`).get(e);let o;let l;try{o=this.deps.engine.acquire(e);l=setInterval(
-()=>{const f=this.now();if(!o)return;const _=this.deps.repository.renewLease(e,o.ownerId,o.fence,this.dispatchLeaseMs,f);
-if(_)this.deps.db.prepare(`UPDATE control_dispatch_intents SET lease_expires_at=?,updated_at=? WHERE run_id=? AND status\
-='running' AND lease_owner=? AND lease_fence=?`).run(f+this.dispatchLeaseMs,f,e,n,s.lease_fence)},Math.max(10,Math.floor(
-this.dispatchLeaseMs/3)));l.unref?.();const c=this.deps.repository.getRun(e);const d=this.proposal(e);const u=a(()=>{const f=this.
-deps.db.prepare(`SELECT status,lease_owner,lease_fence,lease_expires_at FROM control_dispatch_intents WHERE run_id=?`).get(
-e);if(!f||f.status!=="running"||f.lease_owner!==n||f.lease_fence!==s.lease_fence||f.lease_expires_at<=this.now()||!this.
-deps.repository.validateLease(o,this.now()))throw new Error(`stale_dispatch:${e}`)},"assertCurrent");const h=await this.
-deps.executeEngine({changeId:e,brief:JSON.parse(d.brief_json),actorIdentity:c.requesterId,conversationIdentity:c.conversationId,
-repositoryIdentity:c.repository,baseRef:c.baseRef,baseRevision:d.base_revision,budgetUsd:c.authorityEnvelope.limits.budgetUsd,
-timeLimitSeconds:Math.floor(c.authorityEnvelope.limits.activeTimeMs/1e3),scope:Eu(d.scope_json),excludedScope:Eu(d.excluded_scope_json),
-credentialRouteDigest:d.credential_route_digest,lease:o,assertCurrent:u,checkpoint:a((f,_)=>{u();this.deps.engine.checkpoint(
-e,o,f,_)},"checkpoint")});u();const p=on(h,this.now());this.persistDispatchCompletion(e,n,s.lease_fence,o,d,h,p);if(l)clearInterval(
-l)}catch(c){if(l)clearInterval(l);if(String(c).includes("stale_dispatch")||String(c).includes("stale_write"))return;const d=this.
-deps.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(e);if(d?.
-pr_number&&d.published_sha&&d.published_at&&d.final_pr_url){this.deps.db.prepare(`UPDATE control_dispatch_intents SET st\
+diness changed; merge refused.")}async dispatch(e){const r=this.now();const n=this.deps.repository.getRun(e);if(!n)return;
+const i=Math.max(this.dispatchLeaseMs,n.authorityEnvelope.limits.activeTimeMs+6e4);const s=`controller:${h_()}`;const o=this.
+deps.db.prepare(`UPDATE control_dispatch_intents SET status='running',lease_owner=?,lease_fence=lease_fence+1,lease_expi\
+res_at=?,attempts=attempts+1,updated_at=? WHERE run_id=? AND status IN ('pending','running') AND (status='pending' OR le\
+ase_expires_at<?)`).run(s,r+i,r,e,r);if(Number(o.changes)!==1)return;const l=this.deps.db.prepare(`SELECT lease_fence FR\
+OM control_dispatch_intents WHERE run_id=?`).get(e);let c;let d;try{c=this.deps.engine.acquire(e,i);d=setInterval(()=>{const _=this.
+now();if(!c)return;const y=this.deps.repository.renewLease(e,c.ownerId,c.fence,i,_);if(y)this.deps.db.prepare(`UPDATE co\
+ntrol_dispatch_intents SET lease_expires_at=?,updated_at=? WHERE run_id=? AND status='running' AND lease_owner=? AND lea\
+se_fence=?`).run(_+i,_,e,s,l.lease_fence)},Math.max(10,Math.floor(this.dispatchLeaseMs/3)));d.unref?.();const u=this.proposal(
+e);const h=a(()=>{const _=this.deps.db.prepare(`SELECT status,lease_owner,lease_fence,lease_expires_at FROM control_disp\
+atch_intents WHERE run_id=?`).get(e);if(!_||_.status!=="running"||_.lease_owner!==s||_.lease_fence!==l.lease_fence||_.lease_expires_at<=
+this.now()||!this.deps.repository.validateLease(c,this.now()))throw new Error(`stale_dispatch:${e}`)},"assertCurrent");const p=await this.
+deps.executeEngine({changeId:e,brief:JSON.parse(u.brief_json),actorIdentity:n.requesterId,conversationIdentity:n.conversationId,
+repositoryIdentity:n.repository,baseRef:n.baseRef,baseRevision:u.base_revision,budgetUsd:n.authorityEnvelope.limits.budgetUsd,
+timeLimitSeconds:Math.floor(n.authorityEnvelope.limits.activeTimeMs/1e3),scope:Eu(u.scope_json),excludedScope:Eu(u.excluded_scope_json),
+credentialRouteDigest:u.credential_route_digest,lease:c,assertCurrent:h,checkpoint:a((_,y)=>{h();this.deps.engine.checkpoint(
+e,c,_,y)},"checkpoint")});h();const f=on(p,this.now());this.persistDispatchCompletion(e,s,l.lease_fence,c,u,p,f);if(d)clearInterval(
+d)}catch(u){if(d)clearInterval(d);if(String(u).includes("stale_dispatch")||String(u).includes("stale_write"))return;const h=this.
+deps.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(e);if(h?.
+pr_number&&h.published_sha&&h.published_at&&h.final_pr_url){this.deps.db.prepare(`UPDATE control_dispatch_intents SET st\
 atus='pending',last_error=?,completed_at=NULL,updated_at=?,lease_owner=NULL,lease_expires_at=NULL WHERE run_id=? AND lea\
-se_owner=? AND lease_fence=?`).run(String(c).slice(0,500),this.now(),e,n,s.lease_fence);if(o&&this.deps.repository.validateLease(
-o,this.now()))this.deps.repository.releaseLease(e,o.ownerId,o.fence,this.now());return}const u=this.deps.repository.getRun(
-e);if(u?.state==="autonomous_run"&&o&&this.deps.repository.validateLease(o,this.now()))this.deps.repository.transitionFenced(
-{runId:e,expectedVersion:u.version,to:"failed",actor:"autonomous_engine",reason:"execution_failed",terminalCode:"executi\
-on_failed",lease:o,at:this.now()});this.deps.db.prepare(`UPDATE control_proposals SET terminal_summary='The change did n\
+se_owner=? AND lease_fence=?`).run(String(u).slice(0,500),this.now(),e,s,l.lease_fence);if(c&&this.deps.repository.validateLease(
+c,this.now()))this.deps.repository.releaseLease(e,c.ownerId,c.fence,this.now());return}const p=this.deps.repository.getRun(
+e);if(p?.state==="autonomous_run"&&c&&this.deps.repository.validateLease(c,this.now()))this.deps.repository.transitionFenced(
+{runId:e,expectedVersion:p.version,to:"failed",actor:"autonomous_engine",reason:"execution_failed",terminalCode:"executi\
+on_failed",lease:c,at:this.now()});this.deps.db.prepare(`UPDATE control_proposals SET terminal_summary='The change did n\
 ot complete.',updated_at=? WHERE run_id=?`).run(this.now(),e);this.deps.db.prepare(`UPDATE control_dispatch_intents SET \
 status='failed',last_error=?,completed_at=?,updated_at=? WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(String(
-c).slice(0,500),this.now(),this.now(),e,n,s.lease_fence)}}persistDispatchCompletion(e,r,n,i,s,o,l){const c=this.now(),d=s.
+u).slice(0,500),this.now(),this.now(),e,s,l.lease_fence)}}persistDispatchCompletion(e,r,n,i,s,o,l){const c=this.now(),d=s.
 generation+1;this.deps.db.exec("BEGIN IMMEDIATE");try{const u=this.deps.db.prepare(`SELECT r.state,r.version,l.owner_id,\
 l.fence,l.expires_at,l.authority_hash,d.status,d.lease_owner,d.lease_fence,d.lease_expires_at FROM control_runs r JOIN r\
 un_leases l ON l.run_id=r.id JOIN control_dispatch_intents d ON d.run_id=r.id WHERE r.id=?`).get(e);if(!u||u.state!=="au\

@@ -34,7 +34,7 @@ export declare class AutonomousControlEngine {
     private readonly options;
     private readonly now;
     constructor(options: AutonomousEngineOptions);
-    acquire(runId: string): RunLease;
+    acquire(runId: string, leaseTtlMs?: number): RunLease;
     decide(runId: string, lease: RunLease, input: DecideEngineAuthorityInput): EngineAuthorityDecision;
     evaluateReadiness(runId: string, lease: RunLease, input: PrReadinessInput): PrReadinessResult;
     checkpoint(runId: string, lease: RunLease, checkpointSha: string, payloadDigest: string): void;

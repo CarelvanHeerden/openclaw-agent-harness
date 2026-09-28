@@ -56,11 +56,11 @@ export class AutonomousControlEngine {
         this.options = options;
         this.now = options.now ?? Date.now;
     }
-    acquire(runId) {
+    acquire(runId, leaseTtlMs = this.options.leaseTtlMs) {
         const run = this.requireRun(runId);
         if (run.state !== "autonomous_run")
             throw new Error(`Run ${runId} is not autonomous`);
-        const lease = this.options.repository.acquireLease(runId, this.options.ownerId, this.options.leaseTtlMs, this.now(), authorityEnvelopeDigest(run.authorityEnvelope));
+        const lease = this.options.repository.acquireLease(runId, this.options.ownerId, Math.max(this.options.leaseTtlMs, leaseTtlMs), this.now(), authorityEnvelopeDigest(run.authorityEnvelope));
         if (!lease)
             throw new Error(`Run ${runId} already has a live executor`);
         return lease;

@@ -83,13 +83,13 @@ export class AutonomousControlEngine {
     this.now = options.now ?? Date.now;
   }
 
-  acquire(runId: string): RunLease {
+  acquire(runId: string, leaseTtlMs = this.options.leaseTtlMs): RunLease {
     const run = this.requireRun(runId);
     if (run.state !== "autonomous_run") throw new Error(`Run ${runId} is not autonomous`);
     const lease = this.options.repository.acquireLease(
       runId,
       this.options.ownerId,
-      this.options.leaseTtlMs,
+      Math.max(this.options.leaseTtlMs, leaseTtlMs),
       this.now(),
       authorityEnvelopeDigest(run.authorityEnvelope),
     );

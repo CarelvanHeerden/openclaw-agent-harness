@@ -285,14 +285,14 @@ export class ControlPlaneService {
             throw new ControlError("merge_failed", "The merge failed after authorization; the failure was recorded durably.");
         throw new ControlError(outcome.code, "Merge readiness changed; merge refused.");
     }
-    async dispatch(changeId) { const now = this.now(); const owner = `controller:${randomUUID()}`; const claimed = this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='running',lease_owner=?,lease_fence=lease_fence+1,lease_expires_at=?,attempts=attempts+1,updated_at=? WHERE run_id=? AND status IN ('pending','running') AND (status='pending' OR lease_expires_at<?)`).run(owner, now + this.dispatchLeaseMs, now, changeId, now); if (Number(claimed.changes) !== 1)
+    async dispatch(changeId) { const now = this.now(); const run = this.deps.repository.getRun(changeId); if (!run)
+        return; const leaseMs = Math.max(this.dispatchLeaseMs, run.authorityEnvelope.limits.activeTimeMs + 60_000); const owner = `controller:${randomUUID()}`; const claimed = this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='running',lease_owner=?,lease_fence=lease_fence+1,lease_expires_at=?,attempts=attempts+1,updated_at=? WHERE run_id=? AND status IN ('pending','running') AND (status='pending' OR lease_expires_at<?)`).run(owner, now + leaseMs, now, changeId, now); if (Number(claimed.changes) !== 1)
         return; const intent = this.deps.db.prepare(`SELECT lease_fence FROM control_dispatch_intents WHERE run_id=?`).get(changeId); let lease; let heartbeat; try {
-        lease = this.deps.engine.acquire(changeId);
+        lease = this.deps.engine.acquire(changeId, leaseMs);
         heartbeat = setInterval(() => { const at = this.now(); if (!lease)
-            return; const renewed = this.deps.repository.renewLease(changeId, lease.ownerId, lease.fence, this.dispatchLeaseMs, at); if (renewed)
-            this.deps.db.prepare(`UPDATE control_dispatch_intents SET lease_expires_at=?,updated_at=? WHERE run_id=? AND status='running' AND lease_owner=? AND lease_fence=?`).run(at + this.dispatchLeaseMs, at, changeId, owner, intent.lease_fence); }, Math.max(10, Math.floor(this.dispatchLeaseMs / 3)));
+            return; const renewed = this.deps.repository.renewLease(changeId, lease.ownerId, lease.fence, leaseMs, at); if (renewed)
+            this.deps.db.prepare(`UPDATE control_dispatch_intents SET lease_expires_at=?,updated_at=? WHERE run_id=? AND status='running' AND lease_owner=? AND lease_fence=?`).run(at + leaseMs, at, changeId, owner, intent.lease_fence); }, Math.max(10, Math.floor(this.dispatchLeaseMs / 3)));
         heartbeat.unref?.();
-        const run = this.deps.repository.getRun(changeId);
         const p = this.proposal(changeId);
         const assertCurrent = () => { const row = this.deps.db.prepare(`SELECT status,lease_owner,lease_fence,lease_expires_at FROM control_dispatch_intents WHERE run_id=?`).get(changeId); if (!row || row.status !== "running" || row.lease_owner !== owner || row.lease_fence !== intent.lease_fence || row.lease_expires_at <= this.now() || !this.deps.repository.validateLease(lease, this.now()))
             throw new Error(`stale_dispatch:${changeId}`); };
