@@ -167,6 +167,7 @@ test("ordinary conversational approvals and Markdown labels authorize the unique
     "Please got for it",
     "Let's do it.",
     "yes, run that README smoke",
+    "fine, go ahead",
     "**Looks good — go ahead with the `README` smoke.**",
     "```text\nPlease confirm Smoke\n```",
   ]) {

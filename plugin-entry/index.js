@@ -11677,14 +11677,14 @@ trim();const r=e.match(/^```(?:text|markdown)?\s*\n?([\s\S]*?)\n?```$/i)?.[1]??e
 "$2").replace(/[–—]/g,"-").replace(/`([^`]+)`/g,"$1").replace(/^(?:\*\*|__|~~)([\s\S]*)(?:\*\*|__|~~)$/g,"$1").replace(
 /\s+/g," ").trim()}a(k5,"plainText");function S5(t){const e=k5(t);if(!e||e.length>2e3)return void 0;const r=e.toLowerCase();
 if(y5.some(p=>r.includes(p)))return void 0;if(/[?]/.test(e)||v5.test(e))return void 0;const n=[...e.matchAll(kO)].map(p=>p[0]);
-if(new Set(n).size>1)return void 0;let i=e.replace(kO," ").trim();let s;const o="(?:(?:yes|yep|yeah|ok(?:ay)?|sure|looks\
- good|sounds good)\\s*[,;:!-]?\\s*)?";const l=new RegExp(`^${o}(?:please\\s+)?(?:i\\s+)?(?:confirm|approve|approved|start|\
-proceed(?:\\s+with)?|run|go(?:\\s+ahead(?:\\s+with)?|\\s+for\\s+it)|got\\s+for\\s+it|do\\s+it|let['’]?s\\s+do\\s+it)(?:\\s+(?:this|\
-that|the))?(?:\\s+(?:exact\\s+)?(?:prepared\\s+)?change)?\\b`,"i");const c=new RegExp(`^${o}(?:please\\s+)?(?:i\\s+)?(?:au\
-thorize\\s+(?:the\\s+)?merge|merge)(?:\\s+of)?(?:\\s+(?:this|that|the))?(?:\\s+(?:ready\\s+)?(?:change|pull\\s+request|pr))?\\b`,
-"i");const d=/^(?:yes|yep|yeah|ok(?:ay)?|sure|looks good|sounds good)\s*[.!]*$/i;if(d.test(i)){s="confirm_change";i=""}else{
-const p=i.match(l);const f=i.match(c);if(!!p===!!f)return void 0;if(p){s="confirm_change";i=i.slice(p[0].length)}else if(f){
-s="merge_change";i=i.slice(f[0].length)}}const u={};i=i.replace(/(?:^|[,;])\s*budget(?:\s+is|\s*=|\s*:)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)\s*(?:usd)?\b/gi,
+if(new Set(n).size>1)return void 0;let i=e.replace(kO," ").trim();let s;const o="(?:(?:yes|yep|yeah|yup|ok(?:ay)?|alrigh\
+t|all\\s+right|fine|sure|looks good|sounds good)\\s*[,;:!-]?\\s*)?";const l=new RegExp(`^${o}(?:please\\s+)?(?:i\\s+)?(?:c\
+onfirm|approve|approved|start|proceed(?:\\s+with)?|run|go(?:\\s+ahead(?:\\s+with)?|\\s+for\\s+it)|got\\s+for\\s+it|do\\s+it|let[\
+'’]?s\\s+do\\s+it)(?:\\s+(?:this|that|the))?(?:\\s+(?:exact\\s+)?(?:prepared\\s+)?change)?\\b`,"i");const c=new RegExp(
+`^${o}(?:please\\s+)?(?:i\\s+)?(?:authorize\\s+(?:the\\s+)?merge|merge)(?:\\s+of)?(?:\\s+(?:this|that|the))?(?:\\s+(?:ready\\s+)\
+?(?:change|pull\\s+request|pr))?\\b`,"i");const d=/^(?:yes|yep|yeah|yup|ok(?:ay)?|alright|all\s+right|fine|sure|looks good|sounds good)\s*[.!]*$/i;
+if(d.test(i)){s="confirm_change";i=""}else{const p=i.match(l);const f=i.match(c);if(!!p===!!f)return void 0;if(p){s="con\
+firm_change";i=i.slice(p[0].length)}else if(f){s="merge_change";i=i.slice(f[0].length)}}const u={};i=i.replace(/(?:^|[,;])\s*budget(?:\s+is|\s*=|\s*:)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)\s*(?:usd)?\b/gi,
 (p,f)=>{if(u.budgetUsd!==void 0)return" __duplicate__ ";u.budgetUsd=Number(f);return" "});i=i.replace(/(?:^|[,;])\s*time(?:\s+limit)?(?:\s+is|\s*=|\s*:)?\s*([0-9]+)\s*(seconds?|secs?|s)\b/gi,
 (p,f)=>{if(u.timeLimitSeconds!==void 0)return" __duplicate__ ";u.timeLimitSeconds=Number(f);return" "});i=i.replace(/(?:^|[,;])\s*excluded\s+scope(?:\s+is|\s*=|\s*:)?\s*(\[[^\]]*\]|[^;]+)/gi,
 (p,f)=>{if(u.excludedScope!==void 0)return" __duplicate__ ";u.excludedScope=EO(f);return" "});i=i.replace(/(?:^|[,;])\s*scope(?:\s+is|\s*=|\s*:)?\s*(\[[^\]]*\]|[^;]+)/gi,
