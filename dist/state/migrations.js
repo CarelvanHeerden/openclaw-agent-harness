@@ -304,6 +304,32 @@ CREATE INDEX idx_control_merge_recovery_lease ON control_engine_merge_intents(st
 UPDATE control_metadata SET value='6',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
     }),
+    Object.freeze({
+        id: "20260928_007_durable_host_confirmation_capabilities",
+        sql: `
+CREATE TABLE control_host_attestation_capabilities (
+  record_key TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('confirm_change','merge_change')),
+  actor_identity TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  conversation_identity TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  host_event_id TEXT NOT NULL UNIQUE,
+  nonce TEXT NOT NULL UNIQUE,
+  binding_digest TEXT NOT NULL,
+  target_digest TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  claimed_at INTEGER
+);
+CREATE INDEX idx_control_host_capability_lookup
+  ON control_host_attestation_capabilities(actor_identity,operation_kind,session_key,expires_at,claimed_at);
+UPDATE control_metadata SET value='7',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+    }),
 ]);
 function terminaliseLegacyControlChanges(db) {
     const present = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_changes'").get();

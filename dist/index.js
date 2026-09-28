@@ -1918,7 +1918,7 @@ function bootstrapHarnessSync(api) {
             };
         },
     });
-    runtime.controlAttestationBroker = new ControlAttestationBroker(runtime.controlPlane);
+    runtime.controlAttestationBroker = new ControlAttestationBroker(runtime.controlPlane, Date.now, 60_000, state.db);
     runtime.disposers.push(registerControlAttestationHook(api, runtime.controlAttestationBroker));
     runtime.disposers.push(() => runtime.controlPlane?.dispose());
     runtime.disposers.push(() => backendRouter?.dispose());

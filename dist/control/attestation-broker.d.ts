@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import { type ControlOperation, type ControlPlaneService, type TrustedControlContext } from "./service.js";
 export interface InboundConfirmationEvent {
     content?: unknown;
@@ -75,11 +76,17 @@ export declare class ControlAttestationBroker {
     private readonly service;
     private readonly now;
     private readonly ttlMs;
+    private readonly db?;
     private readonly records;
     private readonly observedEvents;
-    constructor(service: ControlPlaneService, now?: () => number, ttlMs?: number);
+    constructor(service: ControlPlaneService, now?: () => number, ttlMs?: number, db?: DatabaseSync | undefined);
     observe(event: InboundConfirmationEvent, ctx: InboundConfirmationContext): void;
     consume(operation: ControlOperation, changeId: string, context: ConfirmationToolContext): Attestation;
+    private persistDurable;
+    private durableRecord;
+    private loadDurable;
+    private loadDurableCandidates;
+    private claimDurable;
     private prune;
     private key;
     private eventKey;

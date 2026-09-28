@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 import {
   ControlError,
   type ControlOperation,
@@ -281,11 +282,17 @@ function isExternalInbound(event: InboundConfirmationEvent, ctx: InboundConfirma
   return true;
 }
 
-function sameBinding(left: ConversationBinding, right: ConversationBinding): boolean {
+function sameBinding(left: ConversationBinding, right: ConversationBinding, hostEventId?: string): boolean {
+  const sameThread = left.threadId === right.threadId || (
+    left.channel === "slack" && !!hostEventId && (
+      (left.threadId === "" && right.threadId === hostEventId) ||
+      (right.threadId === "" && left.threadId === hostEventId)
+    )
+  );
   return left.channel === right.channel &&
     left.accountId === right.accountId &&
     left.conversationId === right.conversationId &&
-    left.threadId === right.threadId;
+    sameThread;
 }
 
 /** In-memory, short-lived, one-shot bridge from a raw host event to a tool call. */
@@ -316,6 +323,7 @@ export class ControlAttestationBroker {
     private readonly service: ControlPlaneService,
     private readonly now: () => number = Date.now,
     private readonly ttlMs = 60_000,
+    private readonly db?: DatabaseSync,
   ) {}
 
   observe(event: InboundConfirmationEvent, ctx: InboundConfirmationContext): void {
@@ -367,7 +375,7 @@ export class ControlAttestationBroker {
     shell.bindingDigest = this.service.attestationBindingDigest(target.changeId, shell);
     const attestation: Attestation = Object.freeze(shell);
     const key = this.key(actorIdentity, intent.operation, target.changeId);
-    this.records.set(key, {
+    const brokerRecord: BrokerRecord = {
       changeId: target.changeId,
       actorIdentity,
       binding,
@@ -375,7 +383,9 @@ export class ControlAttestationBroker {
       attestation,
       targetDigest: target.targetDigest,
       expiresAt,
-    });
+    };
+    if (this.db && !this.persistDurable(key, brokerRecord)) return;
+    this.records.set(key, brokerRecord);
   }
 
   consume(operation: ControlOperation, changeId: string, context: ConfirmationToolContext): Attestation {
@@ -388,27 +398,33 @@ export class ControlAttestationBroker {
       throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "A fresh raw-user confirmation event is required.");
     }
     const key = this.key(actorIdentity, operation, changeId);
-    let record = this.records.get(key);
+    let record = this.records.get(key) ?? (this.db ? this.loadDurable(key) : undefined);
     if (!record) {
       // An unqualified human confirmation was already bound to one exact
       // target by host-observed chronology. A model-selected different id must
       // not redirect it, and the attempt still burns the one-shot capability.
-      record = [...this.records.values()].find((candidate) =>
+      const candidates = this.db ? this.loadDurableCandidates(actorIdentity, operation, sessionKey) : [...this.records.values()];
+      record = candidates.find((candidate) =>
         candidate.actorIdentity === actorIdentity &&
         candidate.attestation.operation === operation &&
         candidate.sessionKey === sessionKey &&
         (!hostEventId || candidate.attestation.hostEventId === hostEventId) &&
-        sameBinding(candidate.binding, binding));
+        sameBinding(candidate.binding, binding, candidate.attestation.hostEventId));
     }
     // Delete before any state lookup: a matching broker authorization is one
     // shot even when the state changed or downstream validation rejects it.
-    if (record) this.records.delete(this.key(record.actorIdentity, record.attestation.operation, record.changeId));
+    if (record) {
+      const recordKey = this.key(record.actorIdentity, record.attestation.operation, record.changeId);
+      this.records.delete(recordKey);
+      if (this.db && !this.claimDurable(recordKey)) record = undefined;
+    }
     // OpenClaw's public plugin-tool context does not project the inbound
     // message id. Bind the one-shot raw-event capability to the authenticated
     // actor, exact conversation and originating session instead. Newer hosts
     // may additionally project hostEventId; when present it must match.
     if (!record || record.changeId !== changeId || record.expiresAt < this.now() || record.sessionKey !== sessionKey ||
-      (hostEventId && record.attestation.hostEventId !== hostEventId) || !sameBinding(record.binding, binding)) {
+      (hostEventId && record.attestation.hostEventId !== hostEventId) ||
+      !sameBinding(record.binding, binding, record.attestation.hostEventId)) {
       throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "A fresh raw-user confirmation event is required.");
     }
     const current = this.service.attestationTarget(operation, actorIdentity, binding.conversationId, changeId);
@@ -416,6 +432,57 @@ export class ControlAttestationBroker {
       throw new ControlError(operation === "merge_change" ? "stale_pr_head" : "stale_confirmation", "The reviewed state changed before authorization was consumed.");
     }
     return record.attestation;
+  }
+
+  private persistDurable(recordKey: string, value: BrokerRecord): boolean {
+    const result = this.db!.prepare(`INSERT OR IGNORE INTO control_host_attestation_capabilities
+      (record_key,run_id,operation_kind,actor_identity,channel,account_id,conversation_identity,thread_id,session_key,host_event_id,nonce,binding_digest,target_digest,issued_at,expires_at,claimed_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(
+        recordKey, value.changeId, value.attestation.operation, value.actorIdentity,
+        value.binding.channel, value.binding.accountId, value.binding.conversationId, value.binding.threadId,
+        value.sessionKey, value.attestation.hostEventId, value.attestation.nonce, value.attestation.bindingDigest,
+        value.targetDigest, value.attestation.issuedAt, value.expiresAt,
+      );
+    return Number(result.changes) === 1;
+  }
+
+  private durableRecord(row: Record<string, unknown>): BrokerRecord {
+    const attestation: Attestation = Object.freeze({
+      version: 2, provenance: "host_verified", operation: String(row.operation_kind) as ControlOperation,
+      actorIdentity: String(row.actor_identity), conversationIdentity: String(row.conversation_identity),
+      hostEventId: String(row.host_event_id), nonce: String(row.nonce), issuedAt: Number(row.issued_at),
+      expiresAt: Number(row.expires_at), bindingDigest: String(row.binding_digest),
+    });
+    return {
+      changeId: String(row.run_id), actorIdentity: String(row.actor_identity),
+      binding: { channel: String(row.channel), accountId: String(row.account_id), conversationId: String(row.conversation_identity), threadId: String(row.thread_id) },
+      sessionKey: String(row.session_key), attestation, targetDigest: String(row.target_digest), expiresAt: Number(row.expires_at),
+    };
+  }
+
+  private loadDurable(recordKey: string): BrokerRecord | undefined {
+    const row = this.db!.prepare(`SELECT * FROM control_host_attestation_capabilities
+      WHERE record_key=? AND claimed_at IS NULL AND expires_at>=?`).get(recordKey, this.now()) as Record<string, unknown> | undefined;
+    return row ? this.durableRecord(row) : undefined;
+  }
+
+  private loadDurableCandidates(actor: string, operation: ControlOperation, sessionKey: string): BrokerRecord[] {
+    return (this.db!.prepare(`SELECT * FROM control_host_attestation_capabilities
+      WHERE actor_identity=? AND operation_kind=? AND session_key=? AND claimed_at IS NULL AND expires_at>=?`).all(actor, operation, sessionKey, this.now()) as Array<Record<string, unknown>>)
+      .map((row) => this.durableRecord(row));
+  }
+
+  private claimDurable(recordKey: string): boolean {
+    this.db!.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.db!.prepare(`UPDATE control_host_attestation_capabilities SET claimed_at=?
+        WHERE record_key=? AND claimed_at IS NULL AND expires_at>=?`).run(this.now(), recordKey, this.now());
+      this.db!.exec("COMMIT");
+      return Number(result.changes) === 1;
+    } catch (error) {
+      try { this.db!.exec("ROLLBACK"); } catch { /* preserve original error */ }
+      throw error;
+    }
   }
 
   private prune(): void {

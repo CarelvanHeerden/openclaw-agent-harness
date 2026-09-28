@@ -112,15 +112,12 @@ test("actual Slack DM hook and tool contexts bind bare Confirm to the latest pen
     await service.prepare({ request: "Keep an older pending change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "user:U1" });
     now += 10;
     const prepared = await service.prepare({ request: "Make the latest exact bounded change.", repository: "o/r" }, { requesterSenderId: "U1", conversationId: "user:U1" });
-    const broker = new ControlAttestationBroker(service, () => now, 60_000);
-    const tools = new Map();
+    const broker = new ControlAttestationBroker(service, () => now, 60_000, store.db);
     let hook;
-    const api = {
+    const hookApi = {
       on(name, handler) { assert.equal(name, "message_received"); hook = handler; return () => {}; },
-      registerTool(factory, options) { tools.set(options.name, factory); return () => {}; },
     };
-    registerControlAttestationHook(api, broker);
-    registerHarnessTools(api, { controlPlane: service, controlAttestationBroker: broker, authorisedUsers: ["U1"] });
+    registerControlAttestationHook(hookApi, broker);
     now += 100;
     const slackMessageId = String(now / 1000);
     hook({
@@ -131,6 +128,10 @@ test("actual Slack DM hook and tool contexts bind bare Confirm to the latest pen
       channelId: "slack", accountId: "default", conversationId: "user:U1", senderId: "U1", messageId: slackMessageId,
       sessionKey: "agent:main:slack:direct:u1",
     });
+    // Simulate a plugin reload after the raw host event but before the tool call.
+    const reloadedBroker = new ControlAttestationBroker(service, () => now, 60_000, store.db);
+    const tools = new Map();
+    registerHarnessTools({ registerTool(factory, options) { tools.set(options.name, factory); return () => {}; } }, { controlPlane: service, controlAttestationBroker: reloadedBroker, authorisedUsers: ["U1"] });
     const out = await tools.get("harness_confirm_change")({ requesterSenderId: "U1", sessionKey: "agent:main:slack:direct:u1", nativeChannelId: "D0123456789", messageChannel: "slack", agentAccountId: "default", deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" } }).execute({ changeId: prepared.changeId });
     assert.equal(out.state, "running");
     const durable = store.db.prepare("SELECT host_event_id,actor_identity,conversation_identity,operation_kind FROM control_host_attestations").get();
@@ -188,6 +189,18 @@ test("the public OpenClaw tool context consumes by exact originating session whe
   f.emit("Confirm Smoke");
   assert.equal((await f.invoke("harness_confirm_change", f.toolContext({ hostEventId: undefined }))).ok, true);
   assert.equal(f.calls[0].context.trustedControlAttestation.hostEventId, "M1");
+});
+
+test("Slack top-level DM confirmation accepts the host tool context's message-id thread alias", async () => {
+  const f = fixture();
+  f.emit("Confirm Smoke", {
+    threadId: undefined,
+    metadata: { provider: "slack", surface: "slack", originatingChannel: "slack", originatingTo: "D1", messageId: "M1", senderId: "U1" },
+  });
+  const out = await f.invoke("harness_confirm_change", f.toolContext({
+    deliveryContext: { channel: "slack", to: "D1", accountId: "A1", threadId: "M1" },
+  }));
+  assert.equal(out.ok, true);
 });
 
 test("a raw confirmation cannot cross OpenClaw sessions when the tool context omits host event id", async () => {
