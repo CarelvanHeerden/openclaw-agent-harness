@@ -1791,7 +1791,7 @@ function bootstrapHarnessSync(api) {
             const now = Date.now();
             const controlledBrief = { ...change.brief, repoHint: change.repositoryIdentity, filesLikelyTouched: [...change.scope], outOfScope: [...change.excludedScope],
                 acceptanceCriteria: [...change.brief.acceptanceCriteria, `Immutable base revision: ${change.baseRevision}`, `Maximum active time: ${change.timeLimitSeconds} seconds`] };
-            state.db.prepare(`INSERT OR IGNORE INTO sessions (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version) VALUES (?,?,'',?,?,?,'','','planning',?,?,?,?,0,0,?,?,?,?,?)`)
+            state.db.prepare(`INSERT OR IGNORE INTO sessions (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version) VALUES (?,?,'',?,?,?,'','','planning',?,?,?,?,0,0,?,?,?,?)`)
                 .run(change.changeId, `control:${change.changeId}`, change.actorIdentity, change.actorIdentity, change.repositoryIdentity, JSON.stringify(controlledBrief), now, now, change.budgetUsd, change.budgetUsd, change.timeLimitSeconds, change.baseRevision, PLUGIN_VERSION.pluginVersion);
             change.assertCurrent();
             const existingSession = state.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(change.changeId);

@@ -13095,7 +13095,7 @@ acceptanceCriteria:[...w.brief.acceptanceCriteria,`Immutable base revision: ${w.
 timeLimitSeconds} seconds`]};s.db.prepare(`INSERT OR IGNORE INTO sessions (id,slack_thread,slack_channel,requester,reque\
 ster_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estima\
 ted_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version) VALUES (?,?,'',?,?,?,'','','planning',?,?,?,?,0,0,?,\
-?,?,?,?)`).run(w.changeId,`control:${w.changeId}`,w.actorIdentity,w.actorIdentity,w.repositoryIdentity,JSON.stringify(he),
+?,?,?)`).run(w.changeId,`control:${w.changeId}`,w.actorIdentity,w.actorIdentity,w.repositoryIdentity,JSON.stringify(he),
 W,W,w.budgetUsd,w.budgetUsd,w.timeLimitSeconds,w.baseRevision,Gn.pluginVersion);w.assertCurrent();const me=s.db.prepare(
 `SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions WHERE id=?`).get(w.changeId);const ne=me&&
 ["done","failed","aborted"].includes(me.status)&&me.pr_number&&me.final_pr_url&&me.published_sha&&me.published_at;const Le=ne?
