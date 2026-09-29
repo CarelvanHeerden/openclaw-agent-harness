@@ -175,5 +175,5 @@ jobs:
           github.event_name == 'push' &&
           github.ref != 'refs/heads/main'
         run: |
-          node scripts/mutation-check.mjs 'control interaction:'
+          node scripts/mutation-check.mjs 'control conversation:'
           node scripts/mutation-check.mjs 'control authority:'

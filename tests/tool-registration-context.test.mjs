@@ -34,24 +34,40 @@ test("OpenClaw contextual registration binds live requester and canonical route 
   registerHarnessTools(host.api, {
     controlPlane: {
       prepare: async (input, context) => (calls.push({ operation: "prepare", input, context }), { ok: true }),
+      confirm: async (changeId, context) => (calls.push({ operation: "confirm", changeId, context }), { ok: true }),
+    },
+    hostTurnAuthorityBroker: {
+      consume: () => ({ version:2,provenance:"host_verified",operation:"confirm_change",actorIdentity:"U-live",conversationIdentity:"user:U-live",hostEventId:"M-live",nonce:"N-live",issuedAt:1,expiresAt:2,bindingDigest:"digest" }),
     },
   });
 
   assert.deepEqual(host.names(), [
     "harness_change_result",
+    "harness_confirm_change",
+    "harness_merge_change",
     "harness_prepare_change",
   ]);
 
   const liveContext = {
     requesterSenderId: "U-live",
+    hostEventId: "M-live",
+    sessionKey: "agent:main:slack:direct:U-live",
     nativeChannelId: "D-live",
     conversationId: "D-live",
+    messageChannel: "slack",
+    agentAccountId: "default",
     deliveryContext: { channel: "slack", to: "user:U-live", accountId: "default" },
   };
   await host.materialize("harness_prepare_change", liveContext).execute({
     request: "Make a bounded repository change.",
     repository: "owner/repo",
   });
+  await host.materialize("harness_confirm_change", liveContext).execute(
+    "call-id",
+    { changeId: "chg_abcdefghijkl" },
+    { requesterSenderId: "U-attacker", conversationId: "C-attacker" },
+  );
+
   assert.deepEqual(calls.map(({ operation, context }) => ({ operation, context })), [
     {
       operation: "prepare",
@@ -59,6 +75,18 @@ test("OpenClaw contextual registration binds live requester and canonical route 
         requesterSenderId: "U-live",
         conversationId: "user:U-live",
         workspaceId: undefined,
+        trustedControlAttestation: undefined,
+      },
+    },
+    {
+      operation: "confirm",
+      context: {
+        requesterSenderId: "U-live",
+        conversationId: "user:U-live",
+        workspaceId: undefined,
+        trustedControlAttestation: {
+          version:2,provenance:"host_verified",operation:"confirm_change",actorIdentity:"U-live",conversationIdentity:"user:U-live",hostEventId:"M-live",nonce:"N-live",issuedAt:1,expiresAt:2,bindingDigest:"digest",
+        },
       },
     },
   ]);

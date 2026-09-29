@@ -83,7 +83,7 @@ function serviceFor(runtime) {
         throw new ControlError("control_unavailable", "The change service is not available.");
     return service;
 }
-function tool(name, description, parameters, context, run, runtime) {
+function tool(name, description, parameters, context, run, runtime, attestedOperation) {
     return {
         name,
         description,
@@ -99,6 +99,9 @@ function tool(name, description, parameters, context, run, runtime) {
                     requesterSenderId: context.requesterSenderId,
                     conversationId: trustedConversationId(context),
                     workspaceId: context.workspaceId,
+                    trustedControlAttestation: attestedOperation
+                        ? runtime.hostTurnAuthorityBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)
+                        : undefined,
                 };
                 const actor = trusted.requesterSenderId?.trim() ?? "";
                 if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
@@ -113,33 +116,25 @@ function tool(name, description, parameters, context, run, runtime) {
     };
 }
 /**
- * OpenClaw translates ordinary language into a typed prepared proposal.
- * Execution and merge authority are host-native Slack interactions, never
- * model-selected words or tool arguments.
+ * OpenClaw translates ordinary language into typed operations. A confirm or
+ * merge tool call is authoritative only when paired with a fresh authenticated
+ * user turn captured independently by the host hook.
  */
 export function registerHarnessTools(api, runtime) {
     const disposers = [];
     const rt = runtime;
     const definitions = [
-        ["harness_prepare_change", (context) => tool("harness_prepare_change", "Translate the user's ordinary-language repository request into one complete typed proposal without starting work. Preserve all restrictions and exclusions; do not ask the user for harness syntax.", PREPARE_SCHEMA, context, async (service, input, trusted) => {
-                const prepared = await service.prepare(input, trusted);
-                const changeId = String(prepared.changeId ?? "");
-                const presented = changeId
-                    ? await rt.interactiveControlApprovals?.presentConfirmation(changeId, context) ?? false
-                    : false;
-                return {
-                    ...prepared,
-                    approval: {
-                        mode: presented ? "slack_interactive" : "unavailable",
-                        required: true,
-                        diagnostic: rt.interactiveControlApprovals?.diagnostic(changeId) ?? "interactive_provider_missing",
-                        summary: presented
-                            ? "Review the structured proposal and use its Approve and run button."
-                            : "Interactive approval could not be presented; execution remains paused.",
-                    },
-                };
-            }, rt)],
+        ["harness_prepare_change", (context) => tool("harness_prepare_change", "Translate the user's ordinary-language repository request into one complete typed proposal without starting work. Preserve all restrictions and exclusions; do not ask the user for harness syntax.", PREPARE_SCHEMA, context, async (service, input, trusted) => ({
+                ...await service.prepare(input, trusted),
+                approval: {
+                    mode: "openclaw_conversation",
+                    required: true,
+                    summary: "Review the proposal in this conversation. Reply naturally; OpenClaw will translate your response into the typed confirmation operation.",
+                },
+            }), rt)],
+        ["harness_confirm_change", (context) => tool("harness_confirm_change", "Use only when the current authenticated user turn clearly approves the exact prepared proposal. OpenClaw interprets the user's ordinary language; this tool cannot run without that fresh host-observed turn.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted), rt, "confirm_change")],
         ["harness_change_result", (context) => tool("harness_change_result", "Read the safe current or final outcome of a change.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted), rt)],
+        ["harness_merge_change", (context) => tool("harness_merge_change", "Use only when the current authenticated user turn clearly authorizes merging the exact ready pull request. This requires a separate fresh host-observed turn.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted), rt, "merge_change")],
     ];
     for (const [name, build] of definitions) {
         // Function registrations require an explicit name so OpenClaw can bind the

@@ -1,6 +1,6 @@
 import type { HarnessPluginApi, HarnessToolContext, HarnessToolDefinition } from "../index.js";
-import { ControlError, ControlPlaneService, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
-import type { InteractiveControlApprovals } from "../control/interactive-approval.js";
+import { ControlError, ControlPlaneService, type ControlOperation, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
+import type { HostTurnAuthorityBroker } from "../control/host-turn-broker.js";
 
 /** Stable terminal envelope failures. */
 export const CONTROL_TERMINAL_CODES = [
@@ -92,7 +92,7 @@ function safeFailure(error: unknown): Record<string, unknown> {
   return { ok: false, code: "control_unavailable", summary: "The change service is temporarily unavailable." };
 }
 
-type ControlRuntime = { controlPlane?: ControlPlaneService; interactiveControlApprovals?: InteractiveControlApprovals; authorisedUsers?: readonly string[] };
+type ControlRuntime = { controlPlane?: ControlPlaneService; hostTurnAuthorityBroker?: HostTurnAuthorityBroker; authorisedUsers?: readonly string[] };
 
 function serviceFor(runtime: ControlRuntime): ControlPlaneService {
   const service = runtime.controlPlane;
@@ -107,6 +107,7 @@ function tool(
   context: HarnessToolContext,
   run: (service: ControlPlaneService, input: Record<string, unknown>, trusted: TrustedControlContext) => Promise<unknown> | unknown,
   runtime: ControlRuntime,
+  attestedOperation?: ControlOperation,
 ): HarnessToolDefinition {
   return {
     name,
@@ -123,6 +124,9 @@ function tool(
           requesterSenderId: context.requesterSenderId,
           conversationId: trustedConversationId(context),
           workspaceId: context.workspaceId,
+          trustedControlAttestation: attestedOperation
+            ? runtime.hostTurnAuthorityBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)
+            : undefined,
         } satisfies TrustedControlContext;
         const actor = trusted.requesterSenderId?.trim() ?? "";
         if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
@@ -137,9 +141,9 @@ function tool(
 }
 
 /**
- * OpenClaw translates ordinary language into a typed prepared proposal.
- * Execution and merge authority are host-native Slack interactions, never
- * model-selected words or tool arguments.
+ * OpenClaw translates ordinary language into typed operations. A confirm or
+ * merge tool call is authoritative only when paired with a fresh authenticated
+ * user turn captured independently by the host hook.
  */
 export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRuntime): () => void {
   const disposers: Array<() => void> = [];
@@ -151,25 +155,24 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
       "Translate the user's ordinary-language repository request into one complete typed proposal without starting work. Preserve all restrictions and exclusions; do not ask the user for harness syntax.",
       PREPARE_SCHEMA,
       context,
-      async (service, input, trusted) => {
-        const prepared = await service.prepare(input as unknown as PrepareChangeInput, trusted);
-        const changeId = String((prepared as Record<string, unknown>).changeId ?? "");
-        const presented = changeId
-          ? await rt.interactiveControlApprovals?.presentConfirmation(changeId, context) ?? false
-          : false;
-        return {
-          ...(prepared as Record<string, unknown>),
-          approval: {
-            mode: presented ? "slack_interactive" : "unavailable",
-            required: true,
-            diagnostic: rt.interactiveControlApprovals?.diagnostic(changeId) ?? "interactive_provider_missing",
-            summary: presented
-              ? "Review the structured proposal and use its Approve and run button."
-              : "Interactive approval could not be presented; execution remains paused.",
-          },
-        };
-      },
+      async (service, input, trusted) => ({
+        ...await service.prepare(input as unknown as PrepareChangeInput, trusted),
+        approval: {
+          mode: "openclaw_conversation",
+          required: true,
+          summary: "Review the proposal in this conversation. Reply naturally; OpenClaw will translate your response into the typed confirmation operation.",
+        },
+      }),
       rt,
+    )],
+    ["harness_confirm_change", (context) => tool(
+      "harness_confirm_change",
+      "Use only when the current authenticated user turn clearly approves the exact prepared proposal. OpenClaw interprets the user's ordinary language; this tool cannot run without that fresh host-observed turn.",
+      CHANGE_ID_SCHEMA,
+      context,
+      (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted),
+      rt,
+      "confirm_change",
     )],
     ["harness_change_result", (context) => tool(
       "harness_change_result",
@@ -178,6 +181,15 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
       context,
       (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted),
       rt,
+    )],
+    ["harness_merge_change", (context) => tool(
+      "harness_merge_change",
+      "Use only when the current authenticated user turn clearly authorizes merging the exact ready pull request. This requires a separate fresh host-observed turn.",
+      CHANGE_ID_SCHEMA,
+      context,
+      (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted),
+      rt,
+      "merge_change",
     )],
   ];
 

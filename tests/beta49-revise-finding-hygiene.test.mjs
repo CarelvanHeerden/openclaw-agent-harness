@@ -20,6 +20,6 @@ test("beta49: loose finding text variants and regex remain stable",()=>{
 test("beta49: no dropFindings interaction can mutate a confirmed authority envelope",()=>{
   const reg=readFileSync(resolve(root,"src/tools/registration.ts"),"utf8");
   assert.doesNotMatch(reg,/dropFindings|harness_revise|needsSelection/);
-  assert.match(reg,/host-native Slack interactions/);
-  assert.doesNotMatch(reg,/harness_confirm_change|harness_merge_change/);
+  assert.match(reg,/HostTurnAuthorityBroker/);
+  assert.match(reg,/hostTurnAuthorityBroker\?\.consume/);
 });

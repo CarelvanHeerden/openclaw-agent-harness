@@ -9,7 +9,9 @@
   "contracts": {
     "tools": [
       "harness_prepare_change",
-      "harness_change_result"
+      "harness_confirm_change",
+      "harness_change_result",
+      "harness_merge_change"
     ]
   },
   "configSchema": {
@@ -1101,7 +1103,7 @@
               "always"
             ],
             "default": "always",
-            "description": "Compatibility setting for legacy callers. The control plane always requires a host-native interactive approval before material work; model/tool text cannot authorize execution."
+            "description": "Compatibility setting for legacy callers. The control plane requires a fresh authenticated OpenClaw user turn plus a typed confirmation operation before material work; tool input alone cannot authorize execution."
           },
           "confirm_min_risk": {
             "type": "string",

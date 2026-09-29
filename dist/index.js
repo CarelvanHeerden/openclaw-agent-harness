@@ -32,7 +32,7 @@ import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { ControlError, ControlPlaneService } from "./control/service.js";
-import { InteractiveControlApprovals } from "./control/interactive-approval.js";
+import { HostTurnAuthorityBroker, registerHostTurnHook } from "./control/host-turn-broker.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
@@ -1922,8 +1922,8 @@ function bootstrapHarnessSync(api) {
             };
         },
     });
-    runtime.interactiveControlApprovals = new InteractiveControlApprovals(state.db, runtime.controlPlane, api, runtime.authorisedUsers);
-    runtime.disposers.push(runtime.interactiveControlApprovals.register());
+    runtime.hostTurnAuthorityBroker = new HostTurnAuthorityBroker(runtime.controlPlane, state.db);
+    runtime.disposers.push(registerHostTurnHook(api, runtime.hostTurnAuthorityBroker));
     runtime.disposers.push(() => runtime.controlPlane?.dispose());
     runtime.disposers.push(() => backendRouter?.dispose());
     runtime.disposers.push(verifiedClaude.cleanup);

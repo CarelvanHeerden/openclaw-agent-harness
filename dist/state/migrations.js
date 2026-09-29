@@ -419,6 +419,32 @@ CREATE INDEX idx_control_interactive_challenge_lookup
 UPDATE control_metadata SET value='9',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
     }),
+    Object.freeze({
+        id: "20260929_010_host_turn_authority",
+        sql: `
+CREATE TABLE control_host_turn_capabilities (
+  record_key TEXT PRIMARY KEY,
+  actor_identity TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  conversation_identity TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  session_key TEXT NOT NULL,
+  host_event_id TEXT NOT NULL UNIQUE,
+  content_digest TEXT NOT NULL,
+  issued_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  claimed_at INTEGER
+);
+CREATE INDEX idx_control_host_turn_lookup
+  ON control_host_turn_capabilities(actor_identity,session_key,expires_at,claimed_at,issued_at);
+UPDATE control_interactive_challenges
+  SET claimed_at=COALESCE(claimed_at,CAST(strftime('%s','now') AS INTEGER)*1000);
+UPDATE control_host_attestation_capabilities
+  SET claimed_at=COALESCE(claimed_at,CAST(strftime('%s','now') AS INTEGER)*1000);
+UPDATE control_metadata SET value='10',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+    }),
 ]);
 function terminaliseLegacyControlChanges(db) {
     const present = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_changes'").get();

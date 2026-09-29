@@ -42,7 +42,7 @@ import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { ControlError, ControlPlaneService } from "./control/service.js";
-import { InteractiveControlApprovals } from "./control/interactive-approval.js";
+import { HostTurnAuthorityBroker, registerHostTurnHook } from "./control/host-turn-broker.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
@@ -170,11 +170,6 @@ export interface HarnessPluginApi {
     handler: (event: unknown) => unknown,
     opts?: { name: string; description?: string },
   ) => (() => void) | { dispose?: () => void };
-  registerInteractiveHandler?: (registration: {
-    channel: "slack";
-    namespace: string;
-    handler: (context: unknown) => Promise<unknown> | unknown;
-  }) => (() => void) | { dispose?: () => void };
   registerService?: (svc: {
     id: string;
     start?: () => Promise<void> | void;
@@ -186,12 +181,6 @@ export interface HarnessPluginApi {
   pluginConfig?: unknown;
   workspaceDir?: string;
 
-  runtime?: {
-    gateway?: {
-      isAvailable?: () => Promise<boolean>;
-      request: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-    };
-  };
   /** Legacy outbound seam retained for internal lifecycle notifications. */
   sendMessage?: (input: { channel: string; threadTs?: string; text: string; presentation?: unknown }) => Promise<{ ts: string }>;
 
@@ -304,8 +293,8 @@ interface HarnessRuntime {
   mergePr: (args: { sessionId: string; authenticatedActor?: string; repairBudgetUsd?: number }) => Promise<MergePrResult>;
   /** Ordinary-user control plane. Authority is accepted only through trusted host context. */
   controlPlane?: ControlPlaneService;
-  /** Host-native structured approval presenter and handler. */
-  interactiveControlApprovals?: InteractiveControlApprovals;
+  /** One-shot bridge from a fresh authenticated OpenClaw user turn to typed authority. */
+  hostTurnAuthorityBroker?: HostTurnAuthorityBroker;
   /**
    * rc.4: associate an EXISTING pull request with the session that produced it,
    * after a failure lost the association.
@@ -2304,13 +2293,8 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       };
     },
   });
-  runtime.interactiveControlApprovals = new InteractiveControlApprovals(
-    state.db,
-    runtime.controlPlane,
-    api,
-    runtime.authorisedUsers,
-  );
-  runtime.disposers.push(runtime.interactiveControlApprovals.register());
+  runtime.hostTurnAuthorityBroker = new HostTurnAuthorityBroker(runtime.controlPlane, state.db);
+  runtime.disposers.push(registerHostTurnHook(api, runtime.hostTurnAuthorityBroker));
   runtime.disposers.push(() => runtime.controlPlane?.dispose());
   runtime.disposers.push(() => backendRouter?.dispose());
   runtime.disposers.push(verifiedClaude.cleanup);

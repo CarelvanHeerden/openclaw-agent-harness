@@ -90,13 +90,6 @@ export interface HarnessPluginApi {
     }) => (() => void) | {
         dispose?: () => void;
     };
-    registerInteractiveHandler?: (registration: {
-        channel: "slack";
-        namespace: string;
-        handler: (context: unknown) => Promise<unknown> | unknown;
-    }) => (() => void) | {
-        dispose?: () => void;
-    };
     registerService?: (svc: {
         id: string;
         start?: () => Promise<void> | void;
@@ -109,12 +102,6 @@ export interface HarnessPluginApi {
     /** OpenClaw plugin-SDK config surface (JSON parsed from `plugins.entries[<id>].config`). */
     pluginConfig?: unknown;
     workspaceDir?: string;
-    runtime?: {
-        gateway?: {
-            isAvailable?: () => Promise<boolean>;
-            request: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
-        };
-    };
     /** Legacy outbound seam retained for internal lifecycle notifications. */
     sendMessage?: (input: {
         channel: string;

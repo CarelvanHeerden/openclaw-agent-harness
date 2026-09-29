@@ -8,15 +8,17 @@ This document defines the public product boundary. It is normative: the acceptan
 
 ## 1. Product promise
 
-An ordinary user talks to OpenClaw normally. OpenClaw translates that request
-into two model-callable control operations:
+An ordinary user talks to OpenClaw normally. OpenClaw translates that
+conversation into four typed operations:
 
 1. `harness_prepare_change` — turn a request into a reviewable, immutable proposal without starting implementation.
-2. `harness_change_result` — read a stable, user-safe status or terminal result; the caller never polls internal phases.
+2. `harness_confirm_change` — pair OpenClaw's typed interpretation with the current fresh authenticated user turn and start the exact proposal.
+3. `harness_change_result` — read a stable, user-safe status or terminal result; the caller never polls internal phases.
+4. `harness_merge_change` — pair a separate fresh user turn with the exact ready PR and merge it.
 
-Execution and merge authority are separate host-native Slack buttons bound to
-the exact prepared/readiness state. They are not model-callable operations and
-never depend on words or phrases in chat.
+The harness does not parse conversational phrases. Tool input alone is not
+authority: confirm and merge also require an independently captured host turn
+from the same actor/conversation/session after the reviewed state existed.
 
 Administrative diagnostics and migration controls may exist only on an explicitly privileged host surface. They are not aliases for the four user operations and must not be discoverable in an ordinary-user tool catalog.
 
@@ -94,15 +96,15 @@ OpenClaw resolves ordinary ambiguity before returning this object. It chooses th
 
 Validation failure is terminal for that prepare attempt. It is reserved for a non-change request, a genuine safety refusal, invalid configuration, or an unavailable authenticated repository binding. It returns one stable error code and a user-remediable summary; ambiguity never creates a harness pause.
 
-### 2.2 Approve execution
+### 2.2 Confirm
 
-OpenClaw presents the complete structured proposal with an **Approve and run**
-button. Clicking it produces a host-native Slack interaction; no conversational
-confirmation grammar exists in the harness. The interaction is bound to one
-random one-time token, authenticated sender, channel/account/conversation/thread,
-operation, expiry, and exact current review digest. Model/tool arguments cannot
-mint or redirect it. Missing interaction support, stale or replaced buttons,
-replay, and identity/account/conversation mismatch fail closed.
+The user replies in ordinary language. OpenClaw interprets that response and
+calls `harness_confirm_change` only when it means approval of the prepared
+proposal. Independently, the plugin's `message_received` hook stores a
+short-lived, one-use capability for the raw authenticated user turn without
+interpreting its words. Confirmation requires both the typed operation and that
+fresh turn from the same sender, channel/account/conversation/thread and OpenClaw
+session. Tool input cannot invent the turn; the turn alone cannot execute work.
 
 A confirmation attestation binds all of the following values exactly:
 
@@ -119,9 +121,9 @@ A confirmation attestation binds all of the following values exactly:
 - security/risk classification;
 - proposal generation/version;
 - expiry;
-- unique host interaction identity and one-use nonce.
+- unique host event/message identity and one-use nonce.
 
-`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. When the button is clicked, the interactive handler recomputes that digest from current state and combines it with independently authenticated interaction metadata to create the attestation `bindingDigest`.
+`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. When OpenClaw calls the typed operation, the broker claims the fresh host turn, recomputes the current target digest, and combines it with authenticated event metadata to create the attestation `bindingDigest`.
 
 Both digests are domain-separated and versioned:
 
@@ -169,9 +171,9 @@ The host may deliver lifecycle notifications. Correctness cannot depend on a use
 
 ### 2.4 Merge
 
-`pr_ready` does not merge automatically. The harness presents a separate
-**Approve merge** button after strict readiness succeeds. That host-native click
-mints a new attestation for operation kind `merge_change`.
+`pr_ready` does not merge automatically. The user reviews the PR and responds
+to OpenClaw naturally. A separate fresh host turn plus the typed
+`harness_merge_change` operation mints the merge attestation.
 
 The merge attestation is distinct from the confirmation attestation and binds:
 

@@ -7,16 +7,17 @@ A strict repository change control plane for OpenClaw. The current behavior desc
 ## Ordinary workflow
 
 1. Talk to OpenClaw normally. It translates the request, limits, scope, and restrictions into `harness_prepare_change`.
-2. Review the structured proposal in Slack and click **Approve and run**. No confirmation phrase or change ID is required.
+2. Review the structured proposal and reply naturally. OpenClaw translates that fresh user turn into `harness_confirm_change`; no harness phrase or change ID is required.
 3. `harness_change_result` returns a safe current or terminal result.
-4. After strict readiness passes, review the PR and click **Approve merge**. Merge authority is separate from execution authority.
+4. After strict readiness passes, review the PR and tell OpenClaw whether to merge. It uses a separate fresh turn with `harness_merge_change`.
 
 Natural language is interpreted only into a non-authorizing proposal. Execution
-and merge authority come from OpenClaw's host-native Slack interaction callback,
-bound to the authenticated sender, account, conversation/thread, one-time token,
-operation, and exact pending review/readiness digest. Model/tool arguments and
-phrases cannot provide attestations. Missing interaction support, replay, stale
-state, or identity/conversation mismatch fail closed.
+and merge authority require both OpenClaw's typed operation and a fresh
+host-observed user turn, bound to the authenticated sender, account,
+conversation/thread, session, one-time event, operation, and exact pending
+review/readiness digest. Tool arguments alone cannot provide attestations.
+Missing host events, replay, stale state, or identity/conversation mismatch fail
+closed.
 
 Proposal freshness and execution lifetime are separate clocks. The reviewed
 active-time duration starts when the execution approval is consumed, is stored

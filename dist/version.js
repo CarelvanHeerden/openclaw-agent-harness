@@ -19,8 +19,8 @@ export const PLUGIN_DESCRIPTION = "Multi-agent development harness: crystallise 
  * answer audited under rc.3 could have raised a ceiling; one audited under
  * rc.6 could not.
  */
-// rc.14: natural language produces proposals only; host-native interactions
-// provide one-shot execution and merge authority.
+// rc.14: OpenClaw translates natural language into typed operations; a fresh
+// host-observed user turn supplies one-shot execution or merge provenance.
 export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.14";
 export const PLUGIN_VERSION = {
     pluginVersion: "2.0.0-rc.14",

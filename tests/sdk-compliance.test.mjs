@@ -14,7 +14,9 @@ const pkgPath = resolve(repoRoot, "package.json");
 // beta.9: added harness_bootstrap_test_repo (was registered since beta.6 but missing from manifest)
 const EXPECTED_TOOLS = [
   "harness_prepare_change",
+  "harness_confirm_change",
   "harness_change_result",
+  "harness_merge_change",
 ];
 
 test("sdk: openclaw.plugin.json exists", () => {
@@ -218,15 +220,14 @@ test("sdk: dist does not register the invalid dotted event 'message.received'", 
     false,
     'dist/index.js has CODE referencing the invalid dotted event "message.received". Use only "message_received" (underscore) -- the dotted name is not in the runtime PLUGIN_HOOK_NAMES and is silently ignored.',
   );
-  // Execution and merge authority use a host-native interaction and never a
-  // natural-language event parser.
-  const interactiveCode = readFileSync(resolve(repoRoot, "dist/control/interactive-approval.js"), "utf8");
+  // Control confirmations require a raw host-observed turn, while OpenClaw
+  // supplies the typed operation through the four-tool control plane.
+  const brokerCode = readFileSync(resolve(repoRoot, "dist/control/host-turn-broker.js"), "utf8");
   assert.equal(
-    /registerInteractiveHandler/.test(interactiveCode),
+    /\.on\(\s*["']message_received["']/.test(`${codeOnly}\n${brokerCode}`),
     true,
-    "the built plugin must register a host-native interactive approval handler.",
+    'the built plugin must subscribe to the documented message_received hook for one-shot host attestations.',
   );
-  assert.equal(existsSync(resolve(repoRoot, "dist/control/attestation-broker.js")), false);
 });
 
 test("sdk: dist register() is synchronous (does not return Promise)", { skip: !existsSync(resolve(repoRoot, "dist/index.js")) }, async () => {

@@ -129,6 +129,8 @@ test("the exact packed artifact has only the four ordinary operations and no ret
     const names = [...registration.matchAll(/"(harness_[a-z_]+)"/g)].map((match) => match[1]);
     assert.deepEqual([...new Set(names)].sort(), [
       "harness_change_result",
+      "harness_confirm_change",
+      "harness_merge_change",
       "harness_prepare_change",
     ]);
   } finally {

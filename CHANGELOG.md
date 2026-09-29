@@ -2,17 +2,17 @@
 
 - Keep interpretation and authority separate: OpenClaw translates ordinary
   language into a typed immutable proposal, while execution and merge require
-  host-native Slack approval buttons. Remove model-callable confirm/merge tools
-  and the growing conversational phrase grammar.
+  both a typed OpenClaw operation and a fresh host-observed user turn. Remove
+  the growing conversational phrase grammar without introducing a standalone
+  harness UI.
 - Split proposal freshness from execution lifetime. Confirmation atomically
   stores one activation timestamp and `execution_expires_at`; retries and
   recovery reuse that deadline and cannot renew it.
 - The earlier `/harness-answer` and phrase-parser approaches below are retained
   as incident history, not as the current public interaction contract.
-- Present approval messages through OpenClaw's supported trusted
-  `runtime.gateway.request("message.action", …)` pipeline instead of the
-  optional legacy `api.sendMessage` seam; return precise diagnostics when the
-  outbound gateway or interactive handler is unavailable.
+- Keep the harness accessible only through OpenClaw: `message_received`
+  contributes identity/provenance while OpenClaw supplies typed intent. Neither
+  half can authorize execution by itself.
 
 - Isolate OpenClaw activation behind a self-contained bundled entry so generation
   capture no longer mistakes virtiofs inode churn for an in-progress source edit.

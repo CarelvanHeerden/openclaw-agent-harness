@@ -235,8 +235,8 @@ export interface BriefConfig {
     /** beta.120: hard cap on a `requestPath` file. Default 262144 (256 KB). */
     request_file_max_bytes: number;
     /**
-     * Compatibility setting for legacy callers. The control plane always
-     * requires host-native interactive approval before planning or worker spend.
+     * Compatibility setting for legacy callers. The control plane requires a
+     * fresh authenticated OpenClaw user turn plus typed confirmation before spend.
      */
     confirm_before_spend: "off" | "high_risk" | "always";
     /**

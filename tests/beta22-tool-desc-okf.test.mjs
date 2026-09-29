@@ -1,4 +1,4 @@
-// Public metadata exposes only natural-language translation and safe status.
+// beta.22 restored: public metadata now describes only the canonical four-operation control plane.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { registerHarnessTools } from "../dist/tools/registration.js";
@@ -9,8 +9,8 @@ function catalog() {
   return tools;
 }
 
-test("beta22: ordinary metadata exposes exactly prepare and result", () => {
-  assert.deepEqual(catalog().map((x) => x.name).sort(), ["harness_change_result", "harness_prepare_change"]);
+test("beta22: ordinary metadata exposes exactly prepare, confirm, result, and merge", () => {
+  assert.deepEqual(catalog().map((x) => x.name).sort(), ["harness_change_result", "harness_confirm_change", "harness_merge_change", "harness_prepare_change"]);
 });
 
 test("beta22: schemas are closed and descriptions contain no retired interaction protocol", () => {
@@ -20,8 +20,10 @@ test("beta22: schemas are closed and descriptions contain no retired interaction
   assert.doesNotMatch(metadata, /OKF|relevantConcepts|clarification|poll|sub-?task|worktree|harness_(run|start_session|progress|answer|resume|revise|onboard)/i);
 });
 
-test("beta22: prepare owns the bounded request while status accepts only changeId", () => {
+test("beta22: prepare owns the bounded request while later tools accept only changeId", () => {
   const byName = new Map(catalog().map((x) => [x.name, x]));
   assert.deepEqual(byName.get("harness_prepare_change").parameters.required, ["request", "repository"]);
-  assert.deepEqual(byName.get("harness_change_result").parameters.required, ["changeId"]);
+  for (const name of ["harness_confirm_change", "harness_change_result", "harness_merge_change"]) {
+    assert.deepEqual(byName.get(name).parameters.required, ["changeId"]);
+  }
 });

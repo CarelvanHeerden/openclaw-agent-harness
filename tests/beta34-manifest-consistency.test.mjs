@@ -7,9 +7,9 @@ import { fileURLToPath } from "node:url";
 import { registerHarnessTools } from "../dist/tools/registration.js";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const manifest = JSON.parse(readFileSync(resolve(root, "openclaw.plugin.json"), "utf8"));
-const expected = ["harness_change_result", "harness_prepare_change"];
+const expected = ["harness_change_result", "harness_confirm_change", "harness_merge_change", "harness_prepare_change"];
 
-test("beta34: manifest tool contract exposes translation/status without text authority", () => {
+test("beta34: manifest tool contract is exactly the canonical four-tool catalog", () => {
   assert.deepEqual([...manifest.contracts.tools].sort(), expected);
 });
 

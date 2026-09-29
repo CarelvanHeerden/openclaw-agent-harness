@@ -156,9 +156,21 @@ This narrows to nothing under the same exit criteria as the section above: a sco
 | **Until then** | Non-Anthropic workers are **trusted-repo-only**. This is documented, not enforced — the harness has no way to tell a trusted repository from an untrusted one. |
 | **Review** | Re-assessed each minor release; this section is wrong the day the exit criteria land, and should be deleted rather than softened. |
 
-## Host-observed confirmation attestations
+## Host-observed user-turn attestations
 
-The control plane does not trust an attestation field supplied by a model, tool call, or plugin execution context. It observes raw inbound user messages through OpenClaw's typed `message_received` hook and keeps eligible intent in a process-local, one-time broker for at most 60 seconds. Eligibility requires an authenticated sender, stable host message ID, timestamp, channel/account/conversation/thread binding, no runtime or nested call marker, one unambiguous confirmation or merge operation, and one exact pending change. The broker binds the exact prepared review digest or ready pull-request digest before the corresponding tool can consume it. Replay, stale state, changed scope/budget/time, wrong identity or conversation, internal context text, and unknown modifiers are rejected. If the hook is absent or no eligible raw event was observed, confirmation and merge remain unavailable.
+The control plane does not trust an attestation field supplied by a model, tool
+call, or plugin execution context. OpenClaw is the natural-language interpreter:
+it selects a typed confirm or merge operation. Independently, the harness stores
+each external authenticated `message_received` turn for at most 60 seconds,
+bound to sender, stable host event ID, timestamp, channel/account/conversation/
+thread and OpenClaw session. The harness never parses approval phrases.
+
+The typed operation and fresh host turn are both required. Claiming the turn is
+atomic and one-shot; a wrong operation/change burns it. The service then binds
+the current exact prepared-review or ready-PR digest before execution. Replay,
+stale state, wrong identity/session/conversation, nested/runtime events and
+changed proposal/readiness state fail closed. If the host hook is absent, typed
+tool calls alone cannot confirm or merge.
 
 ## What the merge invariant guarantees
 
