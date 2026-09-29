@@ -24,6 +24,14 @@
         "de0724a36eaf3166e7f1ff38d0f4478b95ccc47725e9597b3fe66d3d3e18baa2  bin/opencode",
         "63729586c1e15e2014e16f9f3a983804ce7f6e501b726770a4eac4363aafa704  package.json"
       ]
+    },
+    "opencode-linux-x64-baseline": {
+      "version": "1.18.23",
+      "integrity": "sha512-yUhBOXfTQour2JCdAkwD3DDqSnyxB0grefwdPqEhYmJHIkYxfJIIzyy6V//pyouvkE0XMouFtiuZXw8S6Wo0iQ==",
+      "entries": [
+        "de0724a36eaf3166e7f1ff38d0f4478b95ccc47725e9597b3fe66d3d3e18baa2  bin/opencode",
+        "d73149feb4176a957a8c438ed00b92b729caf1115ca15f14082a92bde1983875  package.json"
+      ]
     }
   }
 }
