@@ -11931,8 +11931,8 @@ d, owner_id, fence, acquired_at, expires_at, authority_hash)
           authority_hash=excluded.authority_hash`).run(e,r,l,i,c,s??o?.authority_hash??null);this.db.exec("COMMIT");return Object.
 freeze({runId:e,ownerId:r,fence:l,acquiredAt:i,expiresAt:c,...s?{authorityHash:s}:{}})}catch(o){try{this.db.exec("ROLLBA\
 CK")}catch{}throw o}}renewLease(e,r,n,i,s=Date.now()){const o=this.db.prepare("SELECT execution_expires_at FROM control_\
-authority_activations WHERE run_id = ?").get(e);if(!o||o.execution_expires_at<=s)return false;const l=Math.min(s+i,o.execution_expires_at);
-const c=this.db.prepare(`UPDATE run_leases SET expires_at = ?
+authority_activations WHERE run_id = ?").get(e);if(o&&o.execution_expires_at<=s)return false;const l=o?Math.min(s+i,o.execution_expires_at):
+s+i;const c=this.db.prepare(`UPDATE run_leases SET expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?`).run(l,e,r,n,s);return Number(c.changes)===1}releaseLease(e,r,n,i=Date.
 now()){const s=this.db.prepare(`UPDATE run_leases SET owner_id = NULL, expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND fence = ?`).run(i,e,r,n);return Number(s.changes)===1}validateLease(e,r=Date.

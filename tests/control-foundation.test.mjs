@@ -11,6 +11,7 @@ const reports = await import("../dist/control/report.js");
 const { ControlRepository } = await import("../dist/control/repository.js");
 const { applyStateMigrations, STATE_MIGRATIONS } = await import("../dist/state/migrations.js");
 const { openStateStoreSync } = await import("../dist/state/store.js");
+const { transitionToAutonomous } = await import("./helpers/control-activation.mjs");
 
 const sha = (character) => character.repeat(64);
 const makeEnvelope = (overrides = {}) => authority.createAuthorityEnvelope({
@@ -221,7 +222,7 @@ test("merge storage preserves duplicate historical PR identities while enforcing
     const authority = { ...base, requesterId: requester, nonce: `nonce-${id}` };
     let run = repo.createRun({ id, authority, createdAt: 10 });
     run = repo.transition({ runId: id, expectedVersion: run.version, to: "awaiting_confirmation", actor: requester, reason: "prepared", at: 11 });
-    run = repo.transition({ runId: id, expectedVersion: run.version, to: "autonomous_run", actor: requester, reason: "confirmed", at: 12 });
+    run = transitionToAutonomous(db, repo, run, 12);
     run = repo.transition({ runId: id, expectedVersion: run.version, to: "pr_ready", actor: requester, reason: "ready", at: 13 });
     const head=sha("d",40), digest="shared-readiness";
     db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,pr_number,published_sha,readiness_digest,created_at,updated_at) VALUES (?,1,1,?,'{}','[]','[]',?,'medium','[]',500,7,?,?,10,13)`).run(id,sha("a",40),sha("9",64),head,digest);

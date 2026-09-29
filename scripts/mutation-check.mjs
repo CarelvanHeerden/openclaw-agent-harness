@@ -156,8 +156,8 @@ const MUTATIONS = [
   {
     name: "control authority: lease renewal cannot extend execution deadline",
     file: "dist/control/repository.js",
-    find: "        const expiresAt = Math.min(now + ttlMs, activation.execution_expires_at);",
-    replace: "        const expiresAt = now + ttlMs;",
+    find: "            ? Math.min(now + ttlMs, activation.execution_expires_at)\n            : now + ttlMs;",
+    replace: "            ? now + ttlMs\n            : now + ttlMs;",
     tests: ["tests/control-engine-v2.test.mjs"],
   },
   {

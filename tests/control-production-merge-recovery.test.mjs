@@ -10,6 +10,7 @@ const { createAuthorityEnvelope } = await import("../dist/control/authority.js")
 const { evaluatePrReadiness } = await import("../dist/control/readiness.js");
 const { InternalMergeService, createVerifiedMergeAuthorization } = await import("../dist/control/merge.js");
 const { createControlMergeProvider } = await import("../dist/control/github-merge-provider.js");
+const { transitionToAutonomous } = await import("./helpers/control-activation.mjs");
 
 const sha = (c, n = 40) => c.repeat(n);
 const repository = "acme/repo";
@@ -31,7 +32,7 @@ function seed(store) {
   const authority = createAuthorityEnvelope({ version: 1, requesterId: "U1", conversationId: "C1", repository, baseRef: "main", briefDigest: sha("a", 64), policyDigest: sha("b", 64), scope: { paths: ["src", "tests"] }, allowedActions: ["implement", "test", "commit", "push_feature_branch", "open_pull_request"], limits: { budgetUsd: 2, activeTimeMs: 1000, cycles: 1, retries: 1 }, issuedAt: 1, expiresAt: 1000, nonce: "n" });
   let run = repo.createRun({ id: "production-merge-recovery", authority, createdAt: 10 });
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "U1", reason: "prepared", at: 11 });
-  run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "autonomous_run", actor: "host", reason: "confirmed", at: 12 });
+  run = transitionToAutonomous(store.db, repo, run, 12);
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "engine", reason: "strict_readiness_passed", pullRequestUrl: "https://example/pr/9", at: 20 });
   const head = sha("c"), input = readiness(head), evaluated = evaluatePrReadiness(input, 20);
   store.db.prepare(`INSERT INTO sessions (id,slack_thread,slack_channel,requester,requester_gh,repo,branch,worktree_path,status,crystallised_prompt,created_at,updated_at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_sha,minimum_runtime_version,pr_number,final_pr_url,published_sha,published_at) VALUES (?,?,'',?,?,?,'','','done','{}',?,?,2,1,1,0,1000,?,?,9,?,?,?)`).run(run.id,`control:${run.id}`,"U1","U1",repository,10,20,sha("a"),"2.0.0-rc.13","https://example/pr/9",head,20);

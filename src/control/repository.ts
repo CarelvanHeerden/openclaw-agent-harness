@@ -230,8 +230,10 @@ export class ControlRepository implements AuthorityNonceStore {
     const activation = this.db.prepare(
       "SELECT execution_expires_at FROM control_authority_activations WHERE run_id = ?",
     ).get(runId) as { execution_expires_at: number } | undefined;
-    if (!activation || activation.execution_expires_at <= now) return false;
-    const expiresAt = Math.min(now + ttlMs, activation.execution_expires_at);
+    if (activation && activation.execution_expires_at <= now) return false;
+    const expiresAt = activation
+      ? Math.min(now + ttlMs, activation.execution_expires_at)
+      : now + ttlMs;
     const result = this.db.prepare(`UPDATE run_leases SET expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?`)
       .run(expiresAt, runId, ownerId, fence, now);
