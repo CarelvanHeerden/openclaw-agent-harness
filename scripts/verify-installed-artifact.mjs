@@ -111,7 +111,7 @@ function verifyInstallLock(installedFiles, committedLock) {
     for (const field of ["resolved", "integrity"]) {
       if (expected.inBundle === true && !(field in actual)) delete expected[field];
     }
-    if (key.startsWith("node_modules/@anthropic-ai/claude-agent-sdk-") && !("libc" in expected)) {
+    if (key.startsWith("node_modules/@anthropic-ai/claude-agent-sdk-") && !("libc" in expected) && "libc" in actual) {
       const packageJson = JSON.parse(readFileSync(resolve(installedRoot, key, "package.json"), "utf8"));
       if (packageJson.libc !== undefined) expected.libc = packageJson.libc;
     }
