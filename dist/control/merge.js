@@ -28,7 +28,7 @@ export class InternalMergeService {
     }
     async providerCall(operation, call) {
         let timer;
-        const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${operation}_deadline_exceeded`)), this.providerDeadlineMs); timer.unref?.(); });
+        const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${operation}_deadline_exceeded`)), this.providerDeadlineMs); });
         try {
             return await Promise.race([call(), timeout]);
         }

@@ -11337,134 +11337,133 @@ e.prNumber)||e.prNumber<1||e.expiresAt<=e.issuedAt||e.expectedHeadSha!==e.publis
 thorization");return Object.freeze({...e,bindingDigest:u_(e)})}a(fO,"createVerifiedMergeAuthorization");var kd=class t{static{
 a(this,"InternalMergeService")}db;repository;provider;now;providerDeadlineMs;recoveryInFlight=null;static INTENT_LEASE_MS=3e5;static MAX_RECOVERY_ATTEMPTS=12;static MAX_INSPECTIONS_PER_ATTEMPT=5;constructor(e,r,n,i=Date.
 now,s=15e3){this.db=e;this.repository=r;this.provider=n;this.now=i;this.providerDeadlineMs=s}async providerCall(e,r){let n;
-const i=new Promise((s,o)=>{n=setTimeout(()=>o(new Error(`${e}_deadline_exceeded`)),this.providerDeadlineMs);n.unref?.()});
-try{return await Promise.race([r(),i])}finally{if(n)clearTimeout(n)}}inspect(e){return this.providerCall("provider_inspe\
-ct",()=>this.provider.inspect(e))}async verifyMerged(e){try{return await this.providerCall("provider_verify_merged",()=>this.
-provider.verifyMerged(e))}catch{return false}}registerAuthorizationAndIntent(e,r=this.now()){const{bindingDigest:n,...i}=e;
-if(u_(i)!==n)throw new Error("Invalid merge authorization binding");const s=c_(),o=`control-merge:${e.runId}:${e.expectedHeadSha}`;
-this.db.prepare(`INSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_ide\
-ntity,base_ref,pr_number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at,consumed_at) VALUE\
-S (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)`).run(e.id,e.runId,e.actorIdentity,e.conversationIdentity,e.repository,e.baseRef,e.prNumber,
-e.expectedHeadSha,e.readinessDigest,e.bindingDigest,e.nonce,e.issuedAt,e.expiresAt);this.db.prepare(`INSERT INTO control\
-_engine_merge_intents (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,upda\
-ted_at) VALUES (?,?,?,?,?,'authorized',?,?)`).run(s,e.runId,e.id,e.expectedHeadSha,o,r,r);return s}registerAuthorization(e){
-this.db.exec("BEGIN IMMEDIATE");try{this.registerAuthorizationAndIntent(e);const r=this.db.prepare(`SELECT state,version\
- FROM control_runs WHERE id=?`).get(e.runId);if(r?.state==="pr_ready"){this.db.prepare(`UPDATE control_runs SET state='a\
-waiting_merge',version=version+1,updated_at=? WHERE id=? AND state='pr_ready' AND version=?`).run(this.now(),e.runId,r.version);
-this.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,creat\
-ed_at) VALUES (?,'pr_ready','awaiting_merge',?,?,'merge_service','merge_authorized',?)`).run(e.runId,r.version,r.version+
-1,this.now())}this.db.exec("COMMIT")}catch(r){try{this.db.exec("ROLLBACK")}catch{}throw r}}async recoverPending(){if(this.
-recoveryInFlight)return this.recoveryInFlight;this.recoveryInFlight=(async()=>{const e=this.db.prepare(`SELECT authoriza\
-tion_id FROM control_engine_merge_intents WHERE status IN ('authorized','merging') ORDER BY created_at LIMIT 25`).all();
-await Promise.allSettled(e.map(r=>this.merge(r.authorization_id)))})().finally(()=>{this.recoveryInFlight=null});return this.
-recoveryInFlight}async merge(e){const r=this.db.prepare(`SELECT * FROM control_engine_merge_intents WHERE authorization_\
-id=?`).get(e);if(!r)return Object.freeze({status:"refused",code:"merge_attestation_required"});if(r.status==="merged"&&r.
-provider_merge_sha&&ia.test(r.provider_merge_sha)){const i=this.db.prepare(`SELECT run_id,repository_identity,pr_number \
-FROM control_merge_authorizations WHERE id=?`).get(e);if(i&&await this.verifyMerged({runId:i.run_id,repository:i.repository_identity,
-prNumber:i.pr_number,mergeSha:r.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:r.provider_merge_sha})}
-if(r.status==="merge_failed")return Object.freeze({status:"merge_failed",code:"provider_failure"});if(r.status==="verifi\
-cation_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});const n=this.acquireIntentLease(
-r.id);if(!n)return this.waitForIntent(r.id,e);try{return await this.mergeLeased(e,r,n)}finally{this.releaseIntentLease(r.
-id,n)}}async waitForIntent(e,r){const n=Date.now()+5e3;while(Date.now()<n){const i=this.db.prepare(`SELECT status,provid\
-er_merge_sha FROM control_engine_merge_intents WHERE id=?`).get(e);if(!i)return Object.freeze({status:"refused",code:"me\
-rge_attestation_required"});if(i.status==="merged"&&i.provider_merge_sha&&ia.test(i.provider_merge_sha)){const s=this.db.
-prepare(`SELECT run_id,repository_identity,pr_number FROM control_merge_authorizations WHERE id=?`).get(r);if(s&&await this.
-verifyMerged({runId:s.run_id,repository:s.repository_identity,prNumber:s.pr_number,mergeSha:i.provider_merge_sha}))return Object.
-freeze({status:"already_merged",mergeSha:i.provider_merge_sha})}if(i.status==="merge_failed")return Object.freeze({status:"\
-merge_failed",code:"provider_failure"});if(i.status==="verification_failed")return Object.freeze({status:"merge_failed",
-code:"verification_failed"});await hO(10)}return Object.freeze({status:"merge_in_progress"})}async mergeLeased(e,r,n){const i=this.
-now();const s=this.db.prepare(`SELECT * FROM control_merge_authorizations WHERE id=?`).get(e);const o=s&&this.verifyPersistedAuthorization(
-s);if(!o){this.failRun(r.change_id,r.id,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"verif\
-ication_failed"})}if(o.expiresAt<i&&s.consumed_at===null){this.terminalize(o.runId,r.id,"verification_failed","authority\
-_expired",n);return Object.freeze({status:"refused",code:"authorization_expired"})}const l=this.repository.getRun(o.runId);
-if(!l||l.state!=="awaiting_merge"&&l.state!=="done")return Object.freeze({status:"refused",code:"merge_attestation_requi\
-red"});const c=this.db.prepare(`SELECT published_sha,readiness_digest FROM control_proposals WHERE run_id=?`).get(l.id);
-if(!c||c.published_sha!==o.expectedHeadSha||c.readiness_digest!==o.readinessDigest||r.change_id!==o.runId||r.expected_head_sha!==
-o.expectedHeadSha){this.refuseRun(l.id,r.id,"readiness_changed",n);return Object.freeze({status:"refused",code:"readines\
-s_changed"})}const u=this.verifyPersistedReadiness(l.id,o.readinessDigest);if(!u||!u.result.ready||u.result.verifiedSha!==
-o.expectedHeadSha){this.refuseRun(l.id,r.id,"readiness_changed",n);return Object.freeze({status:"refused",code:"readines\
-s_changed"})}if(n.attempts>=t.MAX_RECOVERY_ATTEMPTS){this.failRun(l.id,r.id,"provider_failure",n);return Object.freeze({
-status:"merge_failed",code:"provider_failure"})}if(r.status!=="authorized")return this.reconcileClaimedMerge(o,r.id,n);let d;
-try{d=await this.inspect({runId:l.id,repository:o.repository,prNumber:o.prNumber,readinessDigest:o.readinessDigest})}catch{
-return Object.freeze({status:"merge_in_progress"})}if(d.merged){const p=d.mergeSha??r.provider_merge_sha??void 0;if(p&&ia.
-test(p)&&await this.verifyMerged({runId:l.id,repository:o.repository,prNumber:o.prNumber,mergeSha:p})&&this.completeRun(
-l.id,r.id,p,n))return Object.freeze({status:"already_merged",mergeSha:p});this.failRun(l.id,r.id,"verification_failed",n);
-return Object.freeze({status:"merge_failed",code:"verification_failed"})}if(!d.open||d.repository!==o.repository||d.baseRef!==
-o.baseRef||d.prNumber!==o.prNumber){this.refuseRun(l.id,r.id,"pr_identity_mismatch",n);return Object.freeze({status:"ref\
-used",code:"pr_identity_mismatch"})}if(d.headSha!==o.expectedHeadSha){this.refuseRun(l.id,r.id,"stale_pr_head",n);return Object.
-freeze({status:"refused",code:"stale_pr_head"})}const h=an(d.readiness,i);if(!h.ready||h.verifiedSha!==o.expectedHeadSha||
-!this.verifyPersistedReadiness(l.id,o.readinessDigest)){this.refuseRun(l.id,r.id,"readiness_changed",n);return Object.freeze(
-{status:"refused",code:"readiness_changed"})}this.db.exec("BEGIN IMMEDIATE");try{const p=this.db.prepare(`UPDATE control\
-_engine_merge_intents SET status='merging',updated_at=? WHERE id=? AND authorization_id=? AND status='authorized' AND re\
-covery_owner=? AND recovery_fence=? AND recovery_lease_expires_at>?`).run(i,r.id,e,n.owner,n.fence,i);if(Number(p.changes)!==
-1)throw new Error("merge_claim_lost");const f=this.db.prepare(`UPDATE control_merge_authorizations SET consumed_at=? WHE\
-RE id=? AND consumed_at IS NULL`).run(i,e);if(Number(f.changes)!==1)throw new Error("authorization_replayed");this.db.exec(
-"COMMIT")}catch(p){try{this.db.exec("ROLLBACK")}catch{}if(p instanceof Error&&p.message==="merge_claim_lost")return Object.
-freeze({status:"merge_in_progress"});return Object.freeze({status:"refused",code:"authorization_replayed"})}try{const p=await this.
-providerCall("provider_merge",()=>this.provider.merge({runId:l.id,repository:o.repository,prNumber:o.prNumber,expectedHeadSha:o.
-expectedHeadSha,idempotencyKey:r.merge_provider_idempotency}));if(!ia.test(p.mergeSha)){this.failRun(l.id,r.id,"verifica\
-tion_failed",n);return Object.freeze({status:"merge_failed",code:"verification_failed"})}this.db.prepare(`UPDATE control\
-_engine_merge_intents SET provider_merge_sha=?,updated_at=? WHERE id=? AND status='merging' AND recovery_owner=? AND rec\
-overy_fence=?`).run(p.mergeSha,this.now(),r.id,n.owner,n.fence);if(!this.verifyPersistedAuthorizationRow(e)||!this.verifyPersistedReadiness(
-l.id,o.readinessDigest)||!await this.verifyMerged({runId:l.id,repository:o.repository,prNumber:o.prNumber,mergeSha:p.mergeSha})){
-this.failRun(l.id,r.id,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"verification_failed"})}
-if(!this.completeRun(l.id,r.id,p.mergeSha,n))return Object.freeze({status:"merge_in_progress"});return Object.freeze({status:"\
-merged",mergeSha:p.mergeSha})}catch{return this.reconcileClaimedMerge(o,r.id,n)}}async reconcileClaimedMerge(e,r,n){const i=Date.
-now()+5e3;let s=0;while(true){if(!this.validIntentLease(r,n)||!this.verifyPersistedAuthorizationRow(e.id)||!this.verifyPersistedReadiness(
-e.runId,e.readinessDigest)){this.failRun(e.runId,r,"verification_failed",n);return Object.freeze({status:"merge_failed",
-code:"verification_failed"})}const o=this.db.prepare(`SELECT status,provider_merge_sha FROM control_engine_merge_intents\
- WHERE id=?`).get(r);if(!o)return Object.freeze({status:"refused",code:"merge_attestation_required"});if(o.status==="mer\
-ged"){if(o.provider_merge_sha&&ia.test(o.provider_merge_sha)&&await this.verifyMerged({runId:e.runId,repository:e.repository,
-prNumber:e.prNumber,mergeSha:o.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:o.provider_merge_sha});
-return Object.freeze({status:"merge_failed",code:"verification_failed"})}if(o.status==="merge_failed")return Object.freeze(
-{status:"merge_failed",code:"provider_failure"});if(o.status==="verification_failed")return Object.freeze({status:"merge\
-_failed",code:"verification_failed"});let l;try{l=await this.inspect({runId:e.runId,repository:e.repository,prNumber:e.prNumber,
-readinessDigest:e.readinessDigest})}catch{}s++;if(l?.merged){const c=l.mergeSha;if(c&&ia.test(c)&&await this.verifyMerged(
-{runId:e.runId,repository:e.repository,prNumber:e.prNumber,mergeSha:c})&&this.completeRun(e.runId,r,c,n))return Object.freeze(
-{status:"already_merged",mergeSha:c});this.failRun(e.runId,r,"verification_failed",n);return Object.freeze({status:"merg\
-e_failed",code:"verification_failed"})}if(s>=t.MAX_INSPECTIONS_PER_ATTEMPT||Date.now()>=i)return Object.freeze({status:"\
-merge_in_progress"});await hO(10)}}verifyPersistedAuthorizationRow(e){const r=this.db.prepare(`SELECT * FROM control_mer\
-ge_authorizations WHERE id=?`).get(e);return Boolean(r&&this.verifyPersistedAuthorization(r))}verifyPersistedAuthorization(e){
-try{const r={version:2,id:String(e.id),runId:String(e.run_id),actorIdentity:String(e.actor_identity),conversationIdentity:String(
-e.conversation_identity),repository:String(e.repository_identity),baseRef:String(e.base_ref),prNumber:Number(e.pr_number),
-expectedHeadSha:String(e.expected_head_sha),publishedSha:String(e.expected_head_sha),readinessDigest:String(e.readiness_digest),
-nonce:String(e.nonce),issuedAt:Number(e.issued_at),expiresAt:Number(e.expires_at)};if(u_(r)!==String(e.binding_digest))return null;
-return Object.freeze({...r,bindingDigest:String(e.binding_digest)})}catch{return null}}verifyPersistedReadiness(e,r){const n=this.
-db.prepare(`SELECT * FROM control_readiness_attestations WHERE run_id=? AND content_digest=?`).get(e,r);if(!n)return null;
-try{const i=JSON.parse(String(n.input_json));const s=an(i,Number(n.created_at));const o=JSON.parse(String(n.failures_json));
-const l=s.ready?[]:s.failures;if(s.contentDigest!==String(n.content_digest)||s.policyVersion!==String(n.policy_version)||
-(s.ready?1:0)!==Number(n.ready)||(s.ready?s.verifiedSha:null)!==(n.verified_sha??null)||Ko(o)!==Ko(l))return null;return{
-input:i,result:s}}catch{return null}}acquireIntentLease(e){const r=c_(),n=this.now();const i=this.db.prepare(`UPDATE con\
-trol_engine_merge_intents SET recovery_owner=?,recovery_fence=recovery_fence+1,recovery_lease_expires_at=?,recovery_atte\
-mpts=recovery_attempts+1,updated_at=? WHERE id=? AND status IN ('authorized','merging') AND (recovery_owner IS NULL OR r\
-ecovery_lease_expires_at<=?)`).run(r,n+t.INTENT_LEASE_MS,n,e,n);if(Number(i.changes)!==1)return null;const s=this.db.prepare(
-`SELECT recovery_fence,recovery_attempts FROM control_engine_merge_intents WHERE id=? AND recovery_owner=?`).get(e,r);return s?
-{owner:r,fence:Number(s.recovery_fence),attempts:Number(s.recovery_attempts)}:null}validIntentLease(e,r){const n=this.db.
-prepare(`SELECT 1 ok FROM control_engine_merge_intents WHERE id=? AND recovery_owner=? AND recovery_fence=? AND recovery\
-_lease_expires_at>?`).get(e,r.owner,r.fence,this.now());return Boolean(n)}releaseIntentLease(e,r){this.db.prepare(`UPDAT\
-E control_engine_merge_intents SET recovery_owner=NULL,recovery_lease_expires_at=NULL WHERE id=? AND recovery_owner=? AN\
-D recovery_fence=?`).run(e,r.owner,r.fence)}refuseRun(e,r,n,i){return this.terminalize(e,r,"verification_failed",n,i)}failRun(e,r,n,i){
-return this.terminalize(e,r,n==="provider_failure"?"merge_failed":"verification_failed","merge_failed",i)}terminalize(e,r,n,i,s){
-const o=this.now();this.db.exec("BEGIN IMMEDIATE");try{const l=this.db.prepare(`SELECT state,version FROM control_runs W\
-HERE id=?`).get(e);if(l?.state!=="awaiting_merge"){this.db.exec("COMMIT");return false}const c=[n,o,r];let u=`UPDATE con\
-trol_engine_merge_intents SET status=?,updated_at=? WHERE id=? AND status IN ('authorized','merging')`;if(s){u+=` AND re\
-covery_owner=? AND recovery_fence=? AND recovery_lease_expires_at>?`;c.push(s.owner,s.fence,o)}const d=this.db.prepare(u).
-run(...c);if(Number(d.changes)!==1){this.db.exec("COMMIT");return false}const h=this.db.prepare(`UPDATE control_runs SET\
- state='failed',version=version+1,terminal_code=?,updated_at=? WHERE id=? AND state='awaiting_merge' AND version=?`).run(
-i,o,e,l.version);if(Number(h.changes)!==1)throw new Error("terminal_generation_lost");this.db.prepare(`INSERT INTO contr\
-ol_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?,'awaiting_merge',\
-'failed',?,?,'merge_service',?,?)`).run(e,l.version,l.version+1,i,o);this.db.prepare(`UPDATE control_proposals SET termi\
-nal_summary=?,updated_at=? WHERE run_id=?`).run(`Merge failed: ${i}`,o,e);this.db.exec("COMMIT");return true}catch(l){try{
-this.db.exec("ROLLBACK")}catch{}throw l}}completeRun(e,r,n,i){const s=this.now();this.db.exec("BEGIN IMMEDIATE");try{const o=this.
-db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(e);if(o?.state!=="awaiting_merge"){this.db.exec("COM\
-MIT");return o?.state==="done"}const l=this.db.prepare(`UPDATE control_engine_merge_intents SET status='merged',provider\
-_merge_sha=?,updated_at=? WHERE id=? AND status IN ('authorized','merging') AND recovery_owner=? AND recovery_fence=? AN\
-D recovery_lease_expires_at>?`).run(n,s,r,i.owner,i.fence,s);if(Number(l.changes)!==1){this.db.exec("COMMIT");return false}
-const c=this.db.prepare(`UPDATE control_runs SET state='done',version=version+1,terminal_code=NULL,updated_at=? WHERE id\
-=? AND state='awaiting_merge' AND version=?`).run(s,e,o.version);if(Number(c.changes)!==1)throw new Error("terminal_gene\
-ration_lost");this.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,acto\
-r,reason,created_at) VALUES (?,'awaiting_merge','done',?,?,'merge_service','merge_verified',?)`).run(e,o.version,o.version+
-1,s);this.db.exec("COMMIT");return true}catch(o){try{this.db.exec("ROLLBACK")}catch{}throw o}}};var p_="control-plane-contract/v3";var yO="control-plane-confirm/v2";var gO="control-plane-merge/v2";function sa(t){if(Array.
+const i=new Promise((s,o)=>{n=setTimeout(()=>o(new Error(`${e}_deadline_exceeded`)),this.providerDeadlineMs)});try{return await Promise.
+race([r(),i])}finally{if(n)clearTimeout(n)}}inspect(e){return this.providerCall("provider_inspect",()=>this.provider.inspect(
+e))}async verifyMerged(e){try{return await this.providerCall("provider_verify_merged",()=>this.provider.verifyMerged(e))}catch{
+return false}}registerAuthorizationAndIntent(e,r=this.now()){const{bindingDigest:n,...i}=e;if(u_(i)!==n)throw new Error(
+"Invalid merge authorization binding");const s=c_(),o=`control-merge:${e.runId}:${e.expectedHeadSha}`;this.db.prepare(`I\
+NSERT INTO control_merge_authorizations (id,run_id,actor_identity,conversation_identity,repository_identity,base_ref,pr_\
+number,expected_head_sha,readiness_digest,binding_digest,nonce,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?,?,?,?\
+,?,?,?,?,?,NULL)`).run(e.id,e.runId,e.actorIdentity,e.conversationIdentity,e.repository,e.baseRef,e.prNumber,e.expectedHeadSha,
+e.readinessDigest,e.bindingDigest,e.nonce,e.issuedAt,e.expiresAt);this.db.prepare(`INSERT INTO control_engine_merge_inte\
+nts (id,change_id,authorization_id,expected_head_sha,merge_provider_idempotency,status,created_at,updated_at) VALUES (?,\
+?,?,?,?,'authorized',?,?)`).run(s,e.runId,e.id,e.expectedHeadSha,o,r,r);return s}registerAuthorization(e){this.db.exec("\
+BEGIN IMMEDIATE");try{this.registerAuthorizationAndIntent(e);const r=this.db.prepare(`SELECT state,version FROM control_\
+runs WHERE id=?`).get(e.runId);if(r?.state==="pr_ready"){this.db.prepare(`UPDATE control_runs SET state='awaiting_merge'\
+,version=version+1,updated_at=? WHERE id=? AND state='pr_ready' AND version=?`).run(this.now(),e.runId,r.version);this.db.
+prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) V\
+ALUES (?,'pr_ready','awaiting_merge',?,?,'merge_service','merge_authorized',?)`).run(e.runId,r.version,r.version+1,this.
+now())}this.db.exec("COMMIT")}catch(r){try{this.db.exec("ROLLBACK")}catch{}throw r}}async recoverPending(){if(this.recoveryInFlight)
+return this.recoveryInFlight;this.recoveryInFlight=(async()=>{const e=this.db.prepare(`SELECT authorization_id FROM cont\
+rol_engine_merge_intents WHERE status IN ('authorized','merging') ORDER BY created_at LIMIT 25`).all();await Promise.allSettled(
+e.map(r=>this.merge(r.authorization_id)))})().finally(()=>{this.recoveryInFlight=null});return this.recoveryInFlight}async merge(e){
+const r=this.db.prepare(`SELECT * FROM control_engine_merge_intents WHERE authorization_id=?`).get(e);if(!r)return Object.
+freeze({status:"refused",code:"merge_attestation_required"});if(r.status==="merged"&&r.provider_merge_sha&&ia.test(r.provider_merge_sha)){
+const i=this.db.prepare(`SELECT run_id,repository_identity,pr_number FROM control_merge_authorizations WHERE id=?`).get(
+e);if(i&&await this.verifyMerged({runId:i.run_id,repository:i.repository_identity,prNumber:i.pr_number,mergeSha:r.provider_merge_sha}))
+return Object.freeze({status:"already_merged",mergeSha:r.provider_merge_sha})}if(r.status==="merge_failed")return Object.
+freeze({status:"merge_failed",code:"provider_failure"});if(r.status==="verification_failed")return Object.freeze({status:"\
+merge_failed",code:"verification_failed"});const n=this.acquireIntentLease(r.id);if(!n)return this.waitForIntent(r.id,e);
+try{return await this.mergeLeased(e,r,n)}finally{this.releaseIntentLease(r.id,n)}}async waitForIntent(e,r){const n=Date.
+now()+5e3;while(Date.now()<n){const i=this.db.prepare(`SELECT status,provider_merge_sha FROM control_engine_merge_intent\
+s WHERE id=?`).get(e);if(!i)return Object.freeze({status:"refused",code:"merge_attestation_required"});if(i.status==="me\
+rged"&&i.provider_merge_sha&&ia.test(i.provider_merge_sha)){const s=this.db.prepare(`SELECT run_id,repository_identity,p\
+r_number FROM control_merge_authorizations WHERE id=?`).get(r);if(s&&await this.verifyMerged({runId:s.run_id,repository:s.
+repository_identity,prNumber:s.pr_number,mergeSha:i.provider_merge_sha}))return Object.freeze({status:"already_merged",mergeSha:i.
+provider_merge_sha})}if(i.status==="merge_failed")return Object.freeze({status:"merge_failed",code:"provider_failure"});
+if(i.status==="verification_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});await hO(10)}
+return Object.freeze({status:"merge_in_progress"})}async mergeLeased(e,r,n){const i=this.now();const s=this.db.prepare(`\
+SELECT * FROM control_merge_authorizations WHERE id=?`).get(e);const o=s&&this.verifyPersistedAuthorization(s);if(!o){this.
+failRun(r.change_id,r.id,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"verification_failed"})}
+if(o.expiresAt<i&&s.consumed_at===null){this.terminalize(o.runId,r.id,"verification_failed","authority_expired",n);return Object.
+freeze({status:"refused",code:"authorization_expired"})}const l=this.repository.getRun(o.runId);if(!l||l.state!=="awaiti\
+ng_merge"&&l.state!=="done")return Object.freeze({status:"refused",code:"merge_attestation_required"});const c=this.db.prepare(
+`SELECT published_sha,readiness_digest FROM control_proposals WHERE run_id=?`).get(l.id);if(!c||c.published_sha!==o.expectedHeadSha||
+c.readiness_digest!==o.readinessDigest||r.change_id!==o.runId||r.expected_head_sha!==o.expectedHeadSha){this.refuseRun(l.
+id,r.id,"readiness_changed",n);return Object.freeze({status:"refused",code:"readiness_changed"})}const u=this.verifyPersistedReadiness(
+l.id,o.readinessDigest);if(!u||!u.result.ready||u.result.verifiedSha!==o.expectedHeadSha){this.refuseRun(l.id,r.id,"read\
+iness_changed",n);return Object.freeze({status:"refused",code:"readiness_changed"})}if(n.attempts>=t.MAX_RECOVERY_ATTEMPTS){
+this.failRun(l.id,r.id,"provider_failure",n);return Object.freeze({status:"merge_failed",code:"provider_failure"})}if(r.
+status!=="authorized")return this.reconcileClaimedMerge(o,r.id,n);let d;try{d=await this.inspect({runId:l.id,repository:o.
+repository,prNumber:o.prNumber,readinessDigest:o.readinessDigest})}catch{return Object.freeze({status:"merge_in_progress"})}
+if(d.merged){const p=d.mergeSha??r.provider_merge_sha??void 0;if(p&&ia.test(p)&&await this.verifyMerged({runId:l.id,repository:o.
+repository,prNumber:o.prNumber,mergeSha:p})&&this.completeRun(l.id,r.id,p,n))return Object.freeze({status:"already_merge\
+d",mergeSha:p});this.failRun(l.id,r.id,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"verifi\
+cation_failed"})}if(!d.open||d.repository!==o.repository||d.baseRef!==o.baseRef||d.prNumber!==o.prNumber){this.refuseRun(
+l.id,r.id,"pr_identity_mismatch",n);return Object.freeze({status:"refused",code:"pr_identity_mismatch"})}if(d.headSha!==
+o.expectedHeadSha){this.refuseRun(l.id,r.id,"stale_pr_head",n);return Object.freeze({status:"refused",code:"stale_pr_hea\
+d"})}const h=an(d.readiness,i);if(!h.ready||h.verifiedSha!==o.expectedHeadSha||!this.verifyPersistedReadiness(l.id,o.readinessDigest)){
+this.refuseRun(l.id,r.id,"readiness_changed",n);return Object.freeze({status:"refused",code:"readiness_changed"})}this.db.
+exec("BEGIN IMMEDIATE");try{const p=this.db.prepare(`UPDATE control_engine_merge_intents SET status='merging',updated_at\
+=? WHERE id=? AND authorization_id=? AND status='authorized' AND recovery_owner=? AND recovery_fence=? AND recovery_leas\
+e_expires_at>?`).run(i,r.id,e,n.owner,n.fence,i);if(Number(p.changes)!==1)throw new Error("merge_claim_lost");const f=this.
+db.prepare(`UPDATE control_merge_authorizations SET consumed_at=? WHERE id=? AND consumed_at IS NULL`).run(i,e);if(Number(
+f.changes)!==1)throw new Error("authorization_replayed");this.db.exec("COMMIT")}catch(p){try{this.db.exec("ROLLBACK")}catch{}
+if(p instanceof Error&&p.message==="merge_claim_lost")return Object.freeze({status:"merge_in_progress"});return Object.freeze(
+{status:"refused",code:"authorization_replayed"})}try{const p=await this.providerCall("provider_merge",()=>this.provider.
+merge({runId:l.id,repository:o.repository,prNumber:o.prNumber,expectedHeadSha:o.expectedHeadSha,idempotencyKey:r.merge_provider_idempotency}));
+if(!ia.test(p.mergeSha)){this.failRun(l.id,r.id,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"\
+verification_failed"})}this.db.prepare(`UPDATE control_engine_merge_intents SET provider_merge_sha=?,updated_at=? WHERE \
+id=? AND status='merging' AND recovery_owner=? AND recovery_fence=?`).run(p.mergeSha,this.now(),r.id,n.owner,n.fence);if(!this.
+verifyPersistedAuthorizationRow(e)||!this.verifyPersistedReadiness(l.id,o.readinessDigest)||!await this.verifyMerged({runId:l.
+id,repository:o.repository,prNumber:o.prNumber,mergeSha:p.mergeSha})){this.failRun(l.id,r.id,"verification_failed",n);return Object.
+freeze({status:"merge_failed",code:"verification_failed"})}if(!this.completeRun(l.id,r.id,p.mergeSha,n))return Object.freeze(
+{status:"merge_in_progress"});return Object.freeze({status:"merged",mergeSha:p.mergeSha})}catch{return this.reconcileClaimedMerge(
+o,r.id,n)}}async reconcileClaimedMerge(e,r,n){const i=Date.now()+5e3;let s=0;while(true){if(!this.validIntentLease(r,n)||
+!this.verifyPersistedAuthorizationRow(e.id)||!this.verifyPersistedReadiness(e.runId,e.readinessDigest)){this.failRun(e.runId,
+r,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"verification_failed"})}const o=this.db.prepare(
+`SELECT status,provider_merge_sha FROM control_engine_merge_intents WHERE id=?`).get(r);if(!o)return Object.freeze({status:"\
+refused",code:"merge_attestation_required"});if(o.status==="merged"){if(o.provider_merge_sha&&ia.test(o.provider_merge_sha)&&
+await this.verifyMerged({runId:e.runId,repository:e.repository,prNumber:e.prNumber,mergeSha:o.provider_merge_sha}))return Object.
+freeze({status:"already_merged",mergeSha:o.provider_merge_sha});return Object.freeze({status:"merge_failed",code:"verifi\
+cation_failed"})}if(o.status==="merge_failed")return Object.freeze({status:"merge_failed",code:"provider_failure"});if(o.
+status==="verification_failed")return Object.freeze({status:"merge_failed",code:"verification_failed"});let l;try{l=await this.
+inspect({runId:e.runId,repository:e.repository,prNumber:e.prNumber,readinessDigest:e.readinessDigest})}catch{}s++;if(l?.
+merged){const c=l.mergeSha;if(c&&ia.test(c)&&await this.verifyMerged({runId:e.runId,repository:e.repository,prNumber:e.prNumber,
+mergeSha:c})&&this.completeRun(e.runId,r,c,n))return Object.freeze({status:"already_merged",mergeSha:c});this.failRun(e.
+runId,r,"verification_failed",n);return Object.freeze({status:"merge_failed",code:"verification_failed"})}if(s>=t.MAX_INSPECTIONS_PER_ATTEMPT||
+Date.now()>=i)return Object.freeze({status:"merge_in_progress"});await hO(10)}}verifyPersistedAuthorizationRow(e){const r=this.
+db.prepare(`SELECT * FROM control_merge_authorizations WHERE id=?`).get(e);return Boolean(r&&this.verifyPersistedAuthorization(
+r))}verifyPersistedAuthorization(e){try{const r={version:2,id:String(e.id),runId:String(e.run_id),actorIdentity:String(e.
+actor_identity),conversationIdentity:String(e.conversation_identity),repository:String(e.repository_identity),baseRef:String(
+e.base_ref),prNumber:Number(e.pr_number),expectedHeadSha:String(e.expected_head_sha),publishedSha:String(e.expected_head_sha),
+readinessDigest:String(e.readiness_digest),nonce:String(e.nonce),issuedAt:Number(e.issued_at),expiresAt:Number(e.expires_at)};
+if(u_(r)!==String(e.binding_digest))return null;return Object.freeze({...r,bindingDigest:String(e.binding_digest)})}catch{
+return null}}verifyPersistedReadiness(e,r){const n=this.db.prepare(`SELECT * FROM control_readiness_attestations WHERE r\
+un_id=? AND content_digest=?`).get(e,r);if(!n)return null;try{const i=JSON.parse(String(n.input_json));const s=an(i,Number(
+n.created_at));const o=JSON.parse(String(n.failures_json));const l=s.ready?[]:s.failures;if(s.contentDigest!==String(n.content_digest)||
+s.policyVersion!==String(n.policy_version)||(s.ready?1:0)!==Number(n.ready)||(s.ready?s.verifiedSha:null)!==(n.verified_sha??
+null)||Ko(o)!==Ko(l))return null;return{input:i,result:s}}catch{return null}}acquireIntentLease(e){const r=c_(),n=this.now();
+const i=this.db.prepare(`UPDATE control_engine_merge_intents SET recovery_owner=?,recovery_fence=recovery_fence+1,recove\
+ry_lease_expires_at=?,recovery_attempts=recovery_attempts+1,updated_at=? WHERE id=? AND status IN ('authorized','merging\
+') AND (recovery_owner IS NULL OR recovery_lease_expires_at<=?)`).run(r,n+t.INTENT_LEASE_MS,n,e,n);if(Number(i.changes)!==
+1)return null;const s=this.db.prepare(`SELECT recovery_fence,recovery_attempts FROM control_engine_merge_intents WHERE i\
+d=? AND recovery_owner=?`).get(e,r);return s?{owner:r,fence:Number(s.recovery_fence),attempts:Number(s.recovery_attempts)}:
+null}validIntentLease(e,r){const n=this.db.prepare(`SELECT 1 ok FROM control_engine_merge_intents WHERE id=? AND recover\
+y_owner=? AND recovery_fence=? AND recovery_lease_expires_at>?`).get(e,r.owner,r.fence,this.now());return Boolean(n)}releaseIntentLease(e,r){
+this.db.prepare(`UPDATE control_engine_merge_intents SET recovery_owner=NULL,recovery_lease_expires_at=NULL WHERE id=? A\
+ND recovery_owner=? AND recovery_fence=?`).run(e,r.owner,r.fence)}refuseRun(e,r,n,i){return this.terminalize(e,r,"verifi\
+cation_failed",n,i)}failRun(e,r,n,i){return this.terminalize(e,r,n==="provider_failure"?"merge_failed":"verification_fai\
+led","merge_failed",i)}terminalize(e,r,n,i,s){const o=this.now();this.db.exec("BEGIN IMMEDIATE");try{const l=this.db.prepare(
+`SELECT state,version FROM control_runs WHERE id=?`).get(e);if(l?.state!=="awaiting_merge"){this.db.exec("COMMIT");return false}
+const c=[n,o,r];let u=`UPDATE control_engine_merge_intents SET status=?,updated_at=? WHERE id=? AND status IN ('authoriz\
+ed','merging')`;if(s){u+=` AND recovery_owner=? AND recovery_fence=? AND recovery_lease_expires_at>?`;c.push(s.owner,s.fence,
+o)}const d=this.db.prepare(u).run(...c);if(Number(d.changes)!==1){this.db.exec("COMMIT");return false}const h=this.db.prepare(
+`UPDATE control_runs SET state='failed',version=version+1,terminal_code=?,updated_at=? WHERE id=? AND state='awaiting_me\
+rge' AND version=?`).run(i,o,e,l.version);if(Number(h.changes)!==1)throw new Error("terminal_generation_lost");this.db.prepare(
+`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to_version,actor,reason,created_at) VALUES (?\
+,'awaiting_merge','failed',?,?,'merge_service',?,?)`).run(e,l.version,l.version+1,i,o);this.db.prepare(`UPDATE control_p\
+roposals SET terminal_summary=?,updated_at=? WHERE run_id=?`).run(`Merge failed: ${i}`,o,e);this.db.exec("COMMIT");return true}catch(l){
+try{this.db.exec("ROLLBACK")}catch{}throw l}}completeRun(e,r,n,i){const s=this.now();this.db.exec("BEGIN IMMEDIATE");try{
+const o=this.db.prepare(`SELECT state,version FROM control_runs WHERE id=?`).get(e);if(o?.state!=="awaiting_merge"){this.
+db.exec("COMMIT");return o?.state==="done"}const l=this.db.prepare(`UPDATE control_engine_merge_intents SET status='merg\
+ed',provider_merge_sha=?,updated_at=? WHERE id=? AND status IN ('authorized','merging') AND recovery_owner=? AND recover\
+y_fence=? AND recovery_lease_expires_at>?`).run(n,s,r,i.owner,i.fence,s);if(Number(l.changes)!==1){this.db.exec("COMMIT");
+return false}const c=this.db.prepare(`UPDATE control_runs SET state='done',version=version+1,terminal_code=NULL,updated_\
+at=? WHERE id=? AND state='awaiting_merge' AND version=?`).run(s,e,o.version);if(Number(c.changes)!==1)throw new Error("\
+terminal_generation_lost");this.db.prepare(`INSERT INTO control_state_events (run_id,from_state,to_state,from_version,to\
+_version,actor,reason,created_at) VALUES (?,'awaiting_merge','done',?,?,'merge_service','merge_verified',?)`).run(e,o.version,
+o.version+1,s);this.db.exec("COMMIT");return true}catch(o){try{this.db.exec("ROLLBACK")}catch{}throw o}}};var p_="control-plane-contract/v3";var yO="control-plane-confirm/v2";var gO="control-plane-merge/v2";function sa(t){if(Array.
 isArray(t))return`[${t.map(sa).join(",")}]`;if(t&&typeof t==="object")return`{${Object.entries(t).sort(([e],[r])=>e.localeCompare(
 r)).map(([e,r])=>`${JSON.stringify(e)}:${sa(r)}`).join(",")}}`;return JSON.stringify(t)}a(sa,"stable");function Ed(t,e){
 return _O("sha256").update(`${t}
