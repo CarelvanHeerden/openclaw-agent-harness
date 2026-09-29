@@ -352,6 +352,48 @@ CREATE TABLE control_authority_activations (
 );
 CREATE INDEX idx_control_authority_activation_expiry
   ON control_authority_activations(execution_expires_at);
+CREATE TRIGGER control_authority_activation_no_update
+BEFORE UPDATE ON control_authority_activations
+BEGIN SELECT RAISE(ABORT,'control authority activation is immutable'); END;
+CREATE TRIGGER control_authority_activation_no_delete
+BEFORE DELETE ON control_authority_activations
+BEGIN SELECT RAISE(ABORT,'control authority activation is immutable'); END;
+CREATE TRIGGER control_run_requires_activation
+BEFORE UPDATE OF state ON control_runs
+WHEN NEW.state='autonomous_run' AND OLD.state<>'autonomous_run'
+  AND NOT EXISTS (
+    SELECT 1 FROM control_authority_activations a
+    WHERE a.run_id=NEW.id AND a.run_version=OLD.version+1
+      AND a.activated_at=NEW.updated_at
+  )
+BEGIN SELECT RAISE(ABORT,'execution activation required'); END;
+CREATE TRIGGER control_ready_requires_live_activation
+BEFORE UPDATE OF state ON control_runs
+WHEN NEW.state='pr_ready' AND OLD.state='autonomous_run'
+  AND NOT EXISTS (
+    SELECT 1 FROM control_authority_activations a
+    WHERE a.run_id=NEW.id AND a.run_version=OLD.version
+      AND a.execution_expires_at>=NEW.updated_at
+  )
+BEGIN SELECT RAISE(ABORT,'authority_expired'); END;
+CREATE TRIGGER control_dispatch_lease_deadline_insert
+AFTER INSERT ON control_dispatch_intents
+WHEN NEW.lease_expires_at IS NOT NULL
+  AND NEW.lease_expires_at > (SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+BEGIN
+  UPDATE control_dispatch_intents
+    SET lease_expires_at=(SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+    WHERE run_id=NEW.run_id;
+END;
+CREATE TRIGGER control_dispatch_lease_deadline_update
+AFTER UPDATE OF lease_expires_at ON control_dispatch_intents
+WHEN NEW.lease_expires_at IS NOT NULL
+  AND NEW.lease_expires_at > (SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+BEGIN
+  UPDATE control_dispatch_intents
+    SET lease_expires_at=(SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+    WHERE run_id=NEW.run_id;
+END;
 UPDATE control_metadata SET value='8',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
   }),

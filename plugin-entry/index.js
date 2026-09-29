@@ -1,23 +1,23 @@
 var F_=Object.defineProperty;var a=(t,e)=>F_(t,"name",{value:e,configurable:true});var Fi=(t,e,r)=>()=>{if(r)throw r[0];try{return t&&(e=t(t=0)),e}catch(n){throw r=[n],n}};var Yn=(t,e)=>{for(var r in e)F_(t,r,{get:e[r],enumerable:true})};var ey={};Yn(ey,{DISK_EXHAUSTION_RE:()=>X_,GitAdapter:()=>ma,HARNESS_EXCLUDE_PATTERNS:()=>Q_,HARNESS_SCRATCH_DIR:()=>mi,
-buildAuthedCloneUrl:()=>Wd,inFlightBranchHolders:()=>RA,inFlightWorktreePaths:()=>AA,isCommitMsgNoise:()=>Qn,isHarnessScratch:()=>CA,
-looksLikeDiskExhaustion:()=>Y_,redactSecrets:()=>Nr});import{spawn as Bd}from"node:child_process";import{existsSync as qr,
-readdirSync as wA,readFileSync as kA,statfsSync as SA}from"node:fs";import{chmod as J_,mkdir as sl,readFile as EA,rm as al,
-writeFile as ol}from"node:fs/promises";import{dirname as Hd,isAbsolute as TA,join as ri,resolve as fi}from"node:path";import{
-tmpdir as $A}from"node:os";function Qn(t){return xA.test(t??"")}function CA(t){const e=(t??"").trim().replace(/^\.\//,"");
+buildAuthedCloneUrl:()=>Wd,inFlightBranchHolders:()=>RN,inFlightWorktreePaths:()=>NN,isCommitMsgNoise:()=>Qn,isHarnessScratch:()=>CN,
+looksLikeDiskExhaustion:()=>Y_,redactSecrets:()=>Ar});import{spawn as Bd}from"node:child_process";import{existsSync as qr,
+readdirSync as wN,readFileSync as kN,statfsSync as SN}from"node:fs";import{chmod as J_,mkdir as sl,readFile as EN,rm as al,
+writeFile as ol}from"node:fs/promises";import{dirname as Hd,isAbsolute as TN,join as ri,resolve as fi}from"node:path";import{
+tmpdir as $N}from"node:os";function Qn(t){return xN.test(t??"")}function CN(t){const e=(t??"").trim().replace(/^\.\//,"");
 return e===mi||e.startsWith(`${mi}/`)}function Y_(t){return X_.test(t??"")}function Wd(t,e){const r=encodeURIComponent(e);
-return`https://x-access-token:${r}@github.com/${t}.git`}function Nr(t,e){let r=t.replace(/(https?:\/\/)[^@/\s]+@/gi,"$1*\
+return`https://x-access-token:${r}@github.com/${t}.git`}function Ar(t,e){let r=t.replace(/(https?:\/\/)[^@/\s]+@/gi,"$1*\
 **@");if(e&&e.length>0){r=r.split(e).join("***");const n=encodeURIComponent(e);if(n!==e)r=r.split(n).join("***")}return r}
-function RA(){return[...fa].map(([t,e])=>({key:t,sessionId:e}))}function AA(){return[...hn]}var X_,xA,mi,Q_,OA,hn,fa,ma;
+function RN(){return[...fa].map(([t,e])=>({key:t,sessionId:e}))}function NN(){return[...hn]}var X_,xN,mi,Q_,ON,hn,fa,ma;
 var fn=Fi(()=>{"use strict";X_=/\bENOSPC\b|no space left on device|disk quota exceeded|cannot allocate memory|\bENOMEM\b|\bEIO\b/i;
-xA=/(^|\/)\.?(git-?)?commit-?(msg|message)[^/]*$|(^|\/)COMMIT_EDITMSG$|(^|\/)\.gitmessage$/i;a(Qn,"isCommitMsgNoise");mi=
-".harness-scratch";a(CA,"isHarnessScratch");a(Y_,"looksLikeDiskExhaustion");Q_=[".npm-cache-tmp/",".npm-cache/",".yarn-c\
+xN=/(^|\/)\.?(git-?)?commit-?(msg|message)[^/]*$|(^|\/)COMMIT_EDITMSG$|(^|\/)\.gitmessage$/i;a(Qn,"isCommitMsgNoise");mi=
+".harness-scratch";a(CN,"isHarnessScratch");a(Y_,"looksLikeDiskExhaustion");Q_=[".npm-cache-tmp/",".npm-cache/",".yarn-c\
 ache/",".yarn/cache/",".pnpm-store/",".cache/_cacache/","_cacache/",".git-commit-msg.txt",".commit-msg-tmp.txt",`${mi}/`,
-"harness-vault/","vault.key","vault.db"];OA="# openclaw-agent-harness (beta.110): tooling scratch, never the project's o\
-wn";a(Wd,"buildAuthedCloneUrl");a(Nr,"redactSecrets");hn=new Set;fa=new Map;a(RA,"inFlightBranchHolders");a(AA,"inFlight\
+"harness-vault/","vault.key","vault.db"];ON="# openclaw-agent-harness (beta.110): tooling scratch, never the project's o\
+wn";a(Wd,"buildAuthedCloneUrl");a(Ar,"redactSecrets");hn=new Set;fa=new Map;a(RN,"inFlightBranchHolders");a(NN,"inFlight\
 WorktreePaths");ma=class{static{a(this,"GitAdapter")}opts;constructor(e){this.opts=e}expand(e){return e.startsWith("~")?
 e.replace(/^~/,process.env.HOME??""):e}repoBarePath(e){const[r,n]=e.split("/");return fi(this.expand(this.opts.worktreesRoot),
 ".repos",r,`${n}.git`)}sessionWorktreePath(e){return fi(this.expand(this.opts.worktreesRoot),e)}async makeAskpass(e){const{
-mkdtemp:r}=await import("node:fs/promises");const n=await r(ri($A(),"oah-askpass-"));const i=ri(n,"askpass.sh");const s=`\
+mkdtemp:r}=await import("node:fs/promises");const n=await r(ri($N(),"oah-askpass-"));const i=ri(n,"askpass.sh");const s=`\
 #!/bin/sh
 case "$1" in
   Username*) printf 'x-access-token' ;;
@@ -27,7 +27,7 @@ esac
 up")}}async authenticatedRunner(e){const r=e?await this.makeAskpass(e):void 0;const n=a((i,s)=>new Promise(o=>{const l={
 ...process.env};if(r){l.GIT_ASKPASS=r.path;l.GIT_TERMINAL_PROMPT="0";l.GCM_INTERACTIVE="never"}if(e)l.OAH_GH_TOKEN=e;const c=Bd(
 "git",i,{cwd:s,env:l});let u="";let d="";c.stdout.on("data",h=>u+=h.toString());c.stderr.on("data",h=>d+=h.toString());c.
-on("error",h=>o({code:127,stdout:"",stderr:Nr(String(h),e)}));c.on("close",h=>o({code:h??1,stdout:Nr(u,e),stderr:Nr(d,e)}))}),
+on("error",h=>o({code:127,stdout:"",stderr:Ar(String(h),e)}));c.on("close",h=>o({code:h??1,stdout:Ar(u,e),stderr:Ar(d,e)}))}),
 "run");return{run:n,dispose:a(async()=>{await r?.cleanup()},"dispose")}}async allocate(e){const r=this.repoBarePath(e.repoFullName);
 const n=this.sessionWorktreePath(e.sessionId);if(qr(n)){throw new Error(`worktree already exists at ${n}; refusing to re\
 use without explicit release`)}const i=`${e.repoFullName}#${e.sessionBranch}`;const s=fa.get(i);if(s&&s!==e.sessionId){throw new Error(
@@ -62,13 +62,13 @@ run(["-C",r,"worktree","add","-B",e.sessionBranch,n,`origin/${e.baseBranch}`],vo
 `origin/${e.baseBranch}`)}await this.run(["-C",n,"config","user.name",e.commitIdentity.name]);await this.run(["-C",n,"co\
 nfig","user.email",e.commitIdentity.email]);await this.run(["-C",n,"remote","set-url","origin",o])}finally{await i.cleanup()}
 const s=e.bootstrapDeps??this.opts.bootstrapDeps;if(s!==false){await this.bootstrapWorktreeDeps(n)}return n}freeDiskBytes(e){
-try{const r=SA(e);return Number(r.bsize)*Number(r.bavail)}catch{return null}}async bootstrapWorktreeDeps(e){try{const r=qr(
+try{const r=SN(e);return Number(r.bsize)*Number(r.bavail)}catch{return null}}async bootstrapWorktreeDeps(e){try{const r=qr(
 ri(e,"package.json"));if(!r)return;const n=this.opts.minFreeDiskBytes??1024*1024*1024;if(n>0){const c=this.freeDiskBytes(
 e);if(c!==null&&c<n){this.opts.logger.error(`[git-worktree] BLOCKING: only ${(c/1e6).toFixed(0)}MB free on the worktrees\
  filesystem (floor ${(n/1e6).toFixed(0)}MB); SKIPPING dep bootstrap to avoid a half-written, corrupted node_modules. Fre\
 e disk on the harness host (docker/tmpfs/volume) and re-run. A test-authoring sub-task cannot execute its tests without \
 a healthy node_modules.`,{worktreePath:e,freeBytes:c,floorBytes:n,event:"harness.worktree_disk_low"});return}}const i=ri(
-e,"node_modules");if(qr(i)){try{if(wA(i).length>0&&this.declaredCheckBinsPresent(e))return}catch{}}const s=qr(ri(e,"pack\
+e,"node_modules");if(qr(i)){try{if(wN(i).length>0&&this.declaredCheckBinsPresent(e))return}catch{}}const s=qr(ri(e,"pack\
 age-lock.json"))||qr(ri(e,"npm-shrinkwrap.json"));const o=["--no-audit","--no-fund","--legacy-peer-deps"];const l=[s?"ci":
 "install","--include=dev","--ignore-scripts",...o];this.opts.logger?.info?.(`[git-worktree] bootstrapping deps (npm ${l[0]}\
 ) in ${e}`);await this.runCmd("npm",l,e,this.opts.bootstrapTimeoutMs??6e5);this.opts.logger?.info?.(`[git-worktree] deps\
@@ -76,8 +76,8 @@ age-lock.json"))||qr(ri(e,"npm-shrinkwrap.json"));const o=["--no-audit","--no-fu
 bootstrap hit DISK EXHAUSTION and node_modules may be CORRUPT in ${e}. Free disk on the harness host and re-run; a corru\
 pt node_modules makes every inline install fail too, so a test sub-task will commit an UNRUN test. ${this.redactSafe(n)}`,
 {worktreePath:e,event:"harness.worktree_bootstrap_disk_exhaustion"})}else{this.opts.logger?.warn?.(`[git-worktree] deps \
-bootstrap failed (non-fatal): ${this.redactSafe(n)}`)}}}redactSafe(e){return Nr(e)}declaredCheckBinsPresent(e){try{const r=ri(
-e,"package.json");if(!qr(r))return true;const n=JSON.parse(kA(r,"utf8"));const i=n.scripts??{};const s=ri(e,"node_module\
+bootstrap failed (non-fatal): ${this.redactSafe(n)}`)}}}redactSafe(e){return Ar(e)}declaredCheckBinsPresent(e){try{const r=ri(
+e,"package.json");if(!qr(r))return true;const n=JSON.parse(kN(r,"utf8"));const i=n.scripts??{};const s=ri(e,"node_module\
 s",".bin");const o=new Set;for(const[l,c]of Object.entries(i)){if(!/^(lint|typecheck|type-check|tsc|test|okf:check)$/i.test(
 l))continue;const u=String(c);if(/\beslint\b/.test(u))o.add("eslint");if(/\btsx\b/.test(u))o.add("tsx");if(/\btsc\b/.test(
 u))o.add("tsc");if(/\bvitest\b/.test(u))o.add("vitest");if(/\bjest\b/.test(u))o.add("jest")}if(o.size===0)return true;for(const l of o){
@@ -141,10 +141,10 @@ run(["-C",e,"status","--porcelain"]);for(const i of n.split("\n")){const s=i.sli
 if(!s||!Qn(s)||r.includes(s))continue;await al(fi(e,s),{force:true}).catch(()=>{});r.push(s)}}catch{}if(r.length>0){this.
 opts.logger.info("[git] beta.107: removed commit-message scratch file(s) before staging",{worktreePath:e,swept:r})}return r}async sweepScratchDir(e){
 const r=fi(e,mi);try{await al(r,{recursive:true,force:true})}catch{return false}return true}async appendExcludes(e,r){const n=(await this.
-run(["-C",e,"rev-parse","--git-path","info/exclude"])).trim();if(!n)return[];const i=TA(n)?n:fi(e,n);await sl(Hd(i),{recursive:true}).
-catch(()=>{});let s="";try{s=await EA(i,"utf8")}catch{}const o=new Set(s.split("\n").map(u=>u.trim()));const l=r.filter(
+run(["-C",e,"rev-parse","--git-path","info/exclude"])).trim();if(!n)return[];const i=TN(n)?n:fi(e,n);await sl(Hd(i),{recursive:true}).
+catch(()=>{});let s="";try{s=await EN(i,"utf8")}catch{}const o=new Set(s.split("\n").map(u=>u.trim()));const l=r.filter(
 u=>!o.has(u));if(l.length===0)return[];const c=(s.endsWith("\n")||s===""?s:`${s}
-`)+`${OA}
+`)+`${ON}
 ${l.join("\n")}
 `;await ol(i,c,"utf8");return l}async applyHarnessExcludes(e){try{const r=await this.appendExcludes(e,[...Q_]);if(r.length>
 0){this.opts.logger?.info?.("[git] beta.110: added harness tooling excludes",{worktreePath:e,added:r})}return r}catch{return[]}}async excludeRunawayUntracked(e){
@@ -210,32 +210,32 @@ run(["-C",e,"config","--add","credential.helper",n]);await this.run(["-C",e,"con
 /github.com.helper",n]);await this.run(["-C",e,"config","credential.https://github.com.useHttpPath","false"])}run(e,r,n,i){
 return new Promise((s,o)=>{const l={...process.env};if(n){l.GIT_ASKPASS=n;l.GIT_TERMINAL_PROMPT="0";l.GCM_INTERACTIVE="n\
 ever"}if(i)l.OAH_GH_TOKEN=i;const c=Bd("git",e,{env:l});let u="";let d="";c.stdout.on("data",h=>u+=h.toString());c.stderr.
-on("data",h=>d+=h.toString());c.on("error",o);c.on("close",h=>{if(h===0)return s(u);const p=new Error(`git ${e.map(f=>Nr(
-f,i)).join(" ")} failed (${h}): ${Nr(d.trim(),i)}`);p.stdout=Nr(u.trim(),i);p.stderr=Nr(d.trim(),i);p.exitCode=h??void 0;
+on("data",h=>d+=h.toString());c.on("error",o);c.on("close",h=>{if(h===0)return s(u);const p=new Error(`git ${e.map(f=>Ar(
+f,i)).join(" ")} failed (${h}): ${Ar(d.trim(),i)}`);p.stdout=Ar(u.trim(),i);p.stderr=Ar(d.trim(),i);p.exitCode=h??void 0;
 o(p)})})}runCmd(e,r,n,i){return new Promise((s,o)=>{const l=Bd(e,r,{cwd:n,env:{...process.env}});let c="";let u="";let d=false;
 const h=setTimeout(()=>{if(d)return;d=true;try{l.kill("SIGKILL")}catch{}o(new Error(`${e} ${r.join(" ")} timed out after\
  ${i}ms`))},i);h.unref?.();l.stdout?.on("data",p=>c+=p.toString());l.stderr?.on("data",p=>u+=p.toString());l.on("error",
 p=>{if(!d){d=true;clearTimeout(h);o(p)}});l.on("close",p=>{if(d)return;d=true;clearTimeout(h);if(p===0)s(c);else o(new Error(
-`${e} ${r.join(" ")} failed (${p}): ${u.trim().slice(0,500)}`))})})}}});import{appendFileSync as ty,existsSync as ry,mkdirSync as NA,readFileSync as IA,readdirSync as PA,statSync as LA,unlinkSync as DA}from"node:fs";
-import{join as ll,resolve as UA}from"node:path";function Vd(t,e){if(typeof t==="string"){if(e&&FA(e)&&t.length>0)return"\
-***";return gi(Nr(t))}if(Array.isArray(t))return t.map(r=>Vd(r,e));if(t&&typeof t==="object"){const r={};for(const[n,i]of Object.
+`${e} ${r.join(" ")} failed (${p}): ${u.trim().slice(0,500)}`))})})}}});import{appendFileSync as ty,existsSync as ry,mkdirSync as AN,readFileSync as IN,readdirSync as PN,statSync as LN,unlinkSync as DN}from"node:fs";
+import{join as ll,resolve as UN}from"node:path";function Vd(t,e){if(typeof t==="string"){if(e&&FN(e)&&t.length>0)return"\
+***";return gi(Ar(t))}if(Array.isArray(t))return t.map(r=>Vd(r,e));if(t&&typeof t==="object"){const r={};for(const[n,i]of Object.
 entries(t)){r[n]=Vd(i,n)}return r}return t}function gi(t){return t.replace(/sk-ant-[A-Za-z0-9_\-]{8,}/g,"sk-ant-***").replace(
 /github_pat_[A-Za-z0-9_]{20,}/g,"github_pat_***").replace(/gh[posru]_[A-Za-z0-9]{20,}/g,"gh_***").replace(/glpat-[A-Za-z0-9_\-]{16,}/g,
 "glpat-***").replace(/\bxox[abeprs]-[A-Za-z0-9-]{10,}/g,"xox-***").replace(/sk-[A-Za-z0-9]{20,}/g,"sk-***").replace(/(Bearer\s+)[A-Za-z0-9._\-]{12,}/gi,
-"$1***").replace(/(x-access-token:)[^@\s]+/gi,"$1***")}function qA(t,e){const r=t.length;const n=t.length>iy?t.slice(-iy):
+"$1***").replace(/(x-access-token:)[^@\s]+/gi,"$1***")}function qN(t,e){const r=t.length;const n=t.length>iy?t.slice(-iy):
 t;const i={promptChars:r,promptTail:n};if(e)i.promptFull=t;return i}function ny(t,e){const r=t??{};return{enabled:r.interaction_log_enabled!==
-false,dir:r.dir&&r.dir.trim()?UA(r.dir.replace(/^~/,process.env.HOME??"")):ll(e,"logs"),fullPrompts:r.full_prompts===true,
-retentionDays:typeof r.retention_days==="number"&&r.retention_days>0?r.retention_days:14}}var MA,iy,jA,FA,cl;var ga=Fi(()=>{
-"use strict";fn();MA="harness-interactions.jsonl";iy=2e3;a(Vd,"redactValue");jA=new Set(["token","secret","password","pa\
-t","apikey","credential","credentials","privatekey","accesstoken","authorization","auth","opencodeconfigcontent"]);FA=a(
-t=>jA.has(t.toLowerCase().replace(/[_-]/g,"")),"isSecretKey");a(gi,"redactTokenShapes");a(qA,"summarisePrompt");cl=class{static{
+false,dir:r.dir&&r.dir.trim()?UN(r.dir.replace(/^~/,process.env.HOME??"")):ll(e,"logs"),fullPrompts:r.full_prompts===true,
+retentionDays:typeof r.retention_days==="number"&&r.retention_days>0?r.retention_days:14}}var MN,iy,jN,FN,cl;var ga=Fi(()=>{
+"use strict";fn();MN="harness-interactions.jsonl";iy=2e3;a(Vd,"redactValue");jN=new Set(["token","secret","password","pa\
+t","apikey","credential","credentials","privatekey","accesstoken","authorization","auth","opencodeconfigcontent"]);FN=a(
+t=>jN.has(t.toLowerCase().replace(/[_-]/g,"")),"isSecretKey");a(gi,"redactTokenShapes");a(qN,"summarisePrompt");cl=class{static{
 a(this,"InteractionLog")}cfg;logger;nowFn;dirEnsured=false;constructor(e){this.cfg=e.config;this.logger=e.logger;this.nowFn=
 e.now??Date.now}get enabled(){return this.cfg.enabled}get dir(){return this.cfg.dir}get fullPrompts(){return this.cfg.fullPrompts}ensureDir(){
-if(this.dirEnsured)return;NA(this.cfg.dir,{recursive:true});this.dirEnsured=true}sessionFile(e){const r=String(e).replace(
-/[^A-Za-z0-9._-]/g,"_")||"unknown";return ll(this.cfg.dir,`session-${r}.jsonl`)}globalFile(){return ll(this.cfg.dir,MA)}log(e,r){
+if(this.dirEnsured)return;AN(this.cfg.dir,{recursive:true});this.dirEnsured=true}sessionFile(e){const r=String(e).replace(
+/[^A-Za-z0-9._-]/g,"_")||"unknown";return ll(this.cfg.dir,`session-${r}.jsonl`)}globalFile(){return ll(this.cfg.dir,MN)}log(e,r){
 if(!this.cfg.enabled)return;try{this.ensureDir();const n={ts:this.nowFn(),sessionId:e,...r};const i=Vd(n);const s=JSON.stringify(
 i)+"\n";ty(this.sessionFile(e),s);ty(this.globalFile(),s)}catch(n){this.logger?.warn?.("[interaction-log] append failed",
-{sessionId:e,event:r.event,err:String(n)})}}logSdkRequest(e,r){if(!this.cfg.enabled)return;const n=qA(r.prompt,this.cfg.
+{sessionId:e,event:r.event,err:String(n)})}}logSdkRequest(e,r){if(!this.cfg.enabled)return;const n=qN(r.prompt,this.cfg.
 fullPrompts);this.log(e,{event:"sdk_request",phase:r.phase,seq:r.seq,cycle:r.cycle,role:r.role,model:r.model,backend:r.backend,
 provider:r.provider,effort:r.effort,promptChars:n.promptChars,promptTail:n.promptTail,...n.promptFull!==void 0?{promptFull:n.
 promptFull}:{},toolsAllowed:r.toolsAllowed,sdkSessionId:r.sdkSessionId,callId:r.callId,attempt:r.attempt})}logSdkResponse(e,r){
@@ -246,18 +246,18 @@ attempt:r.attempt})}logSdkStreamOpened(e,r){if(!this.cfg.enabled)return;this.log
 seq:r.seq,cycle:r.cycle,role:r.role,model:r.model,backend:r.backend,provider:r.provider,effort:r.effort,sdkSessionId:r.sdkSessionId})}logSdkFirstToken(e,r){
 if(!this.cfg.enabled)return;this.log(e,{event:"sdk_first_token",phase:r.phase,seq:r.seq,cycle:r.cycle,role:r.role,model:r.
 model,backend:r.backend,provider:r.provider,effort:r.effort,msToFirstToken:r.msToFirstToken,sdkSessionId:r.sdkSessionId})}readSessionTail(e,r=100){
-const n=this.sessionFile(e);if(!ry(n))return{found:false,file:n,events:[],totalLines:0};let i="";try{i=IA(n,"utf8")}catch(c){
+const n=this.sessionFile(e);if(!ry(n))return{found:false,file:n,events:[],totalLines:0};let i="";try{i=IN(n,"utf8")}catch(c){
 this.logger?.warn?.("[interaction-log] read failed",{sessionId:e,err:String(c)});return{found:false,file:n,events:[],totalLines:0}}
 const s=i.split("\n").filter(c=>c.trim().length>0);const o=s.slice(-Math.max(1,r));const l=[];for(const c of o){try{l.push(
 JSON.parse(c))}catch{}}return{found:true,file:n,events:l,totalLines:s.length}}prune(e=this.nowFn()){let r=0;let n=0;if(!this.
 cfg.enabled)return{removed:r,kept:n};const i=this.cfg.retentionDays;if(!(i>0))return{removed:r,kept:n};const s=e-i*24*60*
-60*1e3;try{if(!ry(this.cfg.dir))return{removed:r,kept:n};for(const o of PA(this.cfg.dir)){if(!o.startsWith("session-")||
-!o.endsWith(".jsonl"))continue;const l=ll(this.cfg.dir,o);try{const c=LA(l);if(c.mtimeMs<s){DA(l);r++}else{n++}}catch{}}}catch(o){
+60*1e3;try{if(!ry(this.cfg.dir))return{removed:r,kept:n};for(const o of PN(this.cfg.dir)){if(!o.startsWith("session-")||
+!o.endsWith(".jsonl"))continue;const l=ll(this.cfg.dir,o);try{const c=LN(l);if(c.mtimeMs<s){DN(l);r++}else{n++}}catch{}}}catch(o){
 this.logger?.warn?.("[interaction-log] prune failed",{err:String(o)})}return{removed:r,kept:n}}};a(ny,"resolveInteractio\
-nLogConfig")});import{createRequire as qN}from"node:module";import{execFile as EP}from"child_process";import{randomUUID as TP}from"crypto";
+nLogConfig")});import{createRequire as qA}from"node:module";import{execFile as EP}from"child_process";import{randomUUID as TP}from"crypto";
 import{createReadStream as SX,realpathSync as $P}from"fs";import{copyFile as xP,mkdir as Pp,readdir as TX,readFile as CP,
-rm as OP,writeFile as _w}from"fs/promises";import{createRequire as RP}from"module";import{homedir as Lp,tmpdir as AP}from"os";
-import{dirname as Vy,isAbsolute as yw,join as ni,relative as NP,resolve as ic,sep as vw}from"path";import{fileURLToPath as IP}from"url";
+rm as OP,writeFile as _w}from"fs/promises";import{createRequire as RP}from"module";import{homedir as Lp,tmpdir as NP}from"os";
+import{dirname as Vy,isAbsolute as yw,join as ni,relative as AP,resolve as ic,sep as vw}from"path";import{fileURLToPath as IP}from"url";
 import{setMaxListeners as PP}from"events";import{spawn as BP}from"child_process";import{existsSync as HP}from"fs";import{
 createInterface as WP}from"readline";import{homedir as EL}from"os";import{join as TL}from"path";import{randomUUID as yF}from"crypto";
 import{join as Bv}from"path";import{AsyncLocalStorage as vF}from"async_hooks";import{appendFile as bF,copyFile as wF,mkdir as kF,
@@ -269,9 +269,9 @@ join as Xm,resolve as Vz}from"path";import*as Ge from"fs";import{appendFile as t
 lstat as sB,mkdir as aB,open as mb,readdir as oB,readFile as gb,readlink as lB,realpath as cB,rename as uB,rmdir as dB,rm as pB,
 stat as hB,symlink as fB,unlink as mB}from"fs/promises";import{existsSync as JB}from"fs";import{once as Eb}from"events";
 import{createWriteStream as n4}from"fs";import{execFile as s4}from"child_process";import{promisify as a4}from"util";import{
-createHash as f4}from"crypto";import{homedir as NY,userInfo as m4}from"os";import zt from"node:path";import t$ from"node:os";
+createHash as f4}from"crypto";import{homedir as AY,userInfo as m4}from"os";import zt from"node:path";import t$ from"node:os";
 import Eh from"node:process";import{join as a6}from"path";import{readdir as H8,readFile as o6}from"fs/promises";import{release as o$}from"os";
-import{isAbsolute as Bb}from"path";function VN(t){return this[t]}function JN(t,e){this[t]=KN.bind(null,e)}function Dp(t=LP){
+import{isAbsolute as Bb}from"path";function VA(t){return this[t]}function JA(t,e){this[t]=KA.bind(null,e)}function Dp(t=LP){
 let e=new AbortController;return PP(t,e.signal),e}function Up(t){return process.platform==="darwin"?t.normalize("NFC"):t}
 function MP(t){return/^[\\/]{2}/.test(t)}function jP(t){return/^[\\/]{2}wsl(\$|\.localhost)[\\/]/i.test(t)}function FP(t){
 if(t.startsWith("\\\\?\\UNC\\"))return"\\\\"+t.slice(8);if(t.startsWith("\\\\?\\")&&t.length>=7&&t[5]===":")return t.slice(
@@ -287,10 +287,10 @@ e)}function xo(){let t=new Set;return{subscribe(e){let r=VP(e);return t.add(r),(
 try{n(...e)}catch(i){(r??=[]).push(i)}if(r)throw r.length===1?r[0]:AggregateError(r,"Signal listener(s) threw")},clear(){
 t.clear()}}}function QP(t){var e=XP.call(t,Sa),r=t[Sa];try{t[Sa]=void 0;var n=true}catch(s){}var i=YP.call(t);if(n)if(e)
 t[Sa]=r;else delete t[Sa];return i}function i1(t){return r1.call(t)}function o1(t){if(t==null)return t===void 0?a1:s1;return Ky&&
-Ky in Object(t)?e1(t):n1(t)}function l1(t){var e=typeof t;return t!=null&&(e=="object"||e=="function")}function h1(t){if(!Ni(
+Ky in Object(t)?e1(t):n1(t)}function l1(t){var e=typeof t;return t!=null&&(e=="object"||e=="function")}function h1(t){if(!Ai(
 t))return false;var e=Ln(t);return e==u1||e==d1||e==c1||e==p1}function m1(t){return!!Jy&&Jy in t}function v1(t){if(t!=null){
-try{return y1.call(t)}catch(e){}try{return t+""}catch(e){}}return""}function x1(t){if(!Ni(t)||g1(t))return false;var e=qh(
-t)?$1:w1;return e.test(Dn(t))}function O1(t,e){return t==null?void 0:t[e]}function A1(t,e){var r=R1(t,e);return C1(r)?r:
+try{return y1.call(t)}catch(e){}try{return t+""}catch(e){}}return""}function x1(t){if(!Ai(t)||g1(t))return false;var e=qh(
+t)?$1:w1;return e.test(Dn(t))}function O1(t,e){return t==null?void 0:t[e]}function N1(t,e){var r=R1(t,e);return C1(r)?r:
 void 0}function I1(){this.__data__=eo?eo(null):{},this.size=0}function L1(t){var e=this.has(t)&&delete this.__data__[t];
 return this.size-=e?1:0,e}function F1(t){var e=this.__data__;if(eo){var r=e[t];return r===U1?void 0:r}return j1.call(e,t)?
 e[t]:void 0}function H1(t){var e=this.__data__;return eo?e[t]!==void 0:B1.call(e,t)}function G1(t,e){var r=this.__data__;
@@ -324,7 +324,7 @@ e,r)}function Cw(t,e){let r=(t.toString().split(".")[1]||"").length,n=(e.toStrin
 s=Number.parseInt(t.toFixed(i).replace(".","")),o=Number.parseInt(e.toFixed(i).replace(".",""));return s%o/10**i}function wt(t,e,r){
 Object.defineProperty(t,e,{get(){{let n=r();return t[e]=n,n}throw Error("cached value already set")},set(n){Object.defineProperty(
 t,e,{value:n})},configurable:true})}function Hh(t,e,r){Object.defineProperty(t,e,{value:r,writable:true,enumerable:true,
-configurable:true})}function AL(t,e){if(!e)return t;return e.reduce((r,n)=>r?.[n],t)}function NL(t){let e=Object.keys(t),
+configurable:true})}function NL(t,e){if(!e)return t;return e.reduce((r,n)=>r?.[n],t)}function AL(t){let e=Object.keys(t),
 r=e.map(n=>t[n]);return Promise.all(r).then(n=>{let i={};for(let s=0;s<e.length;s++)i[e[s]]=n[s];return i})}function IL(t=10){
 let e="";for(let r=0;r<t;r++)e+="abcdefghijklmnopqrstuvwxyz"[Math.floor(Math.random()*26)];return e}function ds(t){return JSON.
 stringify(t)}function ro(t){return typeof t==="object"&&t!==null&&!Array.isArray(t)}function io(t){if(ro(t)===false)return false;
@@ -338,7 +338,7 @@ ge` and `error` params");e.error=e.message}if(delete e.message,typeof e.error===
 return e??(e=t()),Reflect.set(e,n,i,s)},has(r,n){return e??(e=t()),Reflect.has(e,n)},deleteProperty(r,n){return e??(e=t()),
 Reflect.deleteProperty(e,n)},ownKeys(r){return e??(e=t()),Reflect.ownKeys(e)},getOwnPropertyDescriptor(r,n){return e??(e=
 t()),Reflect.getOwnPropertyDescriptor(e,n)},defineProperty(r,n,i){return e??(e=t()),Reflect.defineProperty(e,n,i)}})}function Je(t){
-if(typeof t==="bigint")return t.toString()+"n";if(typeof t==="string")return`"${t}"`;return`${t}`}function Aw(t){return Object.
+if(typeof t==="bigint")return t.toString()+"n";if(typeof t==="string")return`"${t}"`;return`${t}`}function Nw(t){return Object.
 keys(t).filter(e=>t[e]._zod.optin==="optional"&&t[e]._zod.optout==="optional")}function UL(t,e){let r={},n=t._zod.def;for(let i in e){
 if(!(i in n.shape))throw Error(`Unrecognized key: "${i}"`);if(!e[i])continue;r[i]=n.shape[i]}return di(t,{...t._zod.def,
 shape:r,checks:[]})}function ML(t,e){let r={...t._zod.def.shape},n=t._zod.def;for(let i in e){if(!(i in n.shape))throw Error(
@@ -384,7 +384,7 @@ t),true}catch{return false}}function r0(t){if(!rf.test(t))return false;let e=t.r
 Math.ceil(e.length/4)*4,"=");return af(r)}function s0(t,e=null){try{let r=t.split(".");if(r.length!==3)return false;let[
 n]=r;if(!n)return false;let i=JSON.parse(atob(n));if("typ"in i&&i?.typ!=="JWT")return false;if(!i.alg)return false;if(e&&
 (!("alg"in i)||i.alg!==e))return false;return true}catch{return false}}function Qy(t,e,r){if(t.issues.length)e.issues.push(
-...Wr(r,t.issues));e.value[r]=t.value}function Al(t,e,r){if(t.issues.length)e.issues.push(...Wr(r,t.issues));e.value[r]=
+...Wr(r,t.issues));e.value[r]=t.value}function Nl(t,e,r){if(t.issues.length)e.issues.push(...Wr(r,t.issues));e.value[r]=
 t.value}function ev(t,e,r,n){if(t.issues.length)if(n[r]===void 0)if(r in n)e.value[r]=void 0;else e.value[r]=t.value;else
 e.issues.push(...Wr(r,t.issues));else if(t.value===void 0){if(r in n)e.value[r]=void 0}else e.value[r]=t.value}function tv(t,e,r,n){
 for(let i of t)if(i.issues.length===0)return e.value=i.value,e;return e.issues.push({code:"invalid_union",input:e.value,
@@ -396,7 +396,7 @@ return{valid:false,mergeErrorPath:[]};let r=[];for(let n=0;n<t.length;n++){let i
 valid:false,mergeErrorPath:[n,...o.mergeErrorPath]};r.push(o.data)}return{valid:true,data:r}}return{valid:false,mergeErrorPath:[]}}
 function rv(t,e,r){if(e.issues.length)t.issues.push(...e.issues);if(r.issues.length)t.issues.push(...r.issues);if(gs(t))
 return t;let n=jp(e.value,r.value);if(!n.valid)throw Error(`Unmergable intersection. Error path: ${JSON.stringify(n.mergeErrorPath)}`);
-return t.value=n.data,t}function Nl(t,e,r){if(t.issues.length)e.issues.push(...Wr(r,t.issues));e.value[r]=t.value}function iv(t,e,r,n,i,s,o){
+return t.value=n.data,t}function Al(t,e,r){if(t.issues.length)e.issues.push(...Wr(r,t.issues));e.value[r]=t.value}function iv(t,e,r,n,i,s,o){
 if(t.issues.length)if(sc.has(typeof n))r.issues.push(...Wr(n,t.issues));else r.issues.push({origin:"map",code:"invalid_k\
 ey",input:i,inst:s,issues:t.issues.map(l=>oi(l,o,kr()))});if(e.issues.length)if(sc.has(typeof n))r.issues.push(...Wr(n,e.
 issues));else r.issues.push({origin:"map",code:"invalid_element",input:i,inst:s,key:n,issues:e.issues.map(l=>oi(l,o,kr()))});
@@ -411,7 +411,7 @@ return n}function sD(){return{localeError:nD()}}function oD(){return{localeError
 function dD(){return{localeError:uD()}}function M0(){return{localeError:hD()}}function gD(){return{localeError:mD()}}function yD(){
 return{localeError:_D()}}function bD(){return{localeError:vD()}}function kD(){return{localeError:wD()}}function ED(){return{
 localeError:SD()}}function $D(){return{localeError:TD()}}function CD(){return{localeError:xD()}}function RD(){return{localeError:OD()}}
-function ND(){return{localeError:AD()}}function PD(){return{localeError:ID()}}function DD(){return{localeError:LD()}}function MD(){
+function AD(){return{localeError:ND()}}function PD(){return{localeError:ID()}}function DD(){return{localeError:LD()}}function MD(){
 return{localeError:UD()}}function FD(){return{localeError:jD()}}function zD(){return{localeError:qD()}}function HD(){return{
 localeError:BD()}}function VD(){return{localeError:WD()}}function ZD(){return{localeError:GD()}}function JD(){return{localeError:KD()}}
 function YD(){return{localeError:XD()}}function eU(){return{localeError:QD()}}function rU(){return{localeError:tU()}}function dv(t,e,r,n){
@@ -432,8 +432,8 @@ ng_format",abort:false,...ue(e)})}function $f(t,e){return new t({type:"string",f
 ...ue(e)})}function xf(t,e){return new t({type:"string",format:"cuid2",check:"string_format",abort:false,...ue(e)})}function Cf(t,e){
 return new t({type:"string",format:"ulid",check:"string_format",abort:false,...ue(e)})}function Of(t,e){return new t({type:"\
 string",format:"xid",check:"string_format",abort:false,...ue(e)})}function Rf(t,e){return new t({type:"string",format:"k\
-suid",check:"string_format",abort:false,...ue(e)})}function Af(t,e){return new t({type:"string",format:"ipv4",check:"str\
-ing_format",abort:false,...ue(e)})}function Nf(t,e){return new t({type:"string",format:"ipv6",check:"string_format",abort:false,
+suid",check:"string_format",abort:false,...ue(e)})}function Nf(t,e){return new t({type:"string",format:"ipv4",check:"str\
+ing_format",abort:false,...ue(e)})}function Af(t,e){return new t({type:"string",format:"ipv6",check:"string_format",abort:false,
 ...ue(e)})}function Pf(t,e){return new t({type:"string",format:"cidrv4",check:"string_format",abort:false,...ue(e)})}function Lf(t,e){
 return new t({type:"string",format:"cidrv6",check:"string_format",abort:false,...ue(e)})}function Df(t,e){return new t({
 type:"string",format:"base64",check:"string_format",abort:false,...ue(e)})}function Uf(t,e){return new t({type:"string",
@@ -467,8 +467,8 @@ return new Ek({check:"min_length",...ue(e),minimum:t})}function Eu(t,e){return n
 function zf(t,e){return new $k({check:"string_format",format:"regex",...ue(e),pattern:t})}function Bf(t){return new xk({
 check:"string_format",format:"lowercase",...ue(t)})}function Hf(t){return new Ck({check:"string_format",format:"uppercas\
 e",...ue(t)})}function Wf(t,e){return new Ok({check:"string_format",format:"includes",...ue(e),includes:t})}function Vf(t,e){
-return new Rk({check:"string_format",format:"starts_with",...ue(e),prefix:t})}function Gf(t,e){return new Ak({check:"str\
-ing_format",format:"ends_with",...ue(e),suffix:t})}function bS(t,e,r){return new Nk({check:"property",property:t,schema:e,
+return new Rk({check:"string_format",format:"starts_with",...ue(e),prefix:t})}function Gf(t,e){return new Nk({check:"str\
+ing_format",format:"ends_with",...ue(e),suffix:t})}function bS(t,e,r){return new Ak({check:"property",property:t,schema:e,
 ...ue(r)})}function Zf(t,e){return new Ik({check:"mime_type",mime:t,...ue(e)})}function Fn(t){return new Pk({check:"over\
 write",tx:t})}function Kf(t){return Fn(e=>e.normalize(t))}function Jf(){return Fn(t=>t.trim())}function Xf(){return Fn(t=>t.
 toLowerCase())}function Yf(){return Fn(t=>t.toUpperCase())}function Qf(t,e,r){return new t({type:"array",element:e,...ue(
@@ -476,7 +476,7 @@ r)})}function $U(t,e,r){return new t({type:"union",options:e,...ue(r)})}function
 options:r,discriminator:e,...ue(n)})}function CU(t,e,r){return new t({type:"intersection",left:e,right:r})}function wS(t,e,r,n){
 let i=r instanceof Ve;return new t({type:"tuple",items:e,rest:i?r:null,...ue(i?n:r)})}function OU(t,e,r,n){return new t(
 {type:"record",keyType:e,valueType:r,...ue(n)})}function RU(t,e,r,n){return new t({type:"map",keyType:e,valueType:r,...ue(
-n)})}function AU(t,e,r){return new t({type:"set",valueType:e,...ue(r)})}function NU(t,e,r){let n=Array.isArray(e)?Object.
+n)})}function NU(t,e,r){return new t({type:"set",valueType:e,...ue(r)})}function AU(t,e,r){let n=Array.isArray(e)?Object.
 fromEntries(e.map(i=>[i,i])):e;return new t({type:"enum",entries:n,...ue(r)})}function IU(t,e,r){return new t({type:"enu\
 m",entries:e,...ue(r)})}function PU(t,e,r){return new t({type:"literal",values:Array.isArray(e)?e:[e],...ue(r)})}function kS(t,e){
 return new t({type:"file",...ue(e)})}function LU(t,e){return new t({type:"transform",transform:e})}function DU(t,e){return new t(
@@ -510,12 +510,12 @@ n.keyType,r)||ar(n.valueType,r);case"map":return ar(n.keyType,r)||ar(n.valueType
 promise":case"optional":case"nonoptional":case"nullable":case"readonly":return ar(n.innerType,r);case"lazy":return ar(n.
 getter(),r);case"default":return ar(n.innerType,r);case"prefault":return ar(n.innerType,r);case"custom":return false;case"\
 transform":return true;case"pipe":return ar(n.in,r)||ar(n.out,r);case"success":return false;case"catch":return false;default:}
-throw Error(`Unknown schema type: ${n.type}`)}function OS(t){return H0(tm,t)}function RS(t){return W0(rm,t)}function AS(t){
-return V0(im,t)}function NS(t){return G0(nm,t)}function K(t){return q0(Tu,t)}function KU(t){return _f(am,t)}function JU(t){
-return uc(hc,t)}function XU(t){return yf(Ai,t)}function YU(t){return vf(Ai,t)}function QU(t){return bf(Ai,t)}function eM(t){
-return wf(Ai,t)}function tM(t){return kf(om,t)}function rM(t){return Sf(lm,t)}function iM(t){return Ef(cm,t)}function nM(t){
+throw Error(`Unknown schema type: ${n.type}`)}function OS(t){return H0(tm,t)}function RS(t){return W0(rm,t)}function NS(t){
+return V0(im,t)}function AS(t){return G0(nm,t)}function K(t){return q0(Tu,t)}function KU(t){return _f(am,t)}function JU(t){
+return uc(hc,t)}function XU(t){return yf(Ni,t)}function YU(t){return vf(Ni,t)}function QU(t){return bf(Ni,t)}function eM(t){
+return wf(Ni,t)}function tM(t){return kf(om,t)}function rM(t){return Sf(lm,t)}function iM(t){return Ef(cm,t)}function nM(t){
 return $f(um,t)}function sM(t){return xf(dm,t)}function aM(t){return Cf(pm,t)}function oM(t){return Of(hm,t)}function lM(t){
-return Rf(fm,t)}function cM(t){return Af(mm,t)}function uM(t){return Nf(gm,t)}function dM(t){return Pf(_m,t)}function pM(t){
+return Rf(fm,t)}function cM(t){return Nf(mm,t)}function uM(t){return Af(gm,t)}function dM(t){return Pf(_m,t)}function pM(t){
 return Lf(ym,t)}function hM(t){return Df(vm,t)}function fM(t){return Uf(bm,t)}function mM(t){return jf(wm,t)}function gM(t){
 return Ff(km,t)}function _M(t,e,r={}){return $S(MS,t,e,r)}function yt(t){return Z0($u,t)}function Fp(t){return J0(Hs,t)}
 function yM(t){return X0(Hs,t)}function vM(t){return Y0(Hs,t)}function bM(t){return Q0(Hs,t)}function wM(t){return eS(Hs,
@@ -524,31 +524,31 @@ Sm,t)}function TM(t){return oS(jS,t)}function $M(t){return lS(FS,t)}function Em(
 zS)}function Ft(){return dc(BS)}function Ou(t){return dS(HS,t)}function CM(t){return pS(WS,t)}function OM(t){return hS(Tm,
 t)}function ct(t,e){return Qf(VS,t,e)}function RM(t){let e=t._zod.def.shape;return Ie(Object.keys(e))}function Ee(t,e){let r={
 type:"object",get shape(){return lt.assignProp(this,"shape",{...t}),this.shape},...lt.normalizeParams(e)};return new Ru(
-r)}function AM(t,e){return new Ru({type:"object",get shape(){return lt.assignProp(this,"shape",{...t}),this.shape},catchall:Ou(),
+r)}function NM(t,e){return new Ru({type:"object",get shape(){return lt.assignProp(this,"shape",{...t}),this.shape},catchall:Ou(),
 ...lt.normalizeParams(e)})}function wr(t,e){return new Ru({type:"object",get shape(){return lt.assignProp(this,"shape",{
 ...t}),this.shape},catchall:Ft(),...lt.normalizeParams(e)})}function $t(t,e){return new $m({type:"union",options:t,...lt.
 normalizeParams(e)})}function xm(t,e,r){return new GS({type:"union",options:e,discriminator:t,...lt.normalizeParams(r)})}
-function Au(t,e){return new ZS({type:"intersection",left:t,right:e})}function NM(t,e,r){let n=e instanceof Ve,i=n?r:e;return new KS(
+function Nu(t,e){return new ZS({type:"intersection",left:t,right:e})}function AM(t,e,r){let n=e instanceof Ve,i=n?r:e;return new KS(
 {type:"tuple",items:t,rest:n?e:null,...lt.normalizeParams(i)})}function Tt(t,e,r){return new Cm({type:"record",keyType:t,
 valueType:e,...lt.normalizeParams(r)})}function IM(t,e,r){return new Cm({type:"record",keyType:$t([t,Ou()]),valueType:e,
 ...lt.normalizeParams(r)})}function PM(t,e,r){return new JS({type:"map",keyType:t,valueType:e,...lt.normalizeParams(r)})}
-function LM(t,e){return new XS({type:"set",valueType:t,...lt.normalizeParams(e)})}function Ar(t,e){let r=Array.isArray(t)?
+function LM(t,e){return new XS({type:"set",valueType:t,...lt.normalizeParams(e)})}function Nr(t,e){let r=Array.isArray(t)?
 Object.fromEntries(t.map(n=>[n,n])):t;return new lo({type:"enum",entries:r,...lt.normalizeParams(e)})}function DM(t,e){return new lo(
 {type:"enum",entries:t,...lt.normalizeParams(e)})}function Ie(t,e){return new YS({type:"literal",values:Array.isArray(t)?
 t:[t],...lt.normalizeParams(e)})}function UM(t){return kS(QS,t)}function Rm(t){return new Om({type:"transform",transform:t})}
-function It(t){return new Am({type:"optional",innerType:t})}function fc(t){return new eE({type:"nullable",innerType:t})}
+function It(t){return new Nm({type:"optional",innerType:t})}function fc(t){return new eE({type:"nullable",innerType:t})}
 function MM(t){return It(fc(t))}function rE(t,e){return new tE({type:"default",innerType:t,get defaultValue(){return typeof e===
 "function"?e():e}})}function nE(t,e){return new iE({type:"prefault",innerType:t,get defaultValue(){return typeof e==="fu\
-nction"?e():e}})}function sE(t,e){return new Nm({type:"nonoptional",innerType:t,...lt.normalizeParams(e)})}function jM(t){
+nction"?e():e}})}function sE(t,e){return new Am({type:"nonoptional",innerType:t,...lt.normalizeParams(e)})}function jM(t){
 return new aE({type:"success",innerType:t})}function lE(t,e){return new oE({type:"catch",innerType:t,catchValue:typeof e===
 "function"?e:()=>e})}function FM(t){return mS(cE,t)}function mc(t,e){return new Im({type:"pipe",in:t,out:e})}function dE(t){
 return new uE({type:"readonly",innerType:t})}function qM(t,e){return new pE({type:"template_literal",parts:t,...lt.normalizeParams(
 e)})}function fE(t){return new hE({type:"lazy",getter:t})}function zM(t){return new mE({type:"promise",innerType:t})}function gE(t,e){
-let r=new Yt({check:"custom",...lt.normalizeParams(e)});return r._zod.check=t,r}function _E(t,e){return SS(Nu,t??(()=>true),
-e)}function yE(t,e={}){return ES(Nu,t,e)}function vE(t,e){let r=gE(n=>(n.addIssue=i=>{if(typeof i==="string")n.issues.push(
+let r=new Yt({check:"custom",...lt.normalizeParams(e)});return r._zod.check=t,r}function _E(t,e){return SS(Au,t??(()=>true),
+e)}function yE(t,e={}){return ES(Au,t,e)}function vE(t,e){let r=gE(n=>(n.addIssue=i=>{if(typeof i==="string")n.issues.push(
 lt.issue(i,n.value,r._zod.def));else{let s=i;if(s.fatal)s.continue=false;s.code??(s.code="custom"),s.input??(s.input=n.value),
 s.inst??(s.inst=r),s.continue??(s.continue=!r._zod.def.abort),n.issues.push(lt.issue(s))}},t(n.value,n)),e);return r}function BM(t,e={
-error:`Input not instance of ${t.name}`}){let r=new Nu({type:"custom",check:"custom",fn:a(n=>n instanceof t,"fn"),abort:true,
+error:`Input not instance of ${t.name}`}){let r=new Au({type:"custom",check:"custom",fn:a(n=>n instanceof t,"fn"),abort:true,
 ...lt.normalizeParams(e)});return r._zod.bag.Class=t,r}function WM(t){let e=fE(()=>$t([K(t),yt(),lr(),Em(),ct(e),Tt(K(),
 e)]));return e}function Pm(t,e){return mc(Rm(t),e)}function GM(t){kr({customError:t})}function ZM(){return kr().customError}
 function KM(t){return z0(Tu,t)}function JM(t){return K0($u,t)}function XM(t){return rS(xu,t)}function YM(t){return nS(Cu,
@@ -591,13 +591,13 @@ ing access_token: ${JSON.stringify(Vr(n))}`,t.status,Vr(n),e);if(n.token_type&&n
 `Token endpoint response: unsupported token_type "${n.token_type}" (want Bearer)`,t.status,Vr(n),e);return n}function Vr(t){
 if(t==null)return t;if(typeof t==="string"){let e;try{e=JSON.parse(t)}catch{if(t.length<=pp)return t;return t.slice(0,pp)+
 `... <${t.length-pp} more chars>`}return JSON.stringify(Vr(e))}if(typeof t==="object"&&!Array.isArray(t)){let e={};for(let[
-r,n]of Object.entries(t))if($j.has(r))e[r]=n;return e}return null}async function AE(t,e=r=>console.warn(`anthropic-sdk: ${r}`)){
+r,n]of Object.entries(t))if($j.has(r))e[r]=n;return e}return null}async function NE(t,e=r=>console.warn(`anthropic-sdk: ${r}`)){
 if(typeof process>"u"||process.platform==="win32")return;let r=await import("node:fs"),n=t,i;try{n=await r.promises.realpath(
 t),i=await r.promises.stat(n)}catch{return}let s=i.mode&511;if(s&18)throw new Et(`Credentials file at ${n} is group/worl\
 d-writable (mode 0o${s.toString(8)}); this allows other local users to plant tokens. Run \`chmod 600 ${n}\`.`);if(s&36)throw new Et(
 `Credentials file at ${n} is group/world-readable (mode 0o${s.toString(8)}); run \`chmod 600 ${n}\` before retrying.`);if(typeof process.
 getuid==="function"&&i.uid!==process.getuid())e(`credentials file at ${n} is owned by uid ${i.uid} (current process uid ${process.
-getuid()}); verify this is intentional.`)}async function NE(t,e){let r=await import("node:fs"),n=(await import("node:path")).
+getuid()}); verify this is intentional.`)}async function AE(t,e){let r=await import("node:fs"),n=(await import("node:path")).
 dirname(t);await r.promises.mkdir(n,{recursive:true,mode:448});let i=`${t}.${process.pid}.${Math.random().toString(36).slice(
 2)}.tmp`;try{let s=await r.promises.open(i,"w",384);try{await s.writeFile(JSON.stringify(e,null,2)),await s.sync()}finally{
 await s.close()}await r.promises.rename(i,t)}catch(s){throw await r.promises.unlink(i).catch(()=>{}),s}try{let s=await r.
@@ -629,7 +629,7 @@ fig key, or the `workspaceId` option. "}View your authentication events in the W
 for more details.`;throw new Et(`Token exchange failed with status ${i.status}${s?` (request-id ${s})`:""}: ${u}${d}`,i.
 status,u,s)}let o=await RE(i,s),l=Number(o.expires_in);if(!Number.isFinite(l))throw new Et(`Token endpoint response miss\
 ing required fields: ${JSON.stringify(Vr(o))}`,i.status,Vr(o),s);return{token:o.access_token,expiresAt:Tn()+l}}}function Dj(t){
-return async e=>{let r=await import("node:fs");await AE(t.credentialsPath,t.onSafetyWarning);let n;try{n=await r.promises.
+return async e=>{let r=await import("node:fs");await NE(t.credentialsPath,t.onSafetyWarning);let n;try{n=await r.promises.
 readFile(t.credentialsPath,"utf-8")}catch(b){throw new Et(`Credentials file not found at ${t.credentialsPath}: ${b}`)}let i;
 try{i=JSON.parse(n)}catch(b){throw new Et(`Credentials file at ${t.credentialsPath} is not valid JSON: ${b}`)}let s=i.access_token;
 if(!s)throw new Et(`Credentials file at ${t.credentialsPath} must include 'access_token'`);let o=i.expires_at;if(!e?.forceRefresh&&
@@ -641,12 +641,12 @@ try{d=await t.fetch(u,{method:"POST",headers:{"Content-Type":"application/json",
 ailed to reach token endpoint: ${b}`)}let h=d.headers.get("Request-Id");if(!d.ok){let b=await d.text().catch(()=>"");throw new Et(
 `User OAuth refresh failed (HTTP ${d.status}): ${Vr(b)}`,d.status,Vr(b),h)}let p=await RE(d,h),f=Number(p.expires_in);if(!Number.
 isFinite(f))throw new Et(`User OAuth refresh response missing or invalid expires_in: ${JSON.stringify(Vr(p))}`,d.status,
-Vr(p),h);let _=Tn()+f,y=p.refresh_token||l;return await NE(t.credentialsPath,{...i,version:IE,type:"oauth_token",access_token:p.
+Vr(p),h);let _=Tn()+f,y=p.refresh_token||l;return await AE(t.credentialsPath,{...i,version:IE,type:"oauth_token",access_token:p.
 access_token,expires_at:_,refresh_token:y}),{token:p.access_token,expiresAt:_}}}function DE(t,e){let r=t.authentication.
 credentials_path??null,n=(t.base_url||e.baseURL).replace(/\/+$/,""),i=Mj(t,r,n,e),s={};if(t.workspace_id&&t.authentication.
 type==="user_oauth")s["anthropic-workspace-id"]=t.workspace_id;return{provider:i,extraHeaders:s,baseURL:t.base_url||void 0}}
-async function Uj(t,e){let r=await Aj(e);if(!r)return null;let{config:n,fromFile:i}=r,s=n.authentication.credentials_path||
-!i?n:{...n,authentication:{...n.authentication,credentials_path:await Nj(n,e)??void 0}};return DE(s,t)}function Mj(t,e,r,n){
+async function Uj(t,e){let r=await Nj(e);if(!r)return null;let{config:n,fromFile:i}=r,s=n.authentication.credentials_path||
+!i?n:{...n,authentication:{...n.authentication,credentials_path:await Aj(n,e)??void 0}};return DE(s,t)}function Mj(t,e,r,n){
 switch(t.authentication.type){case"oidc_federation":{let i=t.authentication,s=jj(i);if(!s)throw new Et("oidc_federation \
 config requires an identity token (set authentication.identity_token, ANTHROPIC_IDENTITY_TOKEN_FILE, or ANTHROPIC_IDENTI\
 TY_TOKEN)");if(!i.federation_rule_id)throw new Et("oidc_federation config requires 'federation_rule_id'. Set it in authe\
@@ -662,9 +662,9 @@ identity_token){let n=t.identity_token.source;if(n!=="file")throw new Et(`identi
 by this SDK version (only "file")`);if(!t.identity_token.path)throw new Et('identity_token.source "file" requires a non-\
 empty path');return Sv(t.identity_token.path)}let e=St("ANTHROPIC_IDENTITY_TOKEN_FILE");if(e)return Sv(e);let r=St("ANTH\
 ROPIC_IDENTITY_TOKEN");if(r)return Pj(r);return null}function Fj(t,e,r,n){return async i=>{let s=await import("node:fs");
-await AE(e,n);let o;try{let c=await s.promises.readFile(e,"utf-8");o=JSON.parse(c);let u=o?.access_token;if(u&&!i?.forceRefresh){
+await NE(e,n);let o;try{let c=await s.promises.readFile(e,"utf-8");o=JSON.parse(c);let u=o?.access_token;if(u&&!i?.forceRefresh){
 let d=o?.expires_at;if(d==null||Tn()<d-Mm)return{token:u,expiresAt:d??null}}}catch(c){if(c?.code!=="ENOENT"&&!(c instanceof
-SyntaxError))r?.(c)}let l=await t(i);try{await NE(e,{...o??{},version:IE,type:"oauth_token",access_token:l.token,expires_at:l.
+SyntaxError))r?.(c)}let l=await t(i);try{await AE(e,{...o??{},version:IE,type:"oauth_token",access_token:l.token,expires_at:l.
 expiresAt})}catch(c){r?.(c)}return l}}function qj(t,e){for(let r=e??0;r<t.length;r++){if(t[r]===10)return{preceding:r,index:r+
 1,carriage:false};if(t[r]===13)return{preceding:r,index:r+1,carriage:true}}return null}function zj(t){for(let e=0;e<t.length-
 1;e++){if(t[e]===10&&t[e+1]===10)return e+2;if(t[e]===13&&t[e+1]===13)return e+2;if(t[e]===13&&t[e+1]===10&&e+3<t.length&&
@@ -713,7 +713,7 @@ return Object.defineProperty(l,"parsed",{get(){return r.logger.warn("The `parsed
 d, please use `parsed_output` instead."),o},enumerable:false})}return s});return{...t,content:i,parsed_output:n}}function rF(t,e){
 let r=GE(t);if(r?.type!=="json_schema")return null;try{if("parse"in r)return r.parse(e);return JSON.parse(e)}catch(n){throw new Me(
 `Failed to parse structured output: ${n}`)}}function Rv(t){return t.type==="tool_use"||t.type==="server_tool_use"||t.type===
-"mcp_tool_use"}function Av(t){}function Iv(){let t,e;return{promise:new Promise((r,n)=>{t=r,e=n}),resolve:t,reject:e}}async function lF(t,e=t.
+"mcp_tool_use"}function Nv(t){}function Iv(){let t,e;return{promise:new Promise((r,n)=>{t=r,e=n}),resolve:t,reject:e}}async function lF(t,e=t.
 messages.at(-1),r){if(!e||e.role!=="assistant"||!e.content||typeof e.content==="string")return null;let n=e.content.filter(
 i=>i.type==="tool_use");if(n.length===0)return null;return{role:"user",content:await Promise.all(n.map(async i=>{let s=t.
 tools.find(o=>("name"in o?o.name:o.mcp_server_name)===i.name);if(!s||!("run"in s))return{type:"tool_result",tool_use_id:i.
@@ -733,7 +733,7 @@ function fF(t){return t}function Bm(t){return fF(t)}function Iu(t){return t inst
 return t instanceof Error?t.message:String(t)}function Gr(t){if(t&&typeof t==="object"&&"code"in t&&typeof t.code==="str\
 ing")return t.code;return}function Hm(t){return Gr(t)==="ENOENT"}function QE(t){return Gr(t)==="EISDIR"}function _F(t){let e=Gr(
 t);return e!==void 0&&gF.has(e)}function PF(t,e){if(process.platform!=="win32")return false;let r=Gr(t);return r!==void 0&&
-AF.has(r)&&e<NF-1}async function LF(t,e,r=CF){let n=false;for(let i=0;;i++)try{return await r(t,e),n}catch(s){if(PF(s,i)){
+NF.has(r)&&e<AF-1}async function LF(t,e,r=CF){let n=false;for(let i=0;;i++)try{return await r(t,e),n}catch(s){if(PF(s,i)){
 n=true,await du(IF);continue}throw s}}async function UF(t,e,r){let n=`${t}.tmp.${TF(4).toString("hex")}`;try{await OF(n,
 e,{encoding:"utf8",mode:r});try{await LF(n,t)}catch(i){let s=Gr(i);if(s===void 0||!RF.has(s))throw i;try{if(await xF(n,t),
 r!==void 0)await $F(t,r).catch(()=>{})}catch(o){if(DF.has(Gr(o)??""))await Sp(t).catch(()=>{});throw o}await Sp(n).catch(
@@ -755,12 +755,12 @@ var i=!r;r||(r={});var s=-1,o=e.length;while(++s<o){var l=e[s],c=n?n(r[l],t[l],l
 r,l,c);else rT(r,l,c)}return r}function sq(t,e){var r=-1,n=Array(t);while(++r<t)n[r]=e(r);return n}function oq(t){return t!=
 null&&typeof t=="object"}function cq(t){return Vs(t)&&Ln(t)==lq}function fq(){return false}function wq(t,e){var r=typeof t;
 return e=e==null?vq:e,!!e&&(r=="number"||r!="symbol"&&bq.test(t))&&(t>-1&&t%1==0&&t<e)}function Sq(t){return typeof t=="\
-number"&&t>-1&&t%1==0&&t<=kq}function Zq(t){return Vs(t)&&Gm(t.length)&&!!Nt[Ln(t)]}function Jq(t){return function(e){return t(
+number"&&t>-1&&t%1==0&&t<=kq}function Zq(t){return Vs(t)&&Gm(t.length)&&!!At[Ln(t)]}function Jq(t){return function(e){return t(
 e)}}function i2(t,e){var r=Ji(t),n=!r&&mo(t),i=!r&&!n&&Vm(t),s=!r&&!n&&!i&&aT(t),o=r||n||i||s,l=o?aq(t.length,String):[],
 c=l.length;for(var u in t)if((e||r2.call(t,u))&&!(o&&(u=="length"||i&&(u=="offset"||u=="parent")||s&&(u=="buffer"||u=="b\
 yteLength"||u=="byteOffset")||Pu(u,c))))l.push(u);return l}function a2(t){var e=t&&t.constructor,r=typeof e=="function"&&
 e.prototype||s2;return t===r}function o2(t,e){return function(r){return t(e(r))}}function c2(t){return t!=null&&Gm(t.length)&&
-!qh(t)}function u2(t){var e=[];if(t!=null)for(var r in Object(t))e.push(r);return e}function f2(t){if(!Ni(t))return d2(t);
+!qh(t)}function u2(t){var e=[];if(t!=null)for(var r in Object(t))e.push(r);return e}function f2(t){if(!Ai(t))return d2(t);
 var e=oT(t),r=[];for(var n in t)if(!(n=="constructor"&&(e||!h2.call(t,n))))r.push(n);return r}function g2(t){return Zm(t)?
 n2(t,true):m2(t)}function y2(t,e){if(e)return t.slice();var r=t.length,n=eb?eb(r):new t.constructor(r);return t.copy(n),
 n}function v2(t,e){var r=-1,n=t.length;e||(e=Array(n));while(++r<n)e[r]=t[r];return e}function k2(t,e){var r=-1,n=e.length,
@@ -779,8 +779,8 @@ function wz(t,e){return t!=null&&e in Object(t)}function Sz(t,e,r){e=Lu(e,t);var
 e[n]);if(!(s=t!=null&&r(t,o)))break;t=t[o]}if(s||++n!=i)return s;return i=t==null?0:t.length,!!i&&Gm(i)&&Pu(o,i)&&(Ji(t)||
 mo(t))}function Tz(t,e){return t!=null&&Ez(t,e,kz)}function xz(t){return t}function Rz(t,e){let r=Buffer.from(e.replace(
 /-/g,""),"hex"),n=Oz("sha1").update(r).update(Buffer.from(t,"utf8")).digest();n[6]=n[6]&15|80,n[8]=n[8]&63|128;let i=n.subarray(
-0,16).toString("hex");return`${i.slice(0,8)}-${i.slice(8,12)}-${i.slice(12,16)}-${i.slice(16,20)}-${i.slice(20,32)}`}function Nz(){
-let t=process.env.CLAUDE_CODE_REMOTE_SESSION_ID?.trim();return t?Rz(t,Az):null}function Iz(){return{sent:new Set,rejected:new Set}}
+0,16).toString("hex");return`${i.slice(0,8)}-${i.slice(8,12)}-${i.slice(12,16)}-${i.slice(16,20)}-${i.slice(20,32)}`}function Az(){
+let t=process.env.CLAUDE_CODE_REMOTE_SESSION_ID?.trim();return t?Rz(t,Nz):null}function Iz(){return{sent:new Set,rejected:new Set}}
 function Lz(){let t="";if(typeof process<"u"&&typeof process.cwd==="function"&&typeof lb==="function"){let e=Cz();try{t=
 pb(lb(e))}catch{t=pb(e)}}return{originalCwd:t,projectRoot:t,totalCostUSD:0,totalAPIDuration:0,totalAPIDurationWithoutRetries:0,
 totalToolDuration:0,startTime:Date.now(),sessionLogicalStartTime:void 0,lastInteractionTime:Date.now(),totalLinesAdded:0,
@@ -794,7 +794,7 @@ fresh",questionPreviewFormat:void 0,sessionIngressToken:void 0,oauthTokenFromFd:
 apiKeyFromFd:void 0,gatewayAuth:null,gatewayRefreshInFlight:null,startupPolicySnapshot:void 0,flagSettingsPath:void 0,flagSettingsExpectedContent:void 0,
 flagSettingsInline:null,parentManagedSettings:null,allowedSettingSources:["userSettings","projectSettings","localSetting\
 s","flagSettings","policySettings"],meter:null,sessionCounter:null,locCounter:null,prCounter:null,commitCounter:null,costCounter:null,
-tokenCounter:null,codeEditToolDecisionCounter:null,activeTimeCounter:null,statsStore:null,sessionId:Nz()??oh(),mainAgentId:null,
+tokenCounter:null,codeEditToolDecisionCounter:null,activeTimeCounter:null,statsStore:null,sessionId:Az()??oh(),mainAgentId:null,
 parentSessionId:void 0,loggerProvider:null,eventLogger:null,pendingOTelEvents:[],meterProvider:null,tracerProvider:null,
 cachedTelemetryResource:null,cachedOtlpHttpAgentFactory:{direct:null,proxied:null},foundryDeploymentCapabilities:new Map,
 agentColorMap:new Map,agentColorIndex:0,lastAPIRequest:null,lastCancelledAPIMessageId:null,lastAPIRequestMessages:null,lastClassifierRequests:null,
@@ -833,7 +833,7 @@ slice(0,n)}${r}[REDACTED]${r}${t.slice(n+e.length)}`}function OB(t){let e=t.leng
 return n}vb??=TB(true);let r=t;for(let n of vb)r=r.replace(n.re,$B);if(e){if(ja.size>=CB)ja.delete(ja.keys().next().value);
 ja.set(t,r)}return r}function Du(){if(typeof process>"u"||!Array.isArray(process.argv))return[];let t=process.argv.indexOf(
 "--");return t===-1?process.argv:process.argv.slice(0,t)}function bb(t){return qP(t)?null:Vz(t)}function IB(t){if(!yT())
-return false;if(typeof process>"u"||typeof process.versions>"u"||typeof process.versions.node>"u")return false;let e=NB();
+return false;if(typeof process>"u"||typeof process.versions>"u"||typeof process.versions.node>"u")return false;let e=AB();
 return eB(t,e)}async function DB(t,e,r=LB){if(qa<0)qa=await Hz(t).then(n=>n.size).catch(()=>0);else qa+=e;if(qa<=r||xp)return;
 xp=true;try{let n=t.endsWith(".txt")?`${t.slice(0,-4)}.1.txt`:`${t}.1`;try{await fb(t,n)}catch(i){if(!Hm(i))await lh(n).
 catch(()=>{}),await fb(t,n).catch(()=>lh(t).catch(()=>{}))}qa=0}finally{xp=false}}function wT(t){return dh=Xm(t,`${gT()}\
@@ -897,7 +897,7 @@ to-approves every tool call (except explicit deny rules) before the callback is 
 a PreToolUse hook instead.";let r=e.filter(n=>n.length>0&&!n.includes("("));if(r.length===0)return;return`canUseTool wil\
 l not be invoked for: ${r.join(", ")}. Bare allowedTools entries auto-approve the whole tool before the callback is cons\
 ulted. To gate every tool call, use a PreToolUse hook; or remove the bare names from allowedTools so they fall through t\
-o canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.`}function A4(t,e,r){
+o canUseTool. Allow rules from settings files can also shadow the callback but are not visible here.`}function N4(t,e,r){
 if(!t)return;let n=R4(e,r);if(n===void 0)return;process.emitWarning(n,{code:"CLAUDE_SDK_CAN_USE_TOOL_SHADOWED"})}function yh(){
 return I4}function ye(t,e){let r=yh(),n=vh({issueData:e,data:t.data,path:t.path,errorMaps:[t.common.contextualErrorMap,t.
 schemaErrorMap,r,r===go?void 0:go].filter(i=>!!i)});t.common.issues.push(n)}function Ke(t){if(!t)return{};let{errorMap:e,
@@ -944,19 +944,19 @@ call(r)==b6}function S6(t,e){if(e==="constructor"&&typeof t[e]==="function")retu
 function E6(t){return nq(t,cT(t))}function $6(t,e,r,n,i,s,o){var l=Oh(t,r),c=Oh(e,r),u=o.get(c);if(u){Ch(t,r,u);return}var d=s?
 s(l,c,r+"",t,e,o):void 0,h=d===void 0;if(h){var p=Ji(c),f=!p&&Vm(c),_=!p&&!f&&aT(c);if(d=c,p||f||_)if(Ji(l))d=l;else if(m6(
 l))d=b2(l);else if(f)h=false,d=dT(c,true);else if(_)h=false,d=j2(c,true);else d=[];else if(k6(c)||mo(c)){if(d=l,mo(l))d=
-T6(l);else if(!Ni(l)||qh(l))d=B2(c)}else h=false}if(h)o.set(c,d),i(d,c,n,s,o),o.delete(c);Ch(t,r,d)}function p$(t,e,r,n,i){
-if(t===e)return;h6(e,function(s,o){if(i||(i=new XF),Ni(s))x6(t,e,o,r,p$,n,i);else{var l=n?n(Oh(t,o),s,o+"",t,e,i):void 0;
+T6(l);else if(!Ai(l)||qh(l))d=B2(c)}else h=false}if(h)o.set(c,d),i(d,c,n,s,o),o.delete(c);Ch(t,r,d)}function p$(t,e,r,n,i){
+if(t===e)return;h6(e,function(s,o){if(i||(i=new XF),Ai(s))x6(t,e,o,r,p$,n,i);else{var l=n?n(Oh(t,o),s,o+"",t,e,i):void 0;
 if(l===void 0)l=s;Ch(t,o,l)}},cT)}function O6(t,e,r){switch(r.length){case 0:return t.call(e);case 1:return t.call(e,r[0]);case 2:
-return t.call(e,r[0],r[1]);case 3:return t.call(e,r[0],r[1],r[2])}return t.apply(e,r)}function A6(t,e,r){return e=qb(e===
+return t.call(e,r[0],r[1]);case 3:return t.call(e,r[0],r[1],r[2])}return t.apply(e,r)}function N6(t,e,r){return e=qb(e===
 void 0?t.length-1:e,0),function(){var n=arguments,i=-1,s=qb(n.length-e,0),o=Array(s);while(++i<s)o[i]=n[e+i];i=-1;var l=Array(
-e+1);while(++i<e)l[i]=n[i];return l[e]=r(o),R6(t,this,l)}}function N6(t){return function(){return t}}function j6(t){var e=0,
+e+1);while(++i<e)l[i]=n[i];return l[e]=r(o),R6(t,this,l)}}function A6(t){return function(){return t}}function j6(t){var e=0,
 r=0;return function(){var n=M6(),i=U6-(n-r);if(r=n,i>0){if(++e>=D6)return arguments[0]}else e=0;return t.apply(void 0,arguments)}}
-function z6(t,e){return f$(h$(t,e,fT),t+"")}function H6(t,e,r){if(!Ni(r))return false;var n=typeof e;if(n=="number"?Zm(r)&&
+function z6(t,e){return f$(h$(t,e,fT),t+"")}function H6(t,e,r){if(!Ai(r))return false;var n=typeof e;if(n=="number"?Zm(r)&&
 Pu(e,r.length):n=="string"&&e in r)return pu(r[e],t);return false}function V6(t){return B6(function(e,r){var n=-1,i=r.length,
 s=i>1?r[i-1]:void 0,o=i>2?r[2]:void 0;if(s=t.length>3&&typeof s=="function"?(i--,s):void 0,o&&W6(r[0],r[1],o))s=i<3?void 0:
-s,i=1;e=Object(e);while(++n<i){var l=r[n];if(l)t(e,l,n,s)}return e})}function Z6(t,e,r,n){if(!Ni(t))return t;e=Lu(e,t);var i=-1,
+s,i=1;e=Object(e);while(++n<i){var l=r[n];if(l)t(e,l,n,s)}return e})}function Z6(t,e,r,n){if(!Ai(t))return t;e=Lu(e,t);var i=-1,
 s=e.length,o=s-1,l=t;while(l!=null&&++i<s){var c=Jm(e[i]),u=r;if(c==="__proto__"||c==="constructor"||c==="prototype")return t;
-if(i!=o){var d=l[c];if(u=n?n(d,c,l):void 0,u===void 0)u=Ni(d)?d:Pu(e[i+1])?[]:{}}rT(l,c,u),l=l[c]}return t}function J6(t,e,r){
+if(i!=o){var d=l[c];if(u=n?n(d,c,l):void 0,u===void 0)u=Ai(d)?d:Pu(e[i+1])?[]:{}}rT(l,c,u),l=l[c]}return t}function J6(t,e,r){
 var n=-1,i=e.length,s={};while(++n<i){var o=e[n],l=bz(t,o);if(r(l,o))K6(s,Lu(o,t),l)}return s}function Y6(t,e){return X6(
 t,e,function(r,n){return $z(t,n)})}function eV(t){return Ji(t)||mo(t)||!!(zb&&t&&t[zb])}function m$(t,e,r,n,i){var s=-1,
 o=t.length;r||(r=tV),i||(i=[]);while(++s<o){var l=t[s];if(e>0&&r(l))if(e>1)m$(l,e-1,r,n,i);else S2(i,l);else if(!n)i[i.length]=
@@ -1011,8 +1011,8 @@ for(let[i,s]of Object.entries(e.data)){if(n>=cG)break;let o=uG().safeParse(s);if
 0?r:void 0}function wG(t){let e=vG();return t.flatMap((r,n)=>{let i=e.safeParse(r);if(i.success)return[i.data];let s=bG().
 safeParse(r).data?.name,o=i.error.issues.map(l=>`${l.path.join(".")}: ${l.message}`).join(", ");if(s)return Ht(`Stubbing\
  unparseable marketplace plugin entry (${s}): ${o}`,{level:"warn"}),[{name:s,source:{source:"unsupported"},strict:true}];
-return Ht(`Dropping unparseable marketplace plugin entry (index ${n}): ${o}`,{level:"warn"}),[]})}function N$(){return RG.
-filter(t=>Fu[t].buildGate())}function AG(t){let e={};for(let r of t)e={...e,...Fu[r].shape()};return e}function NG(t){let e={};
+return Ht(`Dropping unparseable marketplace plugin entry (index ${n}): ${o}`,{level:"warn"}),[]})}function A$(){return RG.
+filter(t=>Fu[t].buildGate())}function NG(t){let e={};for(let r of t)e={...e,...Fu[r].shape()};return e}function AG(t){let e={};
 for(let r of t)e={...e,...Fu[r].permissionsShape?.()};return e}function IG(t){let e=[];for(let r of t)e.push(...Fu[r].permissionModes?.()??
 []);return e}function I$(t){let e=t.split("__"),[r,n,...i]=e;if(r!=="mcp"||!n)return null;let s=i.length>0?i.join("__"):
 void 0;return{serverName:n,toolName:s}}function us(t){return Object.hasOwn(Gb,t)?Gb[t]:t}function Zb(t){return t.includes(
@@ -1023,18 +1023,18 @@ n)};let s=PG(i);return{toolName:us(n),ruleContent:s}}function DG(t,e){for(let r=
 1;while(i>=0&&t[i]==="\\")n++,i--;if(n%2===0)return r}return-1}function UG(t,e){for(let r=t.length-1;r>=0;r--)if(t[r]===
 e){let n=0,i=r-1;while(i>=0&&t[i]==="\\")n++,i--;if(n%2===0)return r}return-1}function MG(t){return nu.filePatternTools.
 includes(t)}function jG(t){return nu.bashPrefixTools.includes(t)}function FG(t){return Object.hasOwn(nu.customValidation,
-t)?nu.customValidation[t]:void 0}function L$(t,e){let r=0,n=e-1;while(n>=0&&t[n]==="\\")r++,n--;return r%2!==0}function Np(t,e){
+t)?nu.customValidation[t]:void 0}function L$(t,e){let r=0,n=e-1;while(n>=0&&t[n]==="\\")r++,n--;return r%2!==0}function Ap(t,e){
 let r=0;for(let n=0;n<t.length;n++)if(t[n]===e&&!L$(t,n))r++;return r}function qG(t){for(let e=0;e<t.length-1;e++)if(t[e]===
 "("&&t[e+1]===")"){if(!L$(t,e))return true}return false}function Kb(t){if(!Zb(t))return null;let e=I$(t);if(e&&!Zb(e.serverName))
 return null;return{valid:false,error:`Wildcard tool name "${t}" is not supported in allow rules`,suggestion:"An allow pa\
 ttern must name the scope it widens — globs are permitted only in the tool position after a literal mcp__<server>__ pref\
 ix. Deny and ask rules accept wildcards anywhere",examples:["mcp__puppeteer__*","mcp__github__get_*"]}}function zG(t,e){
-if(!t||t.trim()==="")return{valid:false,error:"Permission rule cannot be empty"};let r=Np(t,"("),n=Np(t,")");if(r!==n)return{
+if(!t||t.trim()==="")return{valid:false,error:"Permission rule cannot be empty"};let r=Ap(t,"("),n=Ap(t,")");if(r!==n)return{
 valid:false,error:"Mismatched parentheses",suggestion:"Ensure all opening parentheses have matching closing parentheses"};
 if(qG(t)){let l=t.substring(0,t.indexOf("("));if(!l)return{valid:false,error:"Empty parentheses with no tool name",suggestion:"\
 Specify a tool name before the parentheses"};return{valid:false,error:"Empty parentheses",suggestion:`Either specify a p\
 attern or use just "${l}" without parentheses`,examples:[`${l}`,`${l}(some-pattern)`]}}let i=LG(t),s=I$(i.toolName);if(s){
-if(i.ruleContent!==void 0||Np(t,"(")>0)return{valid:false,error:"MCP rules do not support patterns in parentheses",suggestion:`\
+if(i.ruleContent!==void 0||Ap(t,"(")>0)return{valid:false,error:"MCP rules do not support patterns in parentheses",suggestion:`\
 Use "${i.toolName}" without parentheses, or use "mcp__${s.serverName}__*" for all tools`,examples:[`mcp__${s.serverName}`,
 `mcp__${s.serverName}__*`,s.toolName&&s.toolName!=="*"?`mcp__${s.serverName}__${s.toolName}`:void 0].filter(Boolean)};if(e===
 "allow"){let l=Kb(i.toolName);if(l)return l}return{valid:true}}if(!i.toolName||i.toolName.length===0)return{valid:false,
@@ -1055,7 +1055,7 @@ describe("List of permission rules for allowed operations"),deny:m.array(Jb()).o
 ules for denied operations"),ask:m.array(Jb()).optional().describe("List of permission rules that should always prompt f\
 or confirmation"),defaultMode:m.preprocess(cg,m.enum([...lg,...IG(t)])).optional().describe("Default permission mode whe\
 n Claude Code needs access ('manual' is accepted as an alias for 'default')"),disableBypassPermissionsMode:m.enum(["disa\
-ble"]).optional().describe("Disable the ability to bypass permission prompts"),...NG(t),additionalDirectories:m.array(m.
+ble"]).optional().describe("Disable the ability to bypass permission prompts"),...AG(t),additionalDirectories:m.array(m.
 string()).optional().describe("Additional directories to include in the permission scope")}).passthrough()}function JG(t){
 return m.object({$schema:m.string().optional().describe("JSON Schema reference for Claude Code settings"),apiKeyHelper:m.
 string().optional().describe("Path to a script that outputs authentication values"),proxyAuthHelper:m.string().optional().
@@ -1352,13 +1352,13 @@ ession on another machine via Remote Control"),daemonColdStart:m.enum(["transien
 background service is running: 'transient' spawns one for this login session; 'ask' offers to install it persistently"),
 autoUploadSessions:m.boolean().optional().describe("Mirror local sessions to claude.ai as view-only (no remote control)"),
 inputNeededNotifEnabled:m.boolean().optional().describe("Push to mobile when a permission prompt or question is waiting"),
-agentPushNotifEnabled:m.boolean().optional().describe("Allow Claude to push proactive mobile notifications"),...AG(t)}).
+agentPushNotifEnabled:m.boolean().optional().describe("Allow Claude to push proactive mobile notifications"),...NG(t)}).
 passthrough()}async function YG(t,e){try{await xP(t,e)}catch(r){if(!Hm(r))throw r}}async function QG(t,e){if(!t)return;let r=t;
 try{let n=Ym(t);if(n?.claudeAiOauth?.refreshToken)delete n.claudeAiOauth.refreshToken,r=br(n)}catch{}await _w(e,r,{mode:384})}
 function e9(){if(process.platform!=="darwin")return Promise.resolve(void 0);let t=x4($4);return new Promise(e=>{EP("secu\
 rity",["find-generic-password","-a",O4(),"-w","-s",t],{encoding:"utf-8",timeout:5e3,windowsHide:true},(r,n)=>e(r?void 0:
 n.trim()||void 0))})}async function t9(t,e,r,n,i=6e4){if(!c4(e))return;let s=z$(r),o=await Qa(t.load({projectKey:s,sessionId:e}),
-i,`SessionStore.load() timed out after ${i}ms for session ${e}`);if(!o||o.length===0)return;let l=ni(AP(),`claude-resume\
+i,`SessionStore.load() timed out after ${i}ms for session ${e}`);if(!o||o.length===0)return;let l=ni(NP(),`claude-resume\
 -${TP()}`);try{let c=ni(l,"projects",s);await Pp(c,{recursive:true});let u=ni(c,`${e}.jsonl`);await TT(u,o);let d=n?.CLAUDE_CONFIG_DIR??
 process.env.CLAUDE_CONFIG_DIR,h=d??ni(Lp(),".claude"),p;try{p=await CP(ni(h,".credentials.json"),"utf-8")}catch(f){if(!Hm(
 f))throw f}if(!d&&!(n??process.env).ANTHROPIC_API_KEY&&!(n??process.env).CLAUDE_CODE_OAUTH_TOKEN)p=await e9()??p;if(await QG(
@@ -1374,12 +1374,12 @@ type:p,...f}=d;await _w(h,br(f),{mode:384})}}}function M$(t,e){let{isSingleUserT
 {systemPrompt:s,settings:o,managedSettings:l,settingSources:c,sandbox:u,...d}=t??{},h,p,f;if(s===void 0)h="";else if(typeof s===
 "string")h=s;else if(Array.isArray(s))h=s;else if(s.type==="preset")p=s.append,f=s.excludeDynamicSections;process.env.CLAUDE_AGENT_SDK_VERSION=
 "0.3.207";let{abortController:_=Dp(),additionalDirectories:y=[],agent:b,agents:g,allowedTools:v=[],betas:S,canUseTool:E,
-continue:T,cwd:x,debug:k,debugFile:C,disallowedTools:A=[],tools:P,env:L,executable:F=ww()?"bun":"node",executableArgs:j=[],
+continue:T,cwd:x,debug:k,debugFile:C,disallowedTools:N=[],tools:P,env:L,executable:F=ww()?"bun":"node",executableArgs:j=[],
 extraArgs:Z={},fallbackModel:me,enableFileCheckpointing:ne,toolConfig:ae,forkSession:pe,hooks:xe,includeHookEvents:ee,includePartialMessages:q,
 forwardSubagentText:Y,onElicitation:z,onUserDialog:R,supportedDialogKinds:U,persistSession:G,sessionStore:ce,sessionStoreFlush:be,
-thinking:He,effort:We,maxThinkingTokens:nt,maxTurns:w,maxBudgetUsd:O,taskBudget:N,mcpServers:D,model:M,outputFormat:I,permissionMode:W="\
+thinking:He,effort:We,maxThinkingTokens:nt,maxTurns:w,maxBudgetUsd:O,taskBudget:A,mcpServers:D,model:M,outputFormat:I,permissionMode:W="\
 default",allowDangerouslySkipPermissions:de=false,permissionPromptToolName:_e,plugins:ie,getOAuthToken:Re,getHostAuthToken:Pe,
-workload:Ne,resume:we,resumeSessionAt:H,sessionId:Le,skills:se,stderr:Ye,strictMcpConfig:st}=d;if(ce&&G===false)throw Error(
+workload:Ae,resume:we,resumeSessionAt:H,sessionId:Le,skills:se,stderr:Ye,strictMcpConfig:st}=d;if(ce&&G===false)throw Error(
 "sessionStore cannot be used with persistSession: false -- the storage adapter requires local writes to mirror from. Use\
  CLAUDE_CONFIG_DIR=/tmp for ephemeral local writes with external mirroring.");if(U!==void 0&&U.length>0&&!R)throw Error(
 "supportedDialogKinds requires an onUserDialog callback -- declaring dialog kinds without a handler would park dialogs n\
@@ -1388,33 +1388,33 @@ tions.continue with sessionStore requires store.listSessions to be implemented")
 ointing is not yet supported with sessionStore (backup blobs are not mirrored, so rewindFiles() fails after a store-back\
 ed resume).");if(ce&&d.spawnClaudeCodeProcess)Ht("sessionStore with custom spawnClaudeCodeProcess: ensure the subprocess\
  CLAUDE_CONFIG_DIR matches the parent (same path, same separators) or transcript_mirror frames will be dropped.",{level:"\
-warn"});A4(!!E,W,v);let ut=d.pathToClaudeCodeExecutable;if(!ut){let At=IP(import.meta.url),tr=RP(At),Tr=YB(ti=>tr.resolve(
+warn"});N4(!!E,W,v);let ut=d.pathToClaudeCodeExecutable;if(!ut){let Nt=IP(import.meta.url),tr=RP(Nt),Tr=YB(ti=>tr.resolve(
 ti));if(!Tr)throw Error(`Native CLI binary for ${process.platform}-${process.arch} not found. Reinstall @anthropic-ai/cl\
 aude-agent-sdk without --omit=optional, or set options.pathToClaudeCodeExecutable.`);ut=Tr}let er=I?.type==="json_schema"?
 I.schema:void 0,Fe=L?{...L}:{...process.env};if(!Fe.CLAUDE_CODE_ENTRYPOINT)Fe.CLAUDE_CODE_ENTRYPOINT="sdk-ts";if(!Fe.CLAUDE_AGENT_SDK_VERSION)
 Fe.CLAUDE_AGENT_SDK_VERSION="0.3.207";if(ne)Fe.CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING="true";if(Re)Fe.CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH=
 "1";if(Pe)Fe.CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH="1";if(ae?.askUserQuestion?.previewFormat)Fe.CLAUDE_CODE_QUESTION_PREVIEW_FORMAT=
-ae.askUserQuestion.previewFormat;let vt={};if(Sb.propagation.inject(Sb.context.active(),vt),"traceparent"in vt){for(let At of[
-"TRACEPARENT","TRACESTATE"])if(!(At in(L??{})))delete Fe[At]}for(let[At,tr]of Object.entries(vt)){let Tr=At.toUpperCase();
-if(!(Tr in(L??{})))Fe[Tr]=tr}let Dt={},Fr=new Map;if(D)for(let[At,tr]of Object.entries(D))if(tr.type==="sdk"&&tr.instance)
-Fr.set(At,tr.instance);else Dt[At]=tr;let qe;if(He)switch(He.type){case"adaptive":qe={type:"adaptive",display:He.display};
+ae.askUserQuestion.previewFormat;let vt={};if(Sb.propagation.inject(Sb.context.active(),vt),"traceparent"in vt){for(let Nt of[
+"TRACEPARENT","TRACESTATE"])if(!(Nt in(L??{})))delete Fe[Nt]}for(let[Nt,tr]of Object.entries(vt)){let Tr=Nt.toUpperCase();
+if(!(Tr in(L??{})))Fe[Tr]=tr}let Dt={},Fr=new Map;if(D)for(let[Nt,tr]of Object.entries(D))if(tr.type==="sdk"&&tr.instance)
+Fr.set(Nt,tr.instance);else Dt[Nt]=tr;let qe;if(He)switch(He.type){case"adaptive":qe={type:"adaptive",display:He.display};
 break;case"enabled":qe={type:"enabled",budgetTokens:He.budgetTokens,display:He.display};break;case"disabled":qe={type:"d\
 isabled"};break}else if(nt!==void 0)qe=nt===0?{type:"disabled"}:{type:"enabled",budgetTokens:nt};if(n){if(Fe.CLAUDE_CONFIG_DIR=
 n,process.platform==="win32")Fe.CLAUDE_SECURESTORAGE_CONFIG_DIR=L?.CLAUDE_SECURESTORAGE_CONFIG_DIR??process.env.CLAUDE_SECURESTORAGE_CONFIG_DIR??
 L?.CLAUDE_CONFIG_DIR??process.env.CLAUDE_CONFIG_DIR??""}let ur=new hh({abortController:_,additionalDirectories:y,agent:b,
-betas:S,cwd:x,debug:k,debugFile:C,executable:F,executableArgs:j,extraArgs:Ne?{...Z,workload:Ne}:Z,pathToClaudeCodeExecutable:ut,
-env:Fe,forkSession:pe,stderr:Ye,thinkingConfig:qe,effort:We,maxTurns:w,maxBudgetUsd:O,taskBudget:N,model:M,fallbackModel:me,
+betas:S,cwd:x,debug:k,debugFile:C,executable:F,executableArgs:j,extraArgs:Ae?{...Z,workload:Ae}:Z,pathToClaudeCodeExecutable:ut,
+env:Fe,forkSession:pe,stderr:Ye,thinkingConfig:qe,effort:We,maxTurns:w,maxBudgetUsd:O,taskBudget:A,model:M,fallbackModel:me,
 jsonSchema:er,permissionMode:W,allowDangerouslySkipPermissions:de,permissionPromptToolName:_e,continueConversation:ce?void 0:
 T,resume:we,resumeSessionAt:H,sessionId:Le,settings:typeof o==="object"?br(o):o,managedSettings:l?br(l):void 0,settingSources:c,
-skills:se,allowedTools:v,disallowedTools:A,tools:P,mcpServers:Dt,strictMcpConfig:st,canUseTool:!!E,hooks:!!xe,includeHookEvents:ee,
+skills:se,allowedTools:v,disallowedTools:N,tools:P,mcpServers:Dt,strictMcpConfig:st,canUseTool:!!E,hooks:!!xe,includeHookEvents:ee,
 includePartialMessages:q,persistSession:G,sessionMirror:!!ce,plugins:ie,sandbox:u,spawnClaudeCodeProcess:d.spawnClaudeCodeProcess,
 deferSpawn:i}),Rt={systemPrompt:h,appendSystemPrompt:p,planModeInstructions:d.planModeInstructions,appendSubagentSystemPrompt:d.
 appendSubagentSystemPrompt,toolAliases:d.toolAliases,excludeDynamicSections:f,agents:g,title:d.title,skills:se,webSearchIsolationExemptMcpServers:d.
 webSearchIsolationExemptMcpServers,promptSuggestions:d.promptSuggestions,agentProgressSummaries:d.agentProgressSummaries,
-forwardSubagentText:Y,supportedDialogKinds:U},xt=new gh(ur,r,E,xe,_,Fr,er,Rt,z,Re,Pe,R);if(ce){let At=a(()=>ni(Fe.CLAUDE_CONFIG_DIR??
-ni(Lp(),".claude"),"projects"),"Dt"),tr=be==="eager",Tr=new _h(async(ti,vr)=>{let $=Qb(ti,At());if($)await ce.append($,vr);else
-Ht(`[SessionStore] dropping mirror frame: filePath ${ti} is not under ${At()} -- subprocess CLAUDE_CONFIG_DIR likely dif\
-fers from parent (custom spawnClaudeCodeProcess / container?)`,{level:"warn"})},{onError:a((ti,vr)=>{let $=Qb(ti,At());if($)
+forwardSubagentText:Y,supportedDialogKinds:U},xt=new gh(ur,r,E,xe,_,Fr,er,Rt,z,Re,Pe,R);if(ce){let Nt=a(()=>ni(Fe.CLAUDE_CONFIG_DIR??
+ni(Lp(),".claude"),"projects"),"Dt"),tr=be==="eager",Tr=new _h(async(ti,vr)=>{let $=Qb(ti,Nt());if($)await ce.append($,vr);else
+Ht(`[SessionStore] dropping mirror frame: filePath ${ti} is not under ${Nt()} -- subprocess CLAUDE_CONFIG_DIR likely dif\
+fers from parent (custom spawnClaudeCodeProcess / container?)`,{level:"warn"})},{onError:a((ti,vr)=>{let $=Qb(ti,Nt());if($)
 xt.reportMirrorError($,vr.message)},"onError"),maxPendingEntries:tr?0:ST,maxPendingBytes:tr?0:ET});xt.setTranscriptMirrorBatcher(
 Tr)}return{queryInstance:xt,transport:ur,abortController:_,processEnv:Fe}}function j$(t,e,r,n){if(typeof r==="string")e.
 write(br({type:"user",session_id:"",message:{role:"user",content:[{type:"text",text:r}]},parent_tool_use_id:null})+`
@@ -1430,64 +1430,64 @@ l,u,o,e.env,e.loadTimeoutMs)})().then(d=>{if(d){n.updateResume(u);let h={CLAUDE_
 process.env.CLAUDE_CONFIG_DIR??"";h.CLAUDE_SECURESTORAGE_CONFIG_DIR=p,s.CLAUDE_SECURESTORAGE_CONFIG_DIR=p}n.updateEnv(h),
 s.CLAUDE_CONFIG_DIR=d,r.addCleanupCallback(()=>n9(n,d))}if(!r.isClosed())n.spawn()}).catch(d=>{let h=Iu(d);n.spawnAbort(
 h),r.setError(h)}),j$(r,n,t,i),r}function a9(t){let e=ic(t??"."),r;try{r=$P(e)}catch{r=e}return Up(r)}function z$(t){return p4(
-a9(t))}function o9(t){return typeof t==="object"&&t!==null&&"type"in t&&t.type==="agent_metadata"}function Qb(t,e){let r=NP(
+a9(t))}function o9(t){return typeof t==="object"&&t!==null&&"type"in t&&t.type==="agent_metadata"}function Qb(t,e){let r=AP(
 e,t),n=r.split(vw);if(n[0]===".."||yw(r))return null;if(n.length<2)return null;let i=n[0],s=n[1];if(n.length===2&&s.endsWith(
 ".jsonl"))return{projectKey:i,sessionId:s.replace(/\.jsonl$/,"")};if(n.length>=4){let o=n.slice(2),l=o.length-1;return o[l]=
-o.at(-1).replace(/\.jsonl$/,""),{projectKey:i,sessionId:s,subpath:o.join("/")}}return null}var zN,BN,Ip,HN,WN,GN,ZN,Ih,Q,
-KN,bi,vX,XN,YN,Kt,Jt,QN,eI,tI,ew,rI,js,iI,Ph,nI,Fs,sI,aI,tw,su,oI,rw,lI,iw,cI,au,nw,Lh,Dh,sw,Uh,aw,ow,uI,lw,dI,pI,hI,fI,
-mI,gI,_I,yI,vI,bI,wI,kI,SI,EI,TI,$I,xI,CI,tc,Wy,et,mt,Yi,ou,OI,cw,uw,rc,RI,ui,AI,NI,dw,II,lu,cu,Mh,uu,jh,PI,pw,LI,DI,UI,
+o.at(-1).replace(/\.jsonl$/,""),{projectKey:i,sessionId:s,subpath:o.join("/")}}return null}var zA,BA,Ip,HA,WA,GA,ZA,Ih,Q,
+KA,bi,vX,XA,YA,Kt,Jt,QA,eI,tI,ew,rI,js,iI,Ph,nI,Fs,sI,aI,tw,su,oI,rw,lI,iw,cI,au,nw,Lh,Dh,sw,Uh,aw,ow,uI,lw,dI,pI,hI,fI,
+mI,gI,_I,yI,vI,bI,wI,kI,SI,EI,TI,$I,xI,CI,tc,Wy,et,mt,Yi,ou,OI,cw,uw,rc,RI,ui,NI,AI,dw,II,lu,cu,Mh,uu,jh,PI,pw,LI,DI,UI,
 MI,jI,FI,qI,zI,BI,HI,WI,VI,GI,ZI,KI,Fh,JI,XI,YI,QI,hw,fw,eP,tP,rP,iP,nP,mw,sP,aP,oP,lP,cP,uP,dP,pP,hP,fP,mP,gP,_P,yP,vP,
-bP,gw,wP,kP,SP,LP,AX,DP,NX,UP,IX,bw,Oi,Zy,VP,GP,kw,ZP,KP,wi,JP,yi,Sw,XP,YP,Sa,e1,t1,r1,n1,s1,a1,Ky,Ln,Ni,c1,u1,d1,p1,qh,
-f1,dp,Jy,g1,_1,y1,Dn,b1,w1,k1,S1,E1,T1,$1,C1,R1,Un,N1,eo,P1,D1,U1,M1,j1,q1,z1,B1,W1,V1,Z1,Xy,J1,pu,hu,Q1,eL,rL,nL,aL,lL,
-fu,cL,to,dL,hL,mu,gL,yL,bL,kL,gu,SL,Vt,m,Ew,Tw,$w,Ki,nc,lt,Wh,Ow,LL,sc,Rw,Nw,Iw,Mp,Lw,Vh,Co,Kh,ac,Jh,oc,Xh,Yh,Qh,ef,tf,jw,
+bP,gw,wP,kP,SP,LP,NX,DP,AX,UP,IX,bw,Oi,Zy,VP,GP,kw,ZP,KP,wi,JP,yi,Sw,XP,YP,Sa,e1,t1,r1,n1,s1,a1,Ky,Ln,Ai,c1,u1,d1,p1,qh,
+f1,dp,Jy,g1,_1,y1,Dn,b1,w1,k1,S1,E1,T1,$1,C1,R1,Un,A1,eo,P1,D1,U1,M1,j1,q1,z1,B1,W1,V1,Z1,Xy,J1,pu,hu,Q1,eL,rL,nL,aL,lL,
+fu,cL,to,dL,hL,mu,gL,yL,bL,kL,gu,SL,Vt,m,Ew,Tw,$w,Ki,nc,lt,Wh,Ow,LL,sc,Rw,Aw,Iw,Mp,Lw,Vh,Co,Kh,ac,Jh,oc,Xh,Yh,Qh,ef,tf,jw,
 Fw,qw,zw,Bw,Hw,Ww,HL,Vw,vs,WL,VL,GL,Gw,ZL,KL,JL,XL,YL,Kw,Jw,Xw,Yw,Qw,rf,ek,QL,tk,rk,ik,ok,lk,ck,uk,dk,pk,hk,fk,mk,Yt,gk,
-nf,sf,_k,yk,vk,bk,wk,kk,Sk,Ek,Tk,Oo,$k,xk,Ck,Ok,Rk,Ak,Nk,Ik,Pk,lc,Lk,Ve,Ro,Ot,Dk,Uk,Mk,jk,Fk,qk,zk,Bk,Hk,Wk,Vk,Gk,Zk,Kk,
+nf,sf,_k,yk,vk,bk,wk,kk,Sk,Ek,Tk,Oo,$k,xk,Ck,Ok,Rk,Nk,Ak,Ik,Pk,lc,Lk,Ve,Ro,Ot,Dk,Uk,Mk,jk,Fk,qk,zk,Bk,Hk,Wk,Vk,Gk,Zk,Kk,
 Jk,Xk,Yk,Qk,e0,t0,i0,n0,a0,o0,of,l0,lf,cf,c0,u0,d0,p0,h0,cc,f0,m0,g0,uf,df,pf,_0,y0,wu,v0,b0,w0,k0,S0,E0,hf,T0,$0,x0,C0,
-O0,R0,A0,N0,ff,I0,P0,L0,D0,U0,mf,eD,rD,nD,aD,lD,uD,pD,hD,fD,mD,_D,vD,wD,SD,TD,xD,OD,AD,ID,LD,UD,jD,qD,BD,WD,GD,KD,XD,QD,
-tU,iU,sU,oU,cU,dU,hU,fU,gU,yU,bU,kU,EU,j0,F0,no,En,B0,pc,oo,GU,em,tm,rm,im,nm,IS,ZU,Ao,PS,LS,DS,US,rt,sm,Tu,Lt,am,hc,Ai,
+O0,R0,N0,A0,ff,I0,P0,L0,D0,U0,mf,eD,rD,nD,aD,lD,uD,pD,hD,fD,mD,_D,vD,wD,SD,TD,xD,OD,ND,ID,LD,UD,jD,qD,BD,WD,GD,KD,XD,QD,
+tU,iU,sU,oU,cU,dU,hU,fU,gU,yU,bU,kU,EU,j0,F0,no,En,B0,pc,oo,GU,em,tm,rm,im,nm,IS,ZU,No,PS,LS,DS,US,rt,sm,Tu,Lt,am,hc,Ni,
 om,lm,cm,um,dm,pm,hm,fm,mm,gm,_m,ym,vm,bm,wm,km,MS,$u,Hs,xu,Cu,Sm,jS,FS,qS,zS,BS,HS,WS,Tm,VS,Ru,$m,GS,ZS,KS,Cm,JS,XS,lo,
-YS,QS,Om,Am,eE,tE,iE,Nm,aE,oE,cE,Im,uE,pE,hE,mE,Nu,HM,VM,bE,ej,gc,tj,rj,wE,ij,nj,sj,aj,kE,SE,jX,FX,Lm,qX,zX,EE,qp,Me,Sr,
+YS,QS,Om,Nm,eE,tE,iE,Am,aE,oE,cE,Im,uE,pE,hE,mE,Au,HM,VM,bE,ej,gc,tj,rj,wE,ij,nj,sj,aj,kE,SE,jX,FX,Lm,qX,zX,EE,qp,Me,Sr,
 Ur,ws,_c,yc,vc,bc,wc,kc,Sc,Ec,Tc,lj,cj,zp,pv,dj,TE,pj,Vi,hj,mj,fv,mv,gv,Dm,vj,wj,kj,CE,$c,Sj,Ej,Mm,Tj,_v,pp,$j,Et,Hp,St,
-yv,vv,xc,wv,Oj,kv,Sn,IE,Rj,Aj,Nj,Fm,Ij,LE,Pr,Lr,On,Ea,Rn,Wp,Wa,Cc,Pl,Oc,Vp,An,yr,jE,FE,qm,Ev,Gj,Zj,Gp,qE,Kj,Jj,Pt,zE,le,
-Tv,eF,Oe,Rc,Xa,Ac,Nc,Ic,Pc,uo,Lc,Dc,ks,Uc,Mc,VE,iF,ps,nF,sF,KE,zr,qi,is,Ta,Ll,$a,xa,Dl,Ca,Ti,Oa,Ul,Ml,bn,jl,Fl,Ra,hp,xv,
-ql,fp,mp,gp,Cv,Ov,Kp,jc,aF,oF,Aa,ns,wn,or,xr,Ir,Ri,zi,Na,Nv,Jp,Fc,Pv,cF,Nn,qc,zc,Ss,Bc,po,Hc,ho,Or,Wc,Br,Bi,ss,Ia,zl,Pa,
-La,Bl,Da,$i,Ua,Hl,Wl,kn,Vl,Gl,Ma,_p,Uv,yp,vp,bp,wp,Mv,jv,Xp,Vc,fo,zv,dF,Gc,Yp,zm,Yl,YE,pF,hF,Wt,Es,Qp,mF,gF,RF,AF,NF,IF,
+yv,vv,xc,wv,Oj,kv,Sn,IE,Rj,Nj,Aj,Fm,Ij,LE,Pr,Lr,On,Ea,Rn,Wp,Wa,Cc,Pl,Oc,Vp,Nn,yr,jE,FE,qm,Ev,Gj,Zj,Gp,qE,Kj,Jj,Pt,zE,le,
+Tv,eF,Oe,Rc,Xa,Nc,Ac,Ic,Pc,uo,Lc,Dc,ks,Uc,Mc,VE,iF,ps,nF,sF,KE,zr,qi,is,Ta,Ll,$a,xa,Dl,Ca,Ti,Oa,Ul,Ml,bn,jl,Fl,Ra,hp,xv,
+ql,fp,mp,gp,Cv,Ov,Kp,jc,aF,oF,Na,ns,wn,or,xr,Ir,Ri,zi,Aa,Av,Jp,Fc,Pv,cF,An,qc,zc,Ss,Bc,po,Hc,ho,Or,Wc,Br,Bi,ss,Ia,zl,Pa,
+La,Bl,Da,$i,Ua,Hl,Wl,kn,Vl,Gl,Ma,_p,Uv,yp,vp,bp,wp,Mv,jv,Xp,Vc,fo,zv,dF,Gc,Yp,zm,Yl,YE,pF,hF,Wt,Es,Qp,mF,gF,RF,NF,AF,IF,
 KX,DF,eh,MF,$n,as,qF,BF,WF,GF,ZF,JF,XF,YF,Zc,Wm,eq,tq,rT,nq,aq,Vs,lq,Zv,iT,uq,dq,pq,mo,hq,Ji,Va,mq,nT,Kv,gq,Jv,_q,yq,Vm,
-vq,bq,Pu,kq,Gm,Eq,Tq,$q,xq,Cq,Oq,Rq,Aq,Nq,Iq,Pq,Lq,Dq,Uq,Mq,jq,Fq,qq,zq,Bq,Hq,Wq,Vq,Gq,Nt,Kq,Xq,Ga,sT,Ya,Yq,Tp,Qq,th,Xv,
+vq,bq,Pu,kq,Gm,Eq,Tq,$q,xq,Cq,Oq,Rq,Nq,Aq,Iq,Pq,Lq,Dq,Uq,Mq,jq,Fq,qq,zq,Bq,Hq,Wq,Vq,Gq,At,Kq,Xq,Ga,sT,Ya,Yq,Tp,Qq,th,Xv,
 e2,aT,t2,r2,n2,s2,oT,lT,JX,l2,XX,Zm,d2,p2,h2,m2,cT,Za,uT,Yv,_2,Qv,eb,dT,b2,w2,YX,S2,E2,pT,T2,rh,$2,ih,x2,nh,C2,sh,tb,O2,
-rb,ib,nb,sb,R2,A2,N2,I2,P2,os,L2,ab,U2,j2,ob,F2,q2,B2,H2,V2,Z2,cb,eY,K2,tY,J2,rY,X2,Km,Q2,ez,rz,iz,sz,az,oz,lz,cz,dz,pz,
-ub,db,hz,mz,Lu,_z,Jm,bz,kz,Ez,$z,fT,mT,oY,lY,Az,Pz,Dz,Uz,Mz,cY,jz,uY,Fz,dY,qz,pY,zz,hY,Kc,Kz,gY,Xz,Zl,gB,_B,yY,vY,wB,_b,
-_T,kB,yb,SB,EB,vb,xB,CB,ja,uh,RB,AB,yT,NB,vT,bT,PB,LB,Fa,$p,hs,Ka,wb,qa,xp,dh,FB,bY,qB,Xt,Ym,WB,Jc,kb,hh,ls,fh,e4,mh,Cp,
-gh,ST,ET,i4,_h,Sb,$Y,l4,Tb,xY,CY,h4,OY,y4,xT,v4,b4,w4,IY,$b,k4,E4,$4,C4,ft,xb,$e,Wi,oe,Zr,N4,go,I4,vh,Er,ze,Ja,Rr,Cb,Ob,
-Ts,Xc,Ae,Kr,Rb,tt,P4,L4,D4,U4,M4,j4,F4,q4,z4,Op,B4,H4,W4,V4,G4,Z4,CT,K4,$s,_o,yo,vo,bo,wo,xs,Cs,ko,Zi,vi,So,Xi,Mr,Os,xi,
-bh,Rs,Ii,kh,Eo,To,Sh,As,Ns,Is,Ps,In,li,ai,Pi,Ls,Ds,$o,Yc,Qc,Us,PY,Be,LY,DY,UY,MY,jY,FY,qY,zY,BY,HY,WY,VY,GY,ZY,KY,JY,XY,
-YY,QY,e8,t8,r8,i8,n8,s8,a8,o8,l8,c8,u8,d8,p8,h8,f8,rH,m8,iH,Uu,cr,AT,NT,g8,nH,sH,eg,jr,Mu,hr,Jr,Xr,fr,ju,aH,oH,IT,Ab,PT,
-_8,y8,LT,lH,DT,cH,No,Ms,UT,uH,dH,pH,hH,fH,mH,gH,_H,yH,vH,MT,bH,wH,jT,kH,Io,Po,SH,Lo,FT,EH,qT,zT,BT,HT,v8,WT,VT,GT,b8,ZT,
-KT,tg,JT,Do,Gs,XT,TH,$H,xH,CH,OH,rg,RH,AH,NH,IH,PH,LH,DH,UH,MH,jH,FH,qH,zH,BH,HH,WH,ig,ng,sg,VH,GH,ZH,ag,KH,JH,XH,YH,QH,
-YT,eW,tW,QT,w8,rW,iW,nW,k8,e$,sW,aW,oW,lW,cW,uW,dW,pW,hW,eu,fW,mW,gW,_W,yW,vW,bW,wW,kW,SW,EW,TW,$W,xW,CW,OW,RW,AW,NW,IW,
-PW,LW,DW,UW,MW,jW,FW,qW,zW,BW,HW,WW,VW,S8,E8,T8,$8,x8,C8,O8,R8,A8,Nb,N8,I8,Ib,P8,L8,Pb,Lb,Db,Ub,Gi,og,ms,ZW,KW,JW,j8,e6,
+rb,ib,nb,sb,R2,N2,A2,I2,P2,os,L2,ab,U2,j2,ob,F2,q2,B2,H2,V2,Z2,cb,eY,K2,tY,J2,rY,X2,Km,Q2,ez,rz,iz,sz,az,oz,lz,cz,dz,pz,
+ub,db,hz,mz,Lu,_z,Jm,bz,kz,Ez,$z,fT,mT,oY,lY,Nz,Pz,Dz,Uz,Mz,cY,jz,uY,Fz,dY,qz,pY,zz,hY,Kc,Kz,gY,Xz,Zl,gB,_B,yY,vY,wB,_b,
+_T,kB,yb,SB,EB,vb,xB,CB,ja,uh,RB,NB,yT,AB,vT,bT,PB,LB,Fa,$p,hs,Ka,wb,qa,xp,dh,FB,bY,qB,Xt,Ym,WB,Jc,kb,hh,ls,fh,e4,mh,Cp,
+gh,ST,ET,i4,_h,Sb,$Y,l4,Tb,xY,CY,h4,OY,y4,xT,v4,b4,w4,IY,$b,k4,E4,$4,C4,ft,xb,$e,Wi,oe,Zr,A4,go,I4,vh,Er,ze,Ja,Rr,Cb,Ob,
+Ts,Xc,Ne,Kr,Rb,tt,P4,L4,D4,U4,M4,j4,F4,q4,z4,Op,B4,H4,W4,V4,G4,Z4,CT,K4,$s,_o,yo,vo,bo,wo,xs,Cs,ko,Zi,vi,So,Xi,Mr,Os,xi,
+bh,Rs,Ii,kh,Eo,To,Sh,Ns,As,Is,Ps,In,li,ai,Pi,Ls,Ds,$o,Yc,Qc,Us,PY,Be,LY,DY,UY,MY,jY,FY,qY,zY,BY,HY,WY,VY,GY,ZY,KY,JY,XY,
+YY,QY,e8,t8,r8,i8,n8,s8,a8,o8,l8,c8,u8,d8,p8,h8,f8,rH,m8,iH,Uu,cr,NT,AT,g8,nH,sH,eg,jr,Mu,hr,Jr,Xr,fr,ju,aH,oH,IT,Nb,PT,
+_8,y8,LT,lH,DT,cH,Ao,Ms,UT,uH,dH,pH,hH,fH,mH,gH,_H,yH,vH,MT,bH,wH,jT,kH,Io,Po,SH,Lo,FT,EH,qT,zT,BT,HT,v8,WT,VT,GT,b8,ZT,
+KT,tg,JT,Do,Gs,XT,TH,$H,xH,CH,OH,rg,RH,NH,AH,IH,PH,LH,DH,UH,MH,jH,FH,qH,zH,BH,HH,WH,ig,ng,sg,VH,GH,ZH,ag,KH,JH,XH,YH,QH,
+YT,eW,tW,QT,w8,rW,iW,nW,k8,e$,sW,aW,oW,lW,cW,uW,dW,pW,hW,eu,fW,mW,gW,_W,yW,vW,bW,wW,kW,SW,EW,TW,$W,xW,CW,OW,RW,NW,AW,IW,
+PW,LW,DW,UW,MW,jW,FW,qW,zW,BW,HW,WW,VW,S8,E8,T8,$8,x8,C8,O8,R8,N8,Ab,A8,I8,Ib,P8,L8,Pb,Lb,Db,Ub,Gi,og,ms,ZW,KW,JW,j8,e6,
 Rp,r6,Mb,F8,cs,i$,Th,n$,tu,jb,i6,Hi,s$,ys,$h,xh,s6,Fb,q8,l$,c$,u$,V8,G8,Z8,l6,K8,Ch,d6,p6,h6,m6,g6,_6,y6,d$,v6,b6,k6,Oh,
 T6,x6,C6,R6,qb,h$,I6,P6,L6,D6,U6,M6,F6,q6,f$,B6,W6,G6,J8,K6,X6,Q6,zb,tV,rV,nV,aV,X8,g$,_$,y$,oV,lV,cV,uV,Y8,Q8,dV,pV,hV,
-fV,mV,gV,lg,_V,yV,vV,bV,wV,kV,SV,t7,r7,i7,EV,za,$V,xV,ru,n7,s7,Zs,Qi,CV,v$,OV,RV,w$,k$,AV,NV,IV,PV,LV,DV,ug,UV,Rh,a7,MV,
-jV,S$,FV,qV,ci,Pn,Hb,Ah,Nh,E$,dg,BV,o7,HV,WV,VV,GV,ZV,T$,KV,JV,XV,YV,$$,QV,Wb,eG,tG,x$,rG,iG,Vb,nG,sG,C$,aG,O$,oG,lG,cG,
-uG,pG,hG,fG,mG,iu,Ap,R$,gG,_G,yG,vG,bG,l7,A$,kG,SG,EG,TG,$G,xG,CG,c7,OG,u7,RG,Kl,Fu,Gb,P$,d7,p7,nu,Jb,BG,HG,h7,WG,VG,GG,
-ZG,Xb,Yb,KG,XG,f7,Ci,m7,g7,_7,y7,v7,i9;var B$=Fi(()=>{zN=Object.create;({getPrototypeOf:BN,defineProperty:Ip,getOwnPropertyNames:HN}=
-Object);WN=Object.prototype.hasOwnProperty;a(VN,"m1");Ih=a((t,e,r)=>{var n=t!=null&&typeof t==="object";if(n){var i=e?GN??=
-new WeakMap:ZN??=new WeakMap,s=i.get(t);if(s)return s}r=t!=null?zN(BN(t)):{};let o=e||!t||!t.__esModule?Ip(r,"default",{
-value:t,enumerable:true}):r;for(let l of HN(t))if(!WN.call(o,l))Ip(o,l,{get:VN.bind(t,l),enumerable:true});if(n)i.set(t,
-o);return o},"ph");Q=a((t,e)=>()=>(e||t((e={exports:{}}).exports,e),e.exports),"k");KN=a(t=>t,"y1");a(JN,"_1");bi=a((t,e)=>{
-for(var r in e)Ip(t,r,{get:e[r],enumerable:true,configurable:true,set:JN.bind(e,r)})},"Tr");vX=qN(import.meta.url);XN=Symbol.
-dispose||Symbol.for("Symbol.dispose");YN=Symbol.asyncDispose||Symbol.for("Symbol.asyncDispose");Kt=a((t,e,r)=>{if(e!=null){
+fV,mV,gV,lg,_V,yV,vV,bV,wV,kV,SV,t7,r7,i7,EV,za,$V,xV,ru,n7,s7,Zs,Qi,CV,v$,OV,RV,w$,k$,NV,AV,IV,PV,LV,DV,ug,UV,Rh,a7,MV,
+jV,S$,FV,qV,ci,Pn,Hb,Nh,Ah,E$,dg,BV,o7,HV,WV,VV,GV,ZV,T$,KV,JV,XV,YV,$$,QV,Wb,eG,tG,x$,rG,iG,Vb,nG,sG,C$,aG,O$,oG,lG,cG,
+uG,pG,hG,fG,mG,iu,Np,R$,gG,_G,yG,vG,bG,l7,N$,kG,SG,EG,TG,$G,xG,CG,c7,OG,u7,RG,Kl,Fu,Gb,P$,d7,p7,nu,Jb,BG,HG,h7,WG,VG,GG,
+ZG,Xb,Yb,KG,XG,f7,Ci,m7,g7,_7,y7,v7,i9;var B$=Fi(()=>{zA=Object.create;({getPrototypeOf:BA,defineProperty:Ip,getOwnPropertyNames:HA}=
+Object);WA=Object.prototype.hasOwnProperty;a(VA,"m1");Ih=a((t,e,r)=>{var n=t!=null&&typeof t==="object";if(n){var i=e?GA??=
+new WeakMap:ZA??=new WeakMap,s=i.get(t);if(s)return s}r=t!=null?zA(BA(t)):{};let o=e||!t||!t.__esModule?Ip(r,"default",{
+value:t,enumerable:true}):r;for(let l of HA(t))if(!WA.call(o,l))Ip(o,l,{get:VA.bind(t,l),enumerable:true});if(n)i.set(t,
+o);return o},"ph");Q=a((t,e)=>()=>(e||t((e={exports:{}}).exports,e),e.exports),"k");KA=a(t=>t,"y1");a(JA,"_1");bi=a((t,e)=>{
+for(var r in e)Ip(t,r,{get:e[r],enumerable:true,configurable:true,set:JA.bind(e,r)})},"Tr");vX=qA(import.meta.url);XA=Symbol.
+dispose||Symbol.for("Symbol.dispose");YA=Symbol.asyncDispose||Symbol.for("Symbol.asyncDispose");Kt=a((t,e,r)=>{if(e!=null){
 if(typeof e!=="object"&&typeof e!=="function")throw TypeError('Object expected to be assigned to "using" declaration');var n;
-if(r)n=e[YN];if(n===void 0)n=e[XN];if(typeof n!=="function")throw TypeError("Object not disposable");t.push([r,n,e])}else if(r)
+if(r)n=e[YA];if(n===void 0)n=e[XA];if(typeof n!=="function")throw TypeError("Object not disposable");t.push([r,n,e])}else if(r)
 t.push([r]);return e},"Ee");Jt=a((t,e,r)=>{var n=typeof SuppressedError==="function"?SuppressedError:function(o,l,c,u){return u=
 Error(c),u.name="SuppressedError",u.error=o,u.suppressed=l,u},i=a(o=>e=r?new n(o,e,"An error was suppressed during dispo\
 sal"):(r=true,o),"n"),s=a(o=>{while(o=t.pop())try{var l=o[1]&&o[1].call(o[2]);if(o[0])return Promise.resolve(l).then(s,c=>(i(
-c),s()))}catch(c){i(c)}if(r)throw e},"i");return s()},"Te");QN=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});
+c),s()))}catch(c){i(c)}if(r)throw e},"i");return s()},"Te");QA=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});
 t._globalThis=void 0;t._globalThis=typeof globalThis==="object"?globalThis:global});eI=Q(t=>{var e=t&&t.__createBinding||
 (Object.create?function(n,i,s,o){if(o===void 0)o=s;Object.defineProperty(n,o,{enumerable:true,get:a(function(){return i[s]},
 "get")})}:function(n,i,s,o){if(o===void 0)o=s;n[o]=i[s]}),r=t&&t.__exportStar||function(n,i){for(var s in n)if(s!=="defa\
-ult"&&!Object.prototype.hasOwnProperty.call(i,s))e(i,n,s)};Object.defineProperty(t,"__esModule",{value:true});r(QN(),t)});
+ult"&&!Object.prototype.hasOwnProperty.call(i,s))e(i,n,s)};Object.defineProperty(t,"__esModule",{value:true});r(QA(),t)});
 tI=Q(t=>{var e=t&&t.__createBinding||(Object.create?function(n,i,s,o){if(o===void 0)o=s;Object.defineProperty(n,o,{enumerable:true,
 get:a(function(){return i[s]},"get")})}:function(n,i,s,o){if(o===void 0)o=s;n[o]=i[s]}),r=t&&t.__exportStar||function(n,i){
 for(var s in n)if(s!=="default"&&!Object.prototype.hasOwnProperty.call(i,s))e(i,n,s)};Object.defineProperty(t,"__esModul\
@@ -1788,8 +1788,8 @@ R);if(this.finally)U+=this.finally.render(R);return U}optimizeNodes(){var R,U;re
 null||R===void 0||R.optimizeNodes(),(U=this.finally)===null||U===void 0||U.optimizeNodes(),this}optimizeNames(R,U){var G,
 ce;return super.optimizeNames(R,U),(G=this.catch)===null||G===void 0||G.optimizeNames(R,U),(ce=this.finally)===null||ce===
 void 0||ce.optimizeNames(R,U),this}get names(){let R=super.names;if(this.catch)F(R,this.catch.names);if(this.finally)F(R,
-this.finally.names);return R}}class A extends _{static{a(this,"lg")}constructor(R){super();this.error=R}render(R){return`\
-catch(${this.error})`+super.render(R)}}A.kind="catch";class P extends _{static{a(this,"cg")}render(R){return"finally"+super.
+this.finally.names);return R}}class N extends _{static{a(this,"lg")}constructor(R){super();this.error=R}render(R){return`\
+catch(${this.error})`+super.render(R)}}N.kind="catch";class P extends _{static{a(this,"cg")}render(R){return"finally"+super.
 render(R)}}P.kind="finally";class L{static{a(this,"L$")}constructor(R,U={}){this._values={},this._blockStarts=[],this._constants=
 {},this.opts={...U,_n:U.lines?`
 `:""},this._extScope=R,this._scope=new r.Scope({parent:R}),this._nodes=[new y]}toString(){return this._root.render(this.
@@ -1813,8 +1813,8 @@ _scope.toName(R);return this._for(new T("in",ce,be,U),()=>G(be))}endFor(){return
 _leafNode(new u(R))}break(R){return this._leafNode(new d(R))}return(R){let U=new k;if(this._blockNode(U),this.code(R),U.
 nodes.length!==1)throw Error('CodeGen: "return" should have one node');return this._endBlockNode(k)}try(R,U,G){if(!U&&!G)
 throw Error('CodeGen: "try" without "catch" and "finally"');let ce=new C;if(this._blockNode(ce),this.code(R),U){let be=this.
-name("e");this._currNode=ce.catch=new A(be),U(be)}if(G)this._currNode=ce.finally=new P,this.code(G);return this._endBlockNode(
-A,P)}throw(R){return this._leafNode(new h(R))}block(R,U){if(this._blockStarts.push(this._nodes.length),R)this.code(R).endBlock(
+name("e");this._currNode=ce.catch=new N(be),U(be)}if(G)this._currNode=ce.finally=new P,this.code(G);return this._endBlockNode(
+N,P)}throw(R){return this._leafNode(new h(R))}block(R,U){if(this._blockStarts.push(this._nodes.length),R)this.code(R).endBlock(
 U);return this}endBlock(R){let U=this._blockStarts.pop();if(U===void 0)throw Error("CodeGen: not in self-balancing block");
 let G=this._nodes.length-U;if(G<0||R!==void 0&&G!==R)throw Error(`CodeGen: wrong number of nodes: ${G} vs ${R} expected`);
 return this._nodes.length=U,this}func(R,U=e.nil,G,ce){if(this._blockNode(new x(R,U,G)),ce)this.code(ce).endFunc();return this}endFunc(){
@@ -1838,18 +1838,18 @@ t.mergeEvaluated=t.eachItem=t.unescapeJsonPointer=t.escapeJsonPointer=t.escapeFr
 t.schemaHasRulesButRef=t.schemaHasRules=t.checkUnknownRules=t.alwaysValidSchema=t.toHash=void 0;var e=et(),r=tc();function n(x){
 let k={};for(let C of x)k[C]=true;return k}a(n,"OX");t.toHash=n;function i(x,k){if(typeof k=="boolean")return k;if(Object.
 keys(k).length===0)return true;return s(x,k),!o(k,x.self.RULES.all)}a(i,"CX");t.alwaysValidSchema=i;function s(x,k=x.schema){
-let{opts:C,self:A}=x;if(!C.strictSchema)return;if(typeof k==="boolean")return;let P=A.RULES.keywords;for(let L in k)if(!P[L])
+let{opts:C,self:N}=x;if(!C.strictSchema)return;if(typeof k==="boolean")return;let P=N.RULES.keywords;for(let L in k)if(!P[L])
 T(x,`unknown keyword: "${L}"`)}a(s,"q$");t.checkUnknownRules=s;function o(x,k){if(typeof x=="boolean")return!x;for(let C in x)
 if(k[C])return true;return false}a(o,"V$");t.schemaHasRules=o;function l(x,k){if(typeof x=="boolean")return!x;for(let C in x)
-if(C!=="$ref"&&k.all[C])return true;return false}a(l,"$X");t.schemaHasRulesButRef=l;function c({topSchemaRef:x,schemaPath:k},C,A,P){
+if(C!=="$ref"&&k.all[C])return true;return false}a(l,"$X");t.schemaHasRulesButRef=l;function c({topSchemaRef:x,schemaPath:k},C,N,P){
 if(!P){if(typeof C=="number"||typeof C=="boolean")return C;if(typeof C=="string")return e._`${C}`}return e._`${x}${k}${(0,
-e.getProperty)(A)}`}a(c,"MX");t.schemaRefOrVal=c;function u(x){return p(decodeURIComponent(x))}a(u,"DX");t.unescapeFragment=
+e.getProperty)(N)}`}a(c,"MX");t.schemaRefOrVal=c;function u(x){return p(decodeURIComponent(x))}a(u,"DX");t.unescapeFragment=
 u;function d(x){return encodeURIComponent(h(x))}a(d,"NX");t.escapeFragment=d;function h(x){if(typeof x=="number")return`${x}`;
 return x.replace(/~/g,"~0").replace(/\//g,"~1")}a(h,"hx");t.escapeJsonPointer=h;function p(x){return x.replace(/~1/g,"/").
 replace(/~0/g,"~")}a(p,"W$");t.unescapeJsonPointer=p;function f(x,k){if(Array.isArray(x))for(let C of x)k(C);else k(x)}a(
-f,"UX");t.eachItem=f;function _({mergeNames:x,mergeToName:k,mergeValues:C,resultToName:A}){return(P,L,F,j)=>{let Z=F===void 0?
+f,"UX");t.eachItem=f;function _({mergeNames:x,mergeToName:k,mergeValues:C,resultToName:N}){return(P,L,F,j)=>{let Z=F===void 0?
 L:F instanceof e.Name?(L instanceof e.Name?x(P,L,F):k(P,L,F),F):L instanceof e.Name?(k(P,F,L),L):C(L,F);return j===e.Name&&
-!(Z instanceof e.Name)?A(P,Z):Z}}a(_,"H$");t.mergeEvaluated={props:_({mergeNames:a((x,k,C)=>x.if(e._`${C} !== true && ${k} !== undefined`,
+!(Z instanceof e.Name)?N(P,Z):Z}}a(_,"H$");t.mergeEvaluated={props:_({mergeNames:a((x,k,C)=>x.if(e._`${C} !== true && ${k} !== undefined`,
 ()=>{x.if(e._`${k} === true`,()=>x.assign(C,true),()=>x.assign(C,e._`${C} || {}`).code(e._`Object.assign(${C}, ${k})`))}),
 "mergeNames"),mergeToName:a((x,k,C)=>x.if(e._`${C} !== true`,()=>{if(k===true)x.assign(C,true);else x.assign(C,e._`${C} || {}`),
 b(x,C,k)}),"mergeToName"),mergeValues:a((x,k)=>x===true?true:{...x,...k},"mergeValues"),resultToName:y}),items:_({mergeNames:a(
@@ -1857,10 +1857,10 @@ b(x,C,k)}),"mergeToName"),mergeValues:a((x,k)=>x===true?true:{...x,...k},"mergeV
 "mergeNames"),mergeToName:a((x,k,C)=>x.if(e._`${C} !== true`,()=>x.assign(C,k===true?true:e._`${C} > ${k} ? ${C} : ${k}`)),
 "mergeToName"),mergeValues:a((x,k)=>x===true?true:Math.max(x,k),"mergeValues"),resultToName:a((x,k)=>x.var("items",k),"r\
 esultToName")})};function y(x,k){if(k===true)return x.var("props",true);let C=x.var("props",e._`{}`);if(k!==void 0)b(x,C,
-k);return C}a(y,"K$");t.evaluatedPropsToName=y;function b(x,k,C){Object.keys(C).forEach(A=>x.assign(e._`${k}${(0,e.getProperty)(
-A)}`,true))}a(b,"yx");t.setEvaluated=b;var g={};function v(x,k){return x.scopeValue("func",{ref:k,code:g[k.code]||(g[k.code]=
+k);return C}a(y,"K$");t.evaluatedPropsToName=y;function b(x,k,C){Object.keys(C).forEach(N=>x.assign(e._`${k}${(0,e.getProperty)(
+N)}`,true))}a(b,"yx");t.setEvaluated=b;var g={};function v(x,k){return x.scopeValue("func",{ref:k,code:g[k.code]||(g[k.code]=
 new r._Code(k.code))})}a(v,"LX");t.useFunc=v;var S;(function(x){x[x.Num=0]="Num",x[x.Str=1]="Str"})(S||(t.Type=S={}));function E(x,k,C){
-if(x instanceof e.Name){let A=k===S.Num;return C?A?e._`"[" + ${x} + "]"`:e._`"['" + ${x} + "']"`:A?e._`"/" + ${x}`:e._`"/" + ${x}.replace(/~/g, "~0").replace(/\\//g, "~1")`}
+if(x instanceof e.Name){let N=k===S.Num;return C?N?e._`"[" + ${x} + "]"`:e._`"['" + ${x} + "']"`:N?e._`"/" + ${x}`:e._`"/" + ${x}.replace(/~/g, "~0").replace(/\\//g, "~1")`}
 return C?(0,e.getProperty)(x).toString():"/"+h(x)}a(E,"jX");t.getErrorPath=E;function T(x,k,C=x.opts.strictSchema){if(!C)
 return;if(k=`strict mode: ${k}`,C===true)throw Error(k);x.self.logger.warn(k)}a(T,"Z$");t.checkStrictMode=T});Yi=Q(t=>{Object.
 defineProperty(t,"__esModule",{value:true});var e=et(),r={data:new e.Name("data"),valCxt:new e.Name("valCxt"),instancePath:new e.
@@ -1889,10 +1889,10 @@ it;if(S===false)return e._`{}`;return p(b,g,v)}a(h,"eM");function p(b,g,v={}){le
 b,g,T),S.object(...T)}a(p,"cY");function f({errorPath:b},{instancePath:g}){let v=g?e.str`${b}${(0,r.getErrorPath)(g,r.Type.
 Str)}`:b;return[n.default.instancePath,(0,e.strConcat)(n.default.instancePath,v)]}a(f,"uY");function _({keyword:b,it:{errSchemaPath:g}},{
 schemaPath:v,parentSchema:S}){let E=S?g:e.str`${g}/${b}`;if(v)E=e.str`${E}${(0,r.getErrorPath)(v,r.Type.Str)}`;return[d.
-schemaPath,E]}a(_,"dY");function y(b,{params:g,message:v},S){let{keyword:E,data:T,schemaValue:x,it:k}=b,{opts:C,propertyName:A,
+schemaPath,E]}a(_,"dY");function y(b,{params:g,message:v},S){let{keyword:E,data:T,schemaValue:x,it:k}=b,{opts:C,propertyName:N,
 topSchemaRef:P,schemaPath:L}=k;if(S.push([d.keyword,E],[d.params,typeof g=="function"?g(b):g||e._`{}`]),C.messages)S.push(
 [d.message,typeof v=="function"?v(b):v]);if(C.verbose)S.push([d.schema,x],[d.parentSchema,e._`${P}${L}`],[n.default.data,
-T]);if(A)S.push([d.propertyName,A])}a(y,"pY")});OI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.boolOrEmptySchema=
+T]);if(N)S.push([d.propertyName,N])}a(y,"pY")});OI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.boolOrEmptySchema=
 t.topBoolOrEmptySchema=void 0;var e=ou(),r=et(),n=Yi(),i={message:"boolean schema is false"};function s(c){let{gen:u,schema:d,
 validateName:h}=c;if(d===false)l(c,false);else if(typeof d=="object"&&d.$async===true)u.return(n.default.data);else u.assign(
 r._`${h}.errors`,null),u.return(true)}a(s,"vY");t.topBoolOrEmptySchema=s;function o(c,u){let{gen:d,schema:h}=c;if(h===false)
@@ -1913,29 +1913,29 @@ o||(t.DataType=o={}));function l(S){let E=c(S.type);if(E.includes("null")){if(S.
  contradicts nullable: false")}else{if(!E.length&&S.nullable!==void 0)throw Error('"nullable" cannot be used without "ty\
 pe"');if(S.nullable===true)E.push("null")}return E}a(l,"DY");t.getSchemaTypes=l;function c(S){let E=Array.isArray(S)?S:S?
 [S]:[];if(E.every(e.isJSONType))return E;throw Error("type must be JSONType or JSONType[]: "+E.join(","))}a(c,"mM");t.getJSONTypes=
-c;function u(S,E){let{gen:T,data:x,opts:k}=S,C=h(E,k.coerceTypes),A=E.length>0&&!(C.length===0&&E.length===1&&(0,r.schemaHasRulesForType)(
-S,E[0]));if(A){let P=y(E,x,k.strictNumbers,o.Wrong);T.if(P,()=>{if(C.length)p(S,E,C);else g(S)})}return A}a(u,"NY");t.coerceAndCheckDataType=
+c;function u(S,E){let{gen:T,data:x,opts:k}=S,C=h(E,k.coerceTypes),N=E.length>0&&!(C.length===0&&E.length===1&&(0,r.schemaHasRulesForType)(
+S,E[0]));if(N){let P=y(E,x,k.strictNumbers,o.Wrong);T.if(P,()=>{if(C.length)p(S,E,C);else g(S)})}return N}a(u,"NY");t.coerceAndCheckDataType=
 u;var d=new Set(["string","number","integer","boolean","null"]);function h(S,E){return E?S.filter(T=>d.has(T)||E==="arra\
-y"&&T==="array"):[]}a(h,"UY");function p(S,E,T){let{gen:x,data:k,opts:C}=S,A=x.let("dataType",i._`typeof ${k}`),P=x.let(
-"coerced",i._`undefined`);if(C.coerceTypes==="array")x.if(i._`${A} == 'object' && Array.isArray(${k}) && ${k}.length == 1`,
-()=>x.assign(k,i._`${k}[0]`).assign(A,i._`typeof ${k}`).if(y(E,k,C.strictNumbers),()=>x.assign(P,k)));x.if(i._`${P} !== undefined`);
+y"&&T==="array"):[]}a(h,"UY");function p(S,E,T){let{gen:x,data:k,opts:C}=S,N=x.let("dataType",i._`typeof ${k}`),P=x.let(
+"coerced",i._`undefined`);if(C.coerceTypes==="array")x.if(i._`${N} == 'object' && Array.isArray(${k}) && ${k}.length == 1`,
+()=>x.assign(k,i._`${k}[0]`).assign(N,i._`typeof ${k}`).if(y(E,k,C.strictNumbers),()=>x.assign(P,k)));x.if(i._`${P} !== undefined`);
 for(let F of T)if(d.has(F)||F==="array"&&C.coerceTypes==="array")L(F);x.else(),g(S),x.endIf(),x.if(i._`${P} !== undefined`,
-()=>{x.assign(k,P),f(S,P)});function L(F){switch(F){case"string":x.elseIf(i._`${A} == "number" || ${A} == "boolean"`).assign(
-P,i._`"" + ${k}`).elseIf(i._`${k} === null`).assign(P,i._`""`);return;case"number":x.elseIf(i._`${A} == "boolean" || ${k} === null
-              || (${A} == "string" && ${k} && ${k} == +${k})`).assign(P,i._`+${k}`);return;case"integer":x.elseIf(i._`${A} === "boolean" || ${k} === null
-              || (${A} === "string" && ${k} && ${k} == +${k} && !(${k} % 1))`).assign(P,i._`+${k}`);return;case"boolean":
+()=>{x.assign(k,P),f(S,P)});function L(F){switch(F){case"string":x.elseIf(i._`${N} == "number" || ${N} == "boolean"`).assign(
+P,i._`"" + ${k}`).elseIf(i._`${k} === null`).assign(P,i._`""`);return;case"number":x.elseIf(i._`${N} == "boolean" || ${k} === null
+              || (${N} == "string" && ${k} && ${k} == +${k})`).assign(P,i._`+${k}`);return;case"integer":x.elseIf(i._`${N} === "boolean" || ${k} === null
+              || (${N} === "string" && ${k} && ${k} == +${k} && !(${k} % 1))`).assign(P,i._`+${k}`);return;case"boolean":
 x.elseIf(i._`${k} === "false" || ${k} === 0 || ${k} === null`).assign(P,false).elseIf(i._`${k} === "true" || ${k} === 1`).
 assign(P,true);return;case"null":x.elseIf(i._`${k} === "" || ${k} === 0 || ${k} === false`),x.assign(P,null);return;case"\
-array":x.elseIf(i._`${A} === "string" || ${A} === "number"
-              || ${A} === "boolean" || ${k} === null`).assign(P,i._`[${k}]`)}}a(L,"c")}a(p,"LY");function f({gen:S,parentData:E,
+array":x.elseIf(i._`${N} === "string" || ${N} === "number"
+              || ${N} === "boolean" || ${k} === null`).assign(P,i._`[${k}]`)}}a(L,"c")}a(p,"LY");function f({gen:S,parentData:E,
 parentDataProperty:T},x){S.if(i._`${E} !== undefined`,()=>S.assign(i._`${E}[${T}]`,x))}a(f,"jY");function _(S,E,T,x=o.Correct){
 let k=x===o.Correct?i.operators.EQ:i.operators.NEQ,C;switch(S){case"null":return i._`${E} ${k} null`;case"array":C=i._`Array.isArray(${E})`;
-break;case"object":C=i._`${E} && typeof ${E} == "object" && !Array.isArray(${E})`;break;case"integer":C=A(i._`!(${E} % 1) && !isNaN(${E})`);
-break;case"number":C=A();break;default:return i._`typeof ${E} ${k} ${S}`}return x===o.Correct?C:(0,i.not)(C);function A(P=i.
-nil){return(0,i.and)(i._`typeof ${E} == "number"`,P,T?i._`isFinite(${E})`:i.nil)}a(A,"s")}a(_,"vx");t.checkDataType=_;function y(S,E,T,x){
-if(S.length===1)return _(S[0],E,T,x);let k,C=(0,s.toHash)(S);if(C.array&&C.object){let A=i._`typeof ${E} != "object"`;k=
-C.null?A:i._`!${E} || ${A}`,delete C.null,delete C.array,delete C.object}else k=i.nil;if(C.number)delete C.integer;for(let A in C)
-k=(0,i.and)(k,_(A,E,T,x));return k}a(y,"xx");t.checkDataTypes=y;var b={message:a(({schema:S})=>`must be ${S}`,"message"),
+break;case"object":C=i._`${E} && typeof ${E} == "object" && !Array.isArray(${E})`;break;case"integer":C=N(i._`!(${E} % 1) && !isNaN(${E})`);
+break;case"number":C=N();break;default:return i._`typeof ${E} ${k} ${S}`}return x===o.Correct?C:(0,i.not)(C);function N(P=i.
+nil){return(0,i.and)(i._`typeof ${E} == "number"`,P,T?i._`isFinite(${E})`:i.nil)}a(N,"s")}a(_,"vx");t.checkDataType=_;function y(S,E,T,x){
+if(S.length===1)return _(S[0],E,T,x);let k,C=(0,s.toHash)(S);if(C.array&&C.object){let N=i._`typeof ${E} != "object"`;k=
+C.null?N:i._`!${E} || ${N}`,delete C.null,delete C.array,delete C.object}else k=i.nil;if(C.number)delete C.integer;for(let N in C)
+k=(0,i.and)(k,_(N,E,T,x));return k}a(y,"xx");t.checkDataTypes=y;var b={message:a(({schema:S})=>`must be ${S}`,"message"),
 params:a(({schema:S,schemaValue:E})=>typeof S=="string"?i._`{type: ${S}}`:i._`{type: ${E}}`,"params")};function g(S){let E=v(
 S);(0,n.reportError)(E,b)}a(g,"wx");t.reportTypeError=g;function v(S){let{gen:E,data:T,schema:x}=S,k=(0,s.schemaRefOrVal)(
 S,x,"type");return{gen:E,keyword:"type",data:T,schema:x.type,schemaCode:k,schemaValue:k,parentSchema:x,params:{},it:S}}a(
@@ -1956,27 +1956,27 @@ a(u,"Ex");t.isOwnProperty=u;function d(S,E,T,x){let k=e._`${E}${(0,e.getProperty
 S,E,T)}`:k}a(d,"e8");t.propertyInData=d;function h(S,E,T,x){let k=e._`${E}${(0,e.getProperty)(T)} === undefined`;return x?
 (0,e.or)(k,(0,e.not)(u(S,E,T))):k}a(h,"Tx");t.noPropertyInData=h;function p(S){return S?Object.keys(S).filter(E=>E!=="__\
 proto__"):[]}a(p,"wM");t.allSchemaProperties=p;function f(S,E){return p(E).filter(T=>!(0,r.alwaysValidSchema)(S,E[T]))}a(
-f,"t8");t.schemaProperties=f;function _({schemaCode:S,data:E,it:{gen:T,topSchemaRef:x,schemaPath:k,errorPath:C},it:A},P,L,F){
+f,"t8");t.schemaProperties=f;function _({schemaCode:S,data:E,it:{gen:T,topSchemaRef:x,schemaPath:k,errorPath:C},it:N},P,L,F){
 let j=F?e._`${S}, ${E}, ${x}${k}`:E,Z=[[n.default.instancePath,(0,e.strConcat)(n.default.instancePath,C)],[n.default.parentData,
-A.parentData],[n.default.parentDataProperty,A.parentDataProperty],[n.default.rootData,n.default.rootData]];if(A.opts.dynamicRef)
+N.parentData],[n.default.parentDataProperty,N.parentDataProperty],[n.default.rootData,n.default.rootData]];if(N.opts.dynamicRef)
 Z.push([n.default.dynamicAnchors,n.default.dynamicAnchors]);let me=e._`${j}, ${T.object(...Z)}`;return L!==e.nil?e._`${P}.call(${L}, ${me})`:
 e._`${P}(${me})`}a(_,"r8");t.callValidateCode=_;var y=e._`new RegExp`;function b({gen:S,it:{opts:E}},T){let x=E.unicodeRegExp?
 "u":"",{regExp:k}=E.code,C=k(T,x);return S.scopeValue("pattern",{key:C.toString(),ref:C,code:e._`${k.code==="new RegExp"?
 y:(0,i.useFunc)(S,k)}(${T}, ${x})`})}a(b,"o8");t.usePattern=b;function g(S){let{gen:E,data:T,keyword:x,it:k}=S,C=E.name(
-"valid");if(k.allErrors){let P=E.let("valid",true);return A(()=>E.assign(P,false)),P}return E.var(C,true),A(()=>E.break()),
-C;function A(P){let L=E.const("len",e._`${T}.length`);E.forRange("i",0,L,F=>{S.subschema({keyword:x,dataProp:F,dataPropType:r.
-Type.Num},C),E.if((0,e.not)(C),P)})}a(A,"s")}a(g,"i8");t.validateArray=g;function v(S){let{gen:E,schema:T,keyword:x,it:k}=S;
+"valid");if(k.allErrors){let P=E.let("valid",true);return N(()=>E.assign(P,false)),P}return E.var(C,true),N(()=>E.break()),
+C;function N(P){let L=E.const("len",e._`${T}.length`);E.forRange("i",0,L,F=>{S.subschema({keyword:x,dataProp:F,dataPropType:r.
+Type.Num},C),E.if((0,e.not)(C),P)})}a(N,"s")}a(g,"i8");t.validateArray=g;function v(S){let{gen:E,schema:T,keyword:x,it:k}=S;
 if(!Array.isArray(T))throw Error("ajv implementation error");if(T.some(P=>(0,r.alwaysValidSchema)(k,P))&&!k.opts.unevaluated)
-return;let C=E.let("valid",false),A=E.name("_valid");E.block(()=>T.forEach((P,L)=>{let F=S.subschema({keyword:x,schemaProp:L,
-compositeRule:true},A);if(E.assign(C,e._`${C} || ${A}`),!S.mergeValidEvaluated(F,A))E.if((0,e.not)(C))})),S.result(C,()=>S.
-reset(),()=>S.error(true))}a(v,"s8");t.validateUnion=v});AI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.validateKeywordUsage=
+return;let C=E.let("valid",false),N=E.name("_valid");E.block(()=>T.forEach((P,L)=>{let F=S.subschema({keyword:x,schemaProp:L,
+compositeRule:true},N);if(E.assign(C,e._`${C} || ${N}`),!S.mergeValidEvaluated(F,N))E.if((0,e.not)(C))})),S.result(C,()=>S.
+reset(),()=>S.error(true))}a(v,"s8");t.validateUnion=v});NI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.validateKeywordUsage=
 t.validSchemaType=t.funcKeywordCode=t.macroKeywordCode=void 0;var e=et(),r=Yi(),n=ui(),i=ou();function s(f,_){let{gen:y,
 keyword:b,schema:g,parentSchema:v,it:S}=f,E=_.macro.call(S.self,g,v,S),T=d(y,b,E);if(S.opts.validateSchema!==false)S.self.
 validateSchema(E,true);let x=y.name("valid");f.subschema({schema:E,schemaPath:e.nil,errSchemaPath:`${S.errSchemaPath}/${b}`,
 topSchemaRef:T,compositeRule:true},x),f.pass(x,()=>f.error(true))}a(s,"v8");t.macroKeywordCode=s;function o(f,_){var y;let{
 gen:b,keyword:g,schema:v,parentSchema:S,$data:E,it:T}=f;u(T,_);let x=!E&&_.compile?_.compile.call(T.self,v,S,T):_.validate,
-k=d(b,g,x),C=b.let("valid");f.block$data(C,A),f.ok((y=_.valid)!==null&&y!==void 0?y:C);function A(){if(_.errors===false){
-if(F(),_.modifying)l(f);j(()=>f.error())}else{let Z=_.async?P():L();if(_.modifying)l(f);j(()=>c(f,Z))}}a(A,"f");function P(){
+k=d(b,g,x),C=b.let("valid");f.block$data(C,N),f.ok((y=_.valid)!==null&&y!==void 0?y:C);function N(){if(_.errors===false){
+if(F(),_.modifying)l(f);j(()=>f.error())}else{let Z=_.async?P():L();if(_.modifying)l(f);j(()=>c(f,Z))}}a(N,"f");function P(){
 let Z=b.let("ruleErrs",null);return b.try(()=>F(e._`await `),me=>b.assign(C,false).if(e._`${me} instanceof ${T.ValidationError}`,
 ()=>b.assign(Z,e._`${me}.errors`),()=>b.throw(me))),Z}a(P,"m");function L(){let Z=e._`${k}.errors`;return b.assign(Z,null),
 F(e.nil),Z}a(L,"g");function F(Z=_.async?e._`await `:e.nil){let me=T.opts.passContext?r.default.this:r.default.self,ne=!("\
@@ -1993,7 +1993,7 @@ schema:f,opts:_,self:y,errSchemaPath:b},g,v){if(Array.isArray(g.keyword)?!g.keyw
 "ajv implementation error");let S=g.dependencies;if(S===null||S===void 0?void 0:S.some(E=>!Object.prototype.hasOwnProperty.
 call(f,E)))throw Error(`parent schema must have dependencies of ${v}: ${S.join(",")}`);if(g.validateSchema){if(!g.validateSchema(
 f[v])){let E=`keyword "${v}" value is invalid at path "${b}": `+y.errorsText(g.validateSchema.errors);if(_.validateSchema===
-"log")y.logger.error(E);else throw Error(E)}}}a(p,"T8");t.validateKeywordUsage=p});NI=Q(t=>{Object.defineProperty(t,"__e\
+"log")y.logger.error(E);else throw Error(E)}}}a(p,"T8");t.validateKeywordUsage=p});AI=Q(t=>{Object.defineProperty(t,"__e\
 sModule",{value:true});t.extendSubschemaMode=t.extendSubschemaData=t.getSubschema=void 0;var e=et(),r=mt();function n(o,{
 keyword:l,schemaProp:c,schema:u,schemaPath:d,errSchemaPath:h,topSchemaRef:p}){if(l!==void 0&&u!==void 0)throw Error('bot\
 h "keyword" and "schema" passed, only one allowed');if(l!==void 0){let f=o.schema[l];return c===void 0?{schema:f,schemaPath:e.
@@ -2040,15 +2040,15 @@ B8");t.resolveUrl=f;var _=/^[a-z_][-a-z0-9._]*$/i;function y(b,g){if(typeof b=="
 opts,E=p(b[v]||g),T={"":E},x=u(S,E,false),k={},C=new Set;return n(b,{allKeys:true},(L,F,j,Z)=>{if(Z===void 0)return;let me=x+
 F,ne=T[Z];if(typeof L[v]=="string")ne=ae.call(this,L[v]);pe.call(this,L.$anchor),pe.call(this,L.$dynamicAnchor),T[F]=ne;
 function ae(xe){let ee=this.opts.uriResolver.resolve;if(xe=p(ne?ee(ne,xe):xe),C.has(xe))throw P(xe);C.add(xe);let q=this.
-refs[xe];if(typeof q=="string")q=this.refs[q];if(typeof q=="object")A(L,q.schema,xe);else if(xe!==p(me))if(xe[0]==="#")A(
+refs[xe];if(typeof q=="string")q=this.refs[q];if(typeof q=="object")N(L,q.schema,xe);else if(xe!==p(me))if(xe[0]==="#")N(
 L,k[xe],xe),k[xe]=L;else this.refs[xe]=me;return xe}a(ae,"S");function pe(xe){if(typeof xe=="string"){if(!_.test(xe))throw Error(
-`invalid anchor "${xe}"`);ae.call(this,`#${xe}`)}}a(pe,"x")}),k;function A(L,F,j){if(F!==void 0&&!r(L,F))throw P(j)}a(A,
+`invalid anchor "${xe}"`);ae.call(this,`#${xe}`)}}a(pe,"x")}),k;function N(L,F,j){if(F!==void 0&&!r(L,F))throw P(j)}a(N,
 "u");function P(L){return Error(`reference "${L}" resolves to more than one schema`)}a(P,"d")}a(y,"V8");t.getSchemaRefs=
 y});cu=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.getData=t.KeywordCxt=t.validateFunctionCode=void 0;var e=OI(),
-r=rc(),n=uw(),i=rc(),s=RI(),o=AI(),l=NI(),c=et(),u=Yi(),d=lu(),h=mt(),p=ou();function f(w){if(x(w)){if(C(w),T(w)){g(w);return}}
-_(w,()=>(0,e.topBoolOrEmptySchema)(w))}a(f,"Q8");t.validateFunctionCode=f;function _({gen:w,validateName:O,schema:N,schemaEnv:D,
+r=rc(),n=uw(),i=rc(),s=RI(),o=NI(),l=AI(),c=et(),u=Yi(),d=lu(),h=mt(),p=ou();function f(w){if(x(w)){if(C(w),T(w)){g(w);return}}
+_(w,()=>(0,e.topBoolOrEmptySchema)(w))}a(f,"Q8");t.validateFunctionCode=f;function _({gen:w,validateName:O,schema:A,schemaEnv:D,
 opts:M},I){if(M.code.es5)w.func(O,c._`${u.default.data}, ${u.default.valCxt}`,D.$async,()=>{w.code(c._`"use strict"; ${S(
-N,M)}`),b(w,M),w.code(I)});else w.func(O,c._`${u.default.data}, ${y(M)}`,D.$async,()=>w.code(S(N,M)).code(I))}a(_,"ZM");
+A,M)}`),b(w,M),w.code(I)});else w.func(O,c._`${u.default.data}, ${y(M)}`,D.$async,()=>w.code(S(A,M)).code(I))}a(_,"ZM");
 function y(w){return c._`{${u.default.instancePath}="", ${u.default.parentData}, ${u.default.parentDataProperty}, ${u.default.
 rootData}=${u.default.data}${w.dynamicRef?c._`, ${u.default.dynamicAnchors}={}`:c.nil}}={}`}a(y,"e7");function b(w,O){w.
 if(u.default.valCxt,()=>{if(w.var(u.default.instancePath,c._`${u.default.valCxt}.${u.default.instancePath}`),w.var(u.default.
@@ -2056,77 +2056,77 @@ parentData,c._`${u.default.valCxt}.${u.default.parentData}`),w.var(u.default.par
 default.parentDataProperty}`),w.var(u.default.rootData,c._`${u.default.valCxt}.${u.default.rootData}`),O.dynamicRef)w.var(
 u.default.dynamicAnchors,c._`${u.default.valCxt}.${u.default.dynamicAnchors}`)},()=>{if(w.var(u.default.instancePath,c._`""`),
 w.var(u.default.parentData,c._`undefined`),w.var(u.default.parentDataProperty,c._`undefined`),w.var(u.default.rootData,u.
-default.data),O.dynamicRef)w.var(u.default.dynamicAnchors,c._`{}`)})}a(b,"t7");function g(w){let{schema:O,opts:N,gen:D}=w;
-_(w,()=>{if(N.$comment&&O.$comment)Z(w);if(L(w),D.let(u.default.vErrors,null),D.let(u.default.errors,0),N.unevaluated)v(
-w);A(w),me(w)});return}a(g,"r7");function v(w){let{gen:O,validateName:N}=w;w.evaluated=O.const("evaluated",c._`${N}.evaluated`),
+default.data),O.dynamicRef)w.var(u.default.dynamicAnchors,c._`{}`)})}a(b,"t7");function g(w){let{schema:O,opts:A,gen:D}=w;
+_(w,()=>{if(A.$comment&&O.$comment)Z(w);if(L(w),D.let(u.default.vErrors,null),D.let(u.default.errors,0),A.unevaluated)v(
+w);N(w),me(w)});return}a(g,"r7");function v(w){let{gen:O,validateName:A}=w;w.evaluated=O.const("evaluated",c._`${A}.evaluated`),
 O.if(c._`${w.evaluated}.dynamicProps`,()=>O.assign(c._`${w.evaluated}.props`,c._`undefined`)),O.if(c._`${w.evaluated}.dynamicItems`,
-()=>O.assign(c._`${w.evaluated}.items`,c._`undefined`))}a(v,"n7");function S(w,O){let N=typeof w=="object"&&w[O.schemaId];
-return N&&(O.code.source||O.code.process)?c._`/*# sourceURL=${N} */`:c.nil}a(S,"qM");function E(w,O){if(x(w)){if(C(w),T(
+()=>O.assign(c._`${w.evaluated}.items`,c._`undefined`))}a(v,"n7");function S(w,O){let A=typeof w=="object"&&w[O.schemaId];
+return A&&(O.code.source||O.code.process)?c._`/*# sourceURL=${A} */`:c.nil}a(S,"qM");function E(w,O){if(x(w)){if(C(w),T(
 w)){k(w,O);return}}(0,e.boolOrEmptySchema)(w,O)}a(E,"o7");function T({schema:w,self:O}){if(typeof w=="boolean")return!w;
-for(let N in w)if(O.RULES.all[N])return true;return false}a(T,"GM");function x(w){return typeof w.schema!="boolean"}a(x,
-"JM");function k(w,O){let{schema:N,gen:D,opts:M}=w;if(M.$comment&&N.$comment)Z(w);F(w),j(w);let I=D.const("_errs",u.default.
-errors);A(w,I),D.var(O,c._`${I} === ${u.default.errors}`)}a(k,"i7");function C(w){(0,h.checkUnknownRules)(w),P(w)}a(C,"X\
-M");function A(w,O){if(w.opts.jtd)return ae(w,[],false,O);let N=(0,r.getSchemaTypes)(w.schema),D=(0,r.coerceAndCheckDataType)(
-w,N);ae(w,N,!D,O)}a(A,"YM");function P(w){let{schema:O,errSchemaPath:N,opts:D,self:M}=w;if(O.$ref&&D.ignoreKeywordsWithRef&&
-(0,h.schemaHasRulesButRef)(O,M.RULES))M.logger.warn(`$ref: keywords ignored in schema at path "${N}"`)}a(P,"s7");function L(w){
-let{schema:O,opts:N}=w;if(O.default!==void 0&&N.useDefaults&&N.strictSchema)(0,h.checkStrictMode)(w,"default is ignored \
+for(let A in w)if(O.RULES.all[A])return true;return false}a(T,"GM");function x(w){return typeof w.schema!="boolean"}a(x,
+"JM");function k(w,O){let{schema:A,gen:D,opts:M}=w;if(M.$comment&&A.$comment)Z(w);F(w),j(w);let I=D.const("_errs",u.default.
+errors);N(w,I),D.var(O,c._`${I} === ${u.default.errors}`)}a(k,"i7");function C(w){(0,h.checkUnknownRules)(w),P(w)}a(C,"X\
+M");function N(w,O){if(w.opts.jtd)return ae(w,[],false,O);let A=(0,r.getSchemaTypes)(w.schema),D=(0,r.coerceAndCheckDataType)(
+w,A);ae(w,A,!D,O)}a(N,"YM");function P(w){let{schema:O,errSchemaPath:A,opts:D,self:M}=w;if(O.$ref&&D.ignoreKeywordsWithRef&&
+(0,h.schemaHasRulesButRef)(O,M.RULES))M.logger.warn(`$ref: keywords ignored in schema at path "${A}"`)}a(P,"s7");function L(w){
+let{schema:O,opts:A}=w;if(O.default!==void 0&&A.useDefaults&&A.strictSchema)(0,h.checkStrictMode)(w,"default is ignored \
 in the schema root")}a(L,"a7");function F(w){let O=w.schema[w.opts.schemaId];if(O)w.baseId=(0,d.resolveUrl)(w.opts.uriResolver,
 w.baseId,O)}a(F,"l7");function j(w){if(w.schema.$async&&!w.schemaEnv.$async)throw Error("async schema in sync schema")}a(
-j,"c7");function Z({gen:w,schemaEnv:O,schema:N,errSchemaPath:D,opts:M}){let I=N.$comment;if(M.$comment===true)w.code(c._`${u.
+j,"c7");function Z({gen:w,schemaEnv:O,schema:A,errSchemaPath:D,opts:M}){let I=A.$comment;if(M.$comment===true)w.code(c._`${u.
 default.self}.logger.log(${I})`);else if(typeof M.$comment=="function"){let W=c.str`${D}/$comment`,de=w.scopeValue("root",
 {ref:O.root});w.code(c._`${u.default.self}.opts.$comment(${I}, ${W}, ${de}.schema)`)}}a(Z,"QM");function me(w){let{gen:O,
-schemaEnv:N,validateName:D,ValidationError:M,opts:I}=w;if(N.$async)O.if(c._`${u.default.errors} === 0`,()=>O.return(u.default.
+schemaEnv:A,validateName:D,ValidationError:M,opts:I}=w;if(A.$async)O.if(c._`${u.default.errors} === 0`,()=>O.return(u.default.
 data),()=>O.throw(c._`new ${M}(${u.default.vErrors})`));else{if(O.assign(c._`${D}.errors`,u.default.vErrors),I.unevaluated)
-ne(w);O.return(c._`${u.default.errors} === 0`)}}a(me,"u7");function ne({gen:w,evaluated:O,props:N,items:D}){if(N instanceof
-c.Name)w.assign(c._`${O}.props`,N);if(D instanceof c.Name)w.assign(c._`${O}.items`,D)}a(ne,"d7");function ae(w,O,N,D){let{
+ne(w);O.return(c._`${u.default.errors} === 0`)}}a(me,"u7");function ne({gen:w,evaluated:O,props:A,items:D}){if(A instanceof
+c.Name)w.assign(c._`${O}.props`,A);if(D instanceof c.Name)w.assign(c._`${O}.items`,D)}a(ne,"d7");function ae(w,O,A,D){let{
 gen:M,schema:I,data:W,allErrors:de,opts:_e,self:ie}=w,{RULES:Re}=ie;if(I.$ref&&(_e.ignoreKeywordsWithRef||!(0,h.schemaHasRulesButRef)(
-I,Re))){M.block(()=>be(w,"$ref",Re.all.$ref.definition));return}if(!_e.jtd)xe(w,O);M.block(()=>{for(let Ne of Re.rules)Pe(
-Ne);Pe(Re.post)});function Pe(Ne){if(!(0,n.shouldUseGroup)(I,Ne))return;if(Ne.type){if(M.if((0,i.checkDataType)(Ne.type,
-W,_e.strictNumbers)),pe(w,Ne),O.length===1&&O[0]===Ne.type&&N)M.else(),(0,i.reportTypeError)(w);M.endIf()}else pe(w,Ne);
-if(!de)M.if(c._`${u.default.errors} === ${D||0}`)}a(Pe,"p")}a(ae,"VM");function pe(w,O){let{gen:N,schema:D,opts:{useDefaults:M}}=w;
-if(M)(0,s.assignDefaults)(w,O.type);N.block(()=>{for(let I of O.rules)if((0,n.shouldUseRule)(D,I))be(w,I.keyword,I.definition,
+I,Re))){M.block(()=>be(w,"$ref",Re.all.$ref.definition));return}if(!_e.jtd)xe(w,O);M.block(()=>{for(let Ae of Re.rules)Pe(
+Ae);Pe(Re.post)});function Pe(Ae){if(!(0,n.shouldUseGroup)(I,Ae))return;if(Ae.type){if(M.if((0,i.checkDataType)(Ae.type,
+W,_e.strictNumbers)),pe(w,Ae),O.length===1&&O[0]===Ae.type&&A)M.else(),(0,i.reportTypeError)(w);M.endIf()}else pe(w,Ae);
+if(!de)M.if(c._`${u.default.errors} === ${D||0}`)}a(Pe,"p")}a(ae,"VM");function pe(w,O){let{gen:A,schema:D,opts:{useDefaults:M}}=w;
+if(M)(0,s.assignDefaults)(w,O.type);A.block(()=>{for(let I of O.rules)if((0,n.shouldUseRule)(D,I))be(w,I.keyword,I.definition,
 O.type)})}a(pe,"WM");function xe(w,O){if(w.schemaEnv.meta||!w.opts.strictTypes)return;if(ee(w,O),!w.opts.allowUnionTypes)
 q(w,O);Y(w,w.dataTypes)}a(xe,"p7");function ee(w,O){if(!O.length)return;if(!w.dataTypes.length){w.dataTypes=O;return}O.forEach(
-N=>{if(!R(w.dataTypes,N))G(w,`type "${N}" not allowed by context "${w.dataTypes.join(",")}"`)}),U(w,O)}a(ee,"f7");function q(w,O){
+A=>{if(!R(w.dataTypes,A))G(w,`type "${A}" not allowed by context "${w.dataTypes.join(",")}"`)}),U(w,O)}a(ee,"f7");function q(w,O){
 if(O.length>1&&!(O.length===2&&O.includes("null")))G(w,"use allowUnionTypes to allow union type keyword")}a(q,"m7");function Y(w,O){
-let N=w.self.RULES.all;for(let D in N){let M=N[D];if(typeof M=="object"&&(0,n.shouldUseRule)(w.schema,M)){let{type:I}=M.
+let A=w.self.RULES.all;for(let D in A){let M=A[D];if(typeof M=="object"&&(0,n.shouldUseRule)(w.schema,M)){let{type:I}=M.
 definition;if(I.length&&!I.some(W=>z(O,W)))G(w,`missing type "${I.join(",")}" for keyword "${D}"`)}}}a(Y,"g7");function z(w,O){
 return w.includes(O)||O==="number"&&w.includes("integer")}a(z,"h7");function R(w,O){return w.includes(O)||O==="integer"&&
-w.includes("number")}a(R,"eD");function U(w,O){let N=[];for(let D of w.dataTypes)if(R(O,D))N.push(D);else if(O.includes(
-"integer")&&D==="number")N.push("integer");w.dataTypes=N}a(U,"y7");function G(w,O){let N=w.schemaEnv.baseId+w.errSchemaPath;
-O+=` at "${N}" (strictTypes)`,(0,h.checkStrictMode)(w,O,w.opts.strictTypes)}a(G,"Ox");class ce{static{a(this,"Cx")}constructor(O,N,D){
-if((0,o.validateKeywordUsage)(O,N,D),this.gen=O.gen,this.allErrors=O.allErrors,this.keyword=D,this.data=O.data,this.schema=
-O.schema[D],this.$data=N.$data&&O.opts.$data&&this.schema&&this.schema.$data,this.schemaValue=(0,h.schemaRefOrVal)(O,this.
-schema,D,this.$data),this.schemaType=N.schemaType,this.parentSchema=O.schema,this.params={},this.it=O,this.def=N,this.$data)
+w.includes("number")}a(R,"eD");function U(w,O){let A=[];for(let D of w.dataTypes)if(R(O,D))A.push(D);else if(O.includes(
+"integer")&&D==="number")A.push("integer");w.dataTypes=A}a(U,"y7");function G(w,O){let A=w.schemaEnv.baseId+w.errSchemaPath;
+O+=` at "${A}" (strictTypes)`,(0,h.checkStrictMode)(w,O,w.opts.strictTypes)}a(G,"Ox");class ce{static{a(this,"Cx")}constructor(O,A,D){
+if((0,o.validateKeywordUsage)(O,A,D),this.gen=O.gen,this.allErrors=O.allErrors,this.keyword=D,this.data=O.data,this.schema=
+O.schema[D],this.$data=A.$data&&O.opts.$data&&this.schema&&this.schema.$data,this.schemaValue=(0,h.schemaRefOrVal)(O,this.
+schema,D,this.$data),this.schemaType=A.schemaType,this.parentSchema=O.schema,this.params={},this.it=O,this.def=A,this.$data)
 this.schemaCode=O.gen.const("vSchema",nt(this.$data,O));else if(this.schemaCode=this.schemaValue,!(0,o.validSchemaType)(
-this.schema,N.schemaType,N.allowUndefined))throw Error(`${D} value must be ${JSON.stringify(N.schemaType)}`);if("code"in
-N?N.trackErrors:N.errors!==false)this.errsCount=O.gen.const("_errs",u.default.errors)}result(O,N,D){this.failResult((0,c.
-not)(O),N,D)}failResult(O,N,D){if(this.gen.if(O),D)D();else this.error();if(N){if(this.gen.else(),N(),this.allErrors)this.
-gen.endIf()}else if(this.allErrors)this.gen.endIf();else this.gen.else()}pass(O,N){this.failResult((0,c.not)(O),void 0,N)}fail(O){
+this.schema,A.schemaType,A.allowUndefined))throw Error(`${D} value must be ${JSON.stringify(A.schemaType)}`);if("code"in
+A?A.trackErrors:A.errors!==false)this.errsCount=O.gen.const("_errs",u.default.errors)}result(O,A,D){this.failResult((0,c.
+not)(O),A,D)}failResult(O,A,D){if(this.gen.if(O),D)D();else this.error();if(A){if(this.gen.else(),A(),this.allErrors)this.
+gen.endIf()}else if(this.allErrors)this.gen.endIf();else this.gen.else()}pass(O,A){this.failResult((0,c.not)(O),void 0,A)}fail(O){
 if(O===void 0){if(this.error(),!this.allErrors)this.gen.if(false);return}if(this.gen.if(O),this.error(),this.allErrors)this.
-gen.endIf();else this.gen.else()}fail$data(O){if(!this.$data)return this.fail(O);let{schemaCode:N}=this;this.fail(c._`${N} !== undefined && (${(0,
-c.or)(this.invalid$data(),O)})`)}error(O,N,D){if(N){this.setParams(N),this._error(O,D),this.setParams({});return}this._error(
-O,D)}_error(O,N){(O?p.reportExtraError:p.reportError)(this,this.def.error,N)}$dataError(){(0,p.reportError)(this,this.def.
+gen.endIf();else this.gen.else()}fail$data(O){if(!this.$data)return this.fail(O);let{schemaCode:A}=this;this.fail(c._`${A} !== undefined && (${(0,
+c.or)(this.invalid$data(),O)})`)}error(O,A,D){if(A){this.setParams(A),this._error(O,D),this.setParams({});return}this._error(
+O,D)}_error(O,A){(O?p.reportExtraError:p.reportError)(this,this.def.error,A)}$dataError(){(0,p.reportError)(this,this.def.
 $dataError||p.keyword$DataError)}reset(){if(this.errsCount===void 0)throw Error('add "trackErrors" to keyword definition');
-(0,p.resetErrorsCount)(this.gen,this.errsCount)}ok(O){if(!this.allErrors)this.gen.if(O)}setParams(O,N){if(N)Object.assign(
-this.params,O);else this.params=O}block$data(O,N,D=c.nil){this.gen.block(()=>{this.check$data(O,D),N()})}check$data(O=c.
-nil,N=c.nil){if(!this.$data)return;let{gen:D,schemaCode:M,schemaType:I,def:W}=this;if(D.if((0,c.or)(c._`${M} === undefined`,
-N)),O!==c.nil)D.assign(O,true);if(I.length||W.validateSchema){if(D.elseIf(this.invalid$data()),this.$dataError(),O!==c.nil)
-D.assign(O,false)}D.else()}invalid$data(){let{gen:O,schemaCode:N,schemaType:D,def:M,it:I}=this;return(0,c.or)(W(),de());
-function W(){if(D.length){if(!(N instanceof c.Name))throw Error("ajv implementation error");let _e=Array.isArray(D)?D:[D];
-return c._`${(0,i.checkDataTypes)(_e,N,I.opts.strictNumbers,i.DataType.Wrong)}`}return c.nil}a(W,"i");function de(){if(M.
-validateSchema){let _e=O.scopeValue("validate$data",{ref:M.validateSchema});return c._`!${_e}(${N})`}return c.nil}a(de,"\
-s")}subschema(O,N){let D=(0,l.getSubschema)(this.it,O);(0,l.extendSubschemaData)(D,this.it,O),(0,l.extendSubschemaMode)(
-D,O);let M={...this.it,...D,items:void 0,props:void 0};return E(M,N),M}mergeEvaluated(O,N){let{it:D,gen:M}=this;if(!D.opts.
-unevaluated)return;if(D.props!==true&&O.props!==void 0)D.props=h.mergeEvaluated.props(M,O.props,D.props,N);if(D.items!==
-true&&O.items!==void 0)D.items=h.mergeEvaluated.items(M,O.items,D.items,N)}mergeValidEvaluated(O,N){let{it:D,gen:M}=this;
-if(D.opts.unevaluated&&(D.props!==true||D.items!==true))return M.if(N,()=>this.mergeEvaluated(O,c.Name)),true}}t.KeywordCxt=
-ce;function be(w,O,N,D){let M=new ce(w,N,O);if("code"in N)N.code(M,D);else if(M.$data&&N.validate)(0,o.funcKeywordCode)(
-M,N);else if("macro"in N)(0,o.macroKeywordCode)(M,N);else if(N.compile||N.validate)(0,o.funcKeywordCode)(M,N)}a(be,"tD");
-var He=/^\/(?:[^~]|~0|~1)*$/,We=/^([0-9]+)(#|\/(?:[^~]|~0|~1)*)?$/;function nt(w,{dataLevel:O,dataNames:N,dataPathArr:D}){
+(0,p.resetErrorsCount)(this.gen,this.errsCount)}ok(O){if(!this.allErrors)this.gen.if(O)}setParams(O,A){if(A)Object.assign(
+this.params,O);else this.params=O}block$data(O,A,D=c.nil){this.gen.block(()=>{this.check$data(O,D),A()})}check$data(O=c.
+nil,A=c.nil){if(!this.$data)return;let{gen:D,schemaCode:M,schemaType:I,def:W}=this;if(D.if((0,c.or)(c._`${M} === undefined`,
+A)),O!==c.nil)D.assign(O,true);if(I.length||W.validateSchema){if(D.elseIf(this.invalid$data()),this.$dataError(),O!==c.nil)
+D.assign(O,false)}D.else()}invalid$data(){let{gen:O,schemaCode:A,schemaType:D,def:M,it:I}=this;return(0,c.or)(W(),de());
+function W(){if(D.length){if(!(A instanceof c.Name))throw Error("ajv implementation error");let _e=Array.isArray(D)?D:[D];
+return c._`${(0,i.checkDataTypes)(_e,A,I.opts.strictNumbers,i.DataType.Wrong)}`}return c.nil}a(W,"i");function de(){if(M.
+validateSchema){let _e=O.scopeValue("validate$data",{ref:M.validateSchema});return c._`!${_e}(${A})`}return c.nil}a(de,"\
+s")}subschema(O,A){let D=(0,l.getSubschema)(this.it,O);(0,l.extendSubschemaData)(D,this.it,O),(0,l.extendSubschemaMode)(
+D,O);let M={...this.it,...D,items:void 0,props:void 0};return E(M,A),M}mergeEvaluated(O,A){let{it:D,gen:M}=this;if(!D.opts.
+unevaluated)return;if(D.props!==true&&O.props!==void 0)D.props=h.mergeEvaluated.props(M,O.props,D.props,A);if(D.items!==
+true&&O.items!==void 0)D.items=h.mergeEvaluated.items(M,O.items,D.items,A)}mergeValidEvaluated(O,A){let{it:D,gen:M}=this;
+if(D.opts.unevaluated&&(D.props!==true||D.items!==true))return M.if(A,()=>this.mergeEvaluated(O,c.Name)),true}}t.KeywordCxt=
+ce;function be(w,O,A,D){let M=new ce(w,A,O);if("code"in A)A.code(M,D);else if(M.$data&&A.validate)(0,o.funcKeywordCode)(
+M,A);else if("macro"in A)(0,o.macroKeywordCode)(M,A);else if(A.compile||A.validate)(0,o.funcKeywordCode)(M,A)}a(be,"tD");
+var He=/^\/(?:[^~]|~0|~1)*$/,We=/^([0-9]+)(#|\/(?:[^~]|~0|~1)*)?$/;function nt(w,{dataLevel:O,dataNames:A,dataPathArr:D}){
 let M,I;if(w==="")return u.default.rootData;if(w[0]==="/"){if(!He.test(w))throw Error(`Invalid JSON-pointer: ${w}`);M=w,
 I=u.default.rootData}else{let ie=We.exec(w);if(!ie)throw Error(`Invalid JSON-pointer: ${w}`);let Re=+ie[1];if(M=ie[2],M===
-"#"){if(Re>=O)throw Error(_e("property/index",Re));return D[O-Re]}if(Re>O)throw Error(_e("data",Re));if(I=N[O-Re],!M)return I}
+"#"){if(Re>=O)throw Error(_e("property/index",Re));return D[O-Re]}if(Re>O)throw Error(_e("data",Re));if(I=A[O-Re],!M)return I}
 let W=I,de=M.split("/");for(let ie of de)if(ie)I=c._`${I}${(0,c.getProperty)((0,h.unescapeJsonPointer)(ie))}`,W=c._`${W} && ${I}`;
 return W;function _e(ie,Re){return`Cannot access ${ie} ${Re} levels up, current level is ${O}`}a(_e,"c")}a(nt,"rD");t.getData=
 nt});Mh=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});class e extends Error{static{a(this,"iD")}constructor(n){
@@ -2141,15 +2141,15 @@ E[v.schemaId||"$id"]),this.schemaPath=v.schemaPath,this.localRefs=v.localRefs,th
 void 0?void 0:E.$async,this.refs={}}}t.SchemaEnv=l;function c(g){let v=h.call(this,g);if(v)return v;let S=(0,i.getFullPath)(
 this.opts.uriResolver,g.root.baseId),{es5:E,lines:T}=this.opts.code,{ownProperties:x}=this.opts,k=new e.CodeGen(this.scope,
 {es5:E,lines:T,ownProperties:x}),C;if(g.$async)C=k.scopeValue("Error",{ref:r.default,code:e._`require("ajv/dist/runtime/validation_error").default`});
-let A=k.scopeName("validate");g.validateName=A;let P={gen:k,allErrors:this.opts.allErrors,data:n.default.data,parentData:n.
+let N=k.scopeName("validate");g.validateName=N;let P={gen:k,allErrors:this.opts.allErrors,data:n.default.data,parentData:n.
 default.parentData,parentDataProperty:n.default.parentDataProperty,dataNames:[n.default.data],dataPathArr:[e.nil],dataLevel:0,
 dataTypes:[],definedProperties:new Set,topSchemaRef:k.scopeValue("schema",this.opts.code.source===true?{ref:g.schema,code:(0,
-e.stringify)(g.schema)}:{ref:g.schema}),validateName:A,ValidationError:C,schema:g.schema,schemaEnv:g,rootId:S,baseId:g.baseId||
+e.stringify)(g.schema)}:{ref:g.schema}),validateName:N,ValidationError:C,schema:g.schema,schemaEnv:g,rootId:S,baseId:g.baseId||
 S,schemaPath:e.nil,errSchemaPath:g.schemaPath||(this.opts.jtd?"":"#"),errorPath:e._`""`,opts:this.opts,self:this},L;try{
 this._compilations.add(g),(0,o.validateFunctionCode)(P),k.optimize(this.opts.code.optimize);let F=k.toString();if(L=`${k.
 scopeRefs(n.default.scope)}return ${F}`,this.opts.code.process)L=this.opts.code.process(L,g);let j=Function(`${n.default.
-self}`,`${n.default.scope}`,L)(this,this.scope.get());if(this.scope.value(A,{ref:j}),j.errors=null,j.schema=g.schema,j.schemaEnv=
-g,g.$async)j.$async=true;if(this.opts.code.source===true)j.source={validateName:A,validateCode:F,scopeValues:k._values};
+self}`,`${n.default.scope}`,L)(this,this.scope.get());if(this.scope.value(N,{ref:j}),j.errors=null,j.schema=g.schema,j.schemaEnv=
+g,g.$async)j.$async=true;if(this.opts.code.source===true)j.source={validateName:N,validateCode:F,scopeValues:k._values};
 if(this.opts.unevaluated){let{props:Z,items:me}=P;if(j.evaluated={props:Z instanceof e.Name?void 0:Z,items:me instanceof
 e.Name?void 0:me,dynamicProps:Z instanceof e.Name,dynamicItems:me instanceof e.Name},j.source)j.source.evaluated=(0,e.stringify)(
 j.evaluated)}return g.validate=j,g}catch(F){if(delete g.validate,delete g.validateName,L)this.logger.error("Error compil\
@@ -2164,11 +2164,11 @@ g,v)}a(f,"A7");function _(g,v){let S=this.opts.uriResolver.parse(v),E=(0,i._getF
 getFullPath)(this.opts.uriResolver,g.baseId,void 0);if(Object.keys(g.schema).length>0&&E===T)return b.call(this,S,g);let x=(0,
 i.normalizeId)(E),k=this.refs[x]||this.schemas[x];if(typeof k=="string"){let C=_.call(this,g,k);if(typeof(C===null||C===
 void 0?void 0:C.schema)!=="object")return;return b.call(this,S,C)}if(typeof(k===null||k===void 0?void 0:k.schema)!=="obj\
-ect")return;if(!k.validate)c.call(this,k);if(x===(0,i.normalizeId)(v)){let{schema:C}=k,{schemaId:A}=this.opts,P=C[A];if(P)
-T=(0,i.resolveUrl)(this.opts.uriResolver,T,P);return new l({schema:C,schemaId:A,root:g,baseId:T})}return b.call(this,S,k)}
+ect")return;if(!k.validate)c.call(this,k);if(x===(0,i.normalizeId)(v)){let{schema:C}=k,{schemaId:N}=this.opts,P=C[N];if(P)
+T=(0,i.resolveUrl)(this.opts.uriResolver,T,P);return new l({schema:C,schemaId:N,root:g,baseId:T})}return b.call(this,S,k)}
 a(_,"_g");t.resolveSchema=_;var y=new Set(["properties","patternProperties","enum","dependencies","definitions"]);function b(g,{
 baseId:v,schema:S,root:E}){var T;if(((T=g.fragment)===null||T===void 0?void 0:T[0])!=="/")return;for(let C of g.fragment.
-slice(1).split("/")){if(typeof S==="boolean")return;let A=S[(0,s.unescapeFragment)(C)];if(A===void 0)return;S=A;let P=typeof S===
+slice(1).split("/")){if(typeof S==="boolean")return;let N=S[(0,s.unescapeFragment)(C)];if(N===void 0)return;S=N;let P=typeof S===
 "object"&&S[this.opts.schemaId];if(!y.has(C)&&P)v=(0,i.resolveUrl)(this.opts.uriResolver,v,P)}let x;if(typeof S!="boolea\
 n"&&S.$ref&&!(0,s.schemaHasRulesButRef)(S,this.RULES)){let C=(0,i.resolveUrl)(this.opts.uriResolver,v,S.$ref);x=_.call(this,
 E,C)}let{schemaId:k}=this.opts;if(x=x||new l({schema:S,schemaId:k,root:E,baseId:v}),x.schema!==x.root.schema)return x;return}
@@ -2178,33 +2178,33 @@ $data:{type:"string",anyOf:[{format:"relative-json-pointer"},{format:"json-point
 Q((t,e)=>{var r=RegExp.prototype.test.bind(/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/iu),n=RegExp.prototype.
 test.bind(/^(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)$/u),i=RegExp.prototype.
 test.bind(/^[\da-f]{2}$/iu),s=RegExp.prototype.test.bind(/^[\da-z\-._~]$/iu),o=RegExp.prototype.test.bind(/^[\da-z\-._~!$&'()*+,;=:@/]$/iu);
-function l(k){let C="",A=0,P=0;for(P=0;P<k.length;P++){if(A=k[P].charCodeAt(0),A===48)continue;if(!(A>=48&&A<=57||A>=65&&
-A<=70||A>=97&&A<=102))return"";C+=k[P];break}for(P+=1;P<k.length;P++){if(A=k[P].charCodeAt(0),!(A>=48&&A<=57||A>=65&&A<=
-70||A>=97&&A<=102))return"";C+=k[P]}return C}a(l,"Ux");var c=RegExp.prototype.test.bind(/[^!"$&'()*+,\-.;=_`a-z{}~]/u);function u(k){
-return k.length=0,true}a(u,"mD");function d(k,C,A){if(k.length){let P=l(k);if(P!=="")C.push(P);else return A.error=true,
-false;k.length=0}return true}a(d,"j7");function h(k){let C=0,A={error:false,address:"",zone:""},P=[],L=[],F=false,j=false,
+function l(k){let C="",N=0,P=0;for(P=0;P<k.length;P++){if(N=k[P].charCodeAt(0),N===48)continue;if(!(N>=48&&N<=57||N>=65&&
+N<=70||N>=97&&N<=102))return"";C+=k[P];break}for(P+=1;P<k.length;P++){if(N=k[P].charCodeAt(0),!(N>=48&&N<=57||N>=65&&N<=
+70||N>=97&&N<=102))return"";C+=k[P]}return C}a(l,"Ux");var c=RegExp.prototype.test.bind(/[^!"$&'()*+,\-.;=_`a-z{}~]/u);function u(k){
+return k.length=0,true}a(u,"mD");function d(k,C,N){if(k.length){let P=l(k);if(P!=="")C.push(P);else return N.error=true,
+false;k.length=0}return true}a(d,"j7");function h(k){let C=0,N={error:false,address:"",zone:""},P=[],L=[],F=false,j=false,
 Z=d;for(let me=0;me<k.length;me++){let ne=k[me];if(ne==="["||ne==="]")continue;if(ne===":"){if(F===true)j=true;if(!Z(L,P,
-A))break;if(++C>7){A.error=true;break}if(me>0&&k[me-1]===":")F=true;P.push(":");continue}else if(ne==="%"){if(!Z(L,P,A))
-break;Z=u}else{L.push(ne);continue}}if(L.length)if(Z===u)A.zone=L.join("");else if(j)P.push(L.join(""));else P.push(l(L));
-return A.address=P.join(""),A}a(h,"z7");function p(k){if(f(k,":")<2)return{host:k,isIPV6:false};let C=h(k);if(!C.error){
-let{address:A,address:P}=C;if(C.zone)A+="%"+C.zone,P+="%25"+C.zone;return{host:A,isIPV6:true,escapedHost:P}}else return{
-host:k,isIPV6:false}}a(p,"yD");function f(k,C){let A=0;for(let P=0;P<k.length;P++)if(k[P]===C)A++;return A}a(f,"F7");function _(k){
-let C=k,A=[],P=-1,L=0;while(L=C.length){if(L===1)if(C===".")break;else if(C==="/"){A.push("/");break}else{A.push(C);break}else if(L===
+N))break;if(++C>7){N.error=true;break}if(me>0&&k[me-1]===":")F=true;P.push(":");continue}else if(ne==="%"){if(!Z(L,P,N))
+break;Z=u}else{L.push(ne);continue}}if(L.length)if(Z===u)N.zone=L.join("");else if(j)P.push(L.join(""));else P.push(l(L));
+return N.address=P.join(""),N}a(h,"z7");function p(k){if(f(k,":")<2)return{host:k,isIPV6:false};let C=h(k);if(!C.error){
+let{address:N,address:P}=C;if(C.zone)N+="%"+C.zone,P+="%25"+C.zone;return{host:N,isIPV6:true,escapedHost:P}}else return{
+host:k,isIPV6:false}}a(p,"yD");function f(k,C){let N=0;for(let P=0;P<k.length;P++)if(k[P]===C)N++;return N}a(f,"F7");function _(k){
+let C=k,N=[],P=-1,L=0;while(L=C.length){if(L===1)if(C===".")break;else if(C==="/"){N.push("/");break}else{N.push(C);break}else if(L===
 2){if(C[0]==="."){if(C[1]===".")break;else if(C[1]==="/"){C=C.slice(2);continue}}else if(C[0]==="/"){if(C[1]==="."||C[1]===
-"/"){A.push("/");break}}}else if(L===3){if(C==="/.."){if(A.length!==0)A.pop();A.push("/");break}}if(C[0]==="."){if(C[1]===
+"/"){N.push("/");break}}}else if(L===3){if(C==="/.."){if(N.length!==0)N.pop();N.push("/");break}}if(C[0]==="."){if(C[1]===
 "."){if(C[2]==="/"){C=C.slice(3);continue}}else if(C[1]==="/"){C=C.slice(2);continue}}else if(C[0]==="/"){if(C[1]==="."){
-if(C[2]==="/"){C=C.slice(2);continue}else if(C[2]==="."){if(C[3]==="/"){if(C=C.slice(3),A.length!==0)A.pop();continue}}}}
-if((P=C.indexOf("/",1))===-1){A.push(C);break}else A.push(C.slice(0,P)),C=C.slice(P)}return A.join("")}a(_,"H7");var y={
-"@":"%40","/":"%2F","?":"%3F","#":"%23",":":"%3A"},b=/[@/?#:]/g,g=/[@/?#]/g;function v(k,C){let A=C?g:b;return A.lastIndex=
-0,k.replace(A,P=>y[P])}a(v,"_D");function S(k,C=false){if(k.indexOf("%")===-1)return k;let A="";for(let P=0;P<k.length;P++){
+if(C[2]==="/"){C=C.slice(2);continue}else if(C[2]==="."){if(C[3]==="/"){if(C=C.slice(3),N.length!==0)N.pop();continue}}}}
+if((P=C.indexOf("/",1))===-1){N.push(C);break}else N.push(C.slice(0,P)),C=C.slice(P)}return N.join("")}a(_,"H7");var y={
+"@":"%40","/":"%2F","?":"%3F","#":"%23",":":"%3A"},b=/[@/?#:]/g,g=/[@/?#]/g;function v(k,C){let N=C?g:b;return N.lastIndex=
+0,k.replace(N,P=>y[P])}a(v,"_D");function S(k,C=false){if(k.indexOf("%")===-1)return k;let N="";for(let P=0;P<k.length;P++){
 if(k[P]==="%"&&P+2<k.length){let L=k.slice(P+1,P+3);if(i(L)){let F=L.toUpperCase(),j=String.fromCharCode(parseInt(F,16));
-if(C&&s(j))A+=j;else A+="%"+F;P+=2;continue}}A+=k[P]}return A}a(S,"W7");function E(k){let C="";for(let A=0;A<k.length;A++){
-if(k[A]==="%"&&A+2<k.length){let P=k.slice(A+1,A+3);if(i(P)){let L=P.toUpperCase(),F=String.fromCharCode(parseInt(L,16));
-if(F!=="."&&s(F))C+=F;else C+="%"+L;A+=2;continue}}if(o(k[A]))C+=k[A];else C+=escape(k[A])}return C}a(E,"K7");function T(k){
-let C="";for(let A=0;A<k.length;A++){if(k[A]==="%"&&A+2<k.length){let P=k.slice(A+1,A+3);if(i(P)){C+="%"+P.toUpperCase(),
-A+=2;continue}}C+=escape(k[A])}return C}a(T,"Z7");function x(k){let C=[];if(k.userinfo!==void 0)C.push(k.userinfo),C.push(
-"@");if(k.host!==void 0){let A=unescape(k.host);if(!n(A)){let P=p(A);if(P.isIPV6===true)A=`[${P.escapedHost}]`;else A=v(
-A,false)}C.push(A)}if(typeof k.port==="number"||typeof k.port==="string")C.push(":"),C.push(String(k.port));return C.length?
+if(C&&s(j))N+=j;else N+="%"+F;P+=2;continue}}N+=k[P]}return N}a(S,"W7");function E(k){let C="";for(let N=0;N<k.length;N++){
+if(k[N]==="%"&&N+2<k.length){let P=k.slice(N+1,N+3);if(i(P)){let L=P.toUpperCase(),F=String.fromCharCode(parseInt(L,16));
+if(F!=="."&&s(F))C+=F;else C+="%"+L;N+=2;continue}}if(o(k[N]))C+=k[N];else C+=escape(k[N])}return C}a(E,"K7");function T(k){
+let C="";for(let N=0;N<k.length;N++){if(k[N]==="%"&&N+2<k.length){let P=k.slice(N+1,N+3);if(i(P)){C+="%"+P.toUpperCase(),
+N+=2;continue}}C+=escape(k[N])}return C}a(T,"Z7");function x(k){let C=[];if(k.userinfo!==void 0)C.push(k.userinfo),C.push(
+"@");if(k.host!==void 0){let N=unescape(k.host);if(!n(N)){let P=p(N);if(P.isIPV6===true)N=`[${P.escapedHost}]`;else N=v(
+N,false)}C.push(N)}if(typeof k.port==="number"||typeof k.port==="string")C.push(":"),C.push(String(k.port));return C.length?
 C.join(""):void 0}a(x,"G7");e.exports={nonSimpleDomain:c,recomposeAuthority:x,reescapeHostDelimiters:v,normalizePercentEncoding:S,
 normalizePathEncoding:E,escapePreservingEscapes:T,removeDotSegments:_,isIPv4:n,isUUID:r,normalizeIPv6:p,stringArrayToHexStripped:l}});
 LI=Q((t,e)=>{var{isUUID:r}=pw(),n=/([\da-z][\d\-a-z]{0,31}):((?:[\w!$'()*+,\-.:;=@]|%[\da-f]{2})+)/iu,i=["http","https",
@@ -2215,13 +2215,13 @@ k.error||"HTTP URIs must have a host.";return k}a(l,"SD");function c(k){let C=St
 port===(C?443:80)||k.port==="")k.port=void 0;if(!k.path)k.path="/";return k}a(c,"vD");function u(k){return k.secure=o(k),
 k.resourceName=(k.path||"/")+(k.query?"?"+k.query:""),k.path=void 0,k.query=void 0,k}a(u,"eQ");function d(k){if(k.port===
 (o(k)?443:80)||k.port==="")k.port=void 0;if(typeof k.secure==="boolean")k.scheme=k.secure?"wss":"ws",k.secure=void 0;if(k.
-resourceName){let[C,A]=k.resourceName.split("?");k.path=C&&C!=="/"?C:void 0,k.query=A,k.resourceName=void 0}return k.fragment=
-void 0,k}a(d,"tQ");function h(k,C){if(!k.path)return k.error="URN can not be parsed",k;let A=k.path.match(n);if(A){let P=C.
-scheme||k.scheme||"urn";k.nid=A[1].toLowerCase(),k.nss=A[2];let L=`${P}:${C.nid||k.nid}`,F=x(L);if(k.path=void 0,F)k=F.parse(
+resourceName){let[C,N]=k.resourceName.split("?");k.path=C&&C!=="/"?C:void 0,k.query=N,k.resourceName=void 0}return k.fragment=
+void 0,k}a(d,"tQ");function h(k,C){if(!k.path)return k.error="URN can not be parsed",k;let N=k.path.match(n);if(N){let P=C.
+scheme||k.scheme||"urn";k.nid=N[1].toLowerCase(),k.nss=N[2];let L=`${P}:${C.nid||k.nid}`,F=x(L);if(k.path=void 0,F)k=F.parse(
 k,C)}else k.error=k.error||"URN can not be parsed.";return k}a(h,"rQ");function p(k,C){if(k.nid===void 0)throw Error("UR\
-N without nid cannot be serialized");let A=C.scheme||k.scheme||"urn",P=k.nid.toLowerCase(),L=`${A}:${C.nid||P}`,F=x(L);if(F)
-k=F.serialize(k,C);let j=k,Z=k.nss;return j.path=`${P||C.nid}:${Z}`,C.skipEscape=true,j}a(p,"nQ");function f(k,C){let A=k;
-if(A.uuid=A.nss,A.nss=void 0,!C.tolerant&&(!A.uuid||!r(A.uuid)))A.error=A.error||"UUID is not valid.";return A}a(f,"oQ");
+N without nid cannot be serialized");let N=C.scheme||k.scheme||"urn",P=k.nid.toLowerCase(),L=`${N}:${C.nid||P}`,F=x(L);if(F)
+k=F.serialize(k,C);let j=k,Z=k.nss;return j.path=`${P||C.nid}:${Z}`,C.skipEscape=true,j}a(p,"nQ");function f(k,C){let N=k;
+if(N.uuid=N.nss,N.nss=void 0,!C.tolerant&&(!N.uuid||!r(N.uuid)))N.error=N.error||"UUID is not valid.";return N}a(f,"oQ");
 function _(k){let C=k;return C.nss=(k.uuid||"").toLowerCase(),C}a(_,"iQ");var y={scheme:"http",domainHost:true,parse:l,serialize:c},
 b={scheme:"https",domainHost:y.domainHost,parse:l,serialize:c},g={scheme:"ws",domainHost:true,parse:u,serialize:d},v={scheme:"\
 wss",domainHost:g.domainHost,parse:g.parse,serialize:g.serialize},S={scheme:"urn",parse:h,serialize:p,skipNormalize:true},
@@ -2264,8 +2264,8 @@ pe.parse)pe.parse(j,F)}else j.error=j.error||"URI can not be parsed.";return{par
 D");function T(P,L){return E(P,L).parsed}a(T,"Bs");function x(P,L){return k(P,L).normalized}a(x,"kQ");function k(P,L){let{
 parsed:F,malformedAuthorityOrPort:j}=E(P,L);return{normalized:j?P:g(F,L),malformedAuthorityOrPort:j}}a(k,"AD");function C(P,L){
 if(typeof P==="string"){let{normalized:F,malformedAuthorityOrPort:j}=k(P,L);return j?void 0:F}if(typeof P==="object")return g(
-P,L)}a(C,"ED");var A={SCHEMES:h,normalize:f,resolve:_,resolveComponent:y,equal:b,serialize:g,parse:T};e.exports=A;e.exports.
-default=A;e.exports.fastUri=A});UI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});var e=DI();e.code='require("\
+P,L)}a(C,"ED");var N={SCHEMES:h,normalize:f,resolve:_,resolveComponent:y,equal:b,serialize:g,parse:T};e.exports=N;e.exports.
+default=N;e.exports.fastUri=N});UI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});var e=DI();e.code='require("\
 ajv/dist/runtime/uri").default';t.default=e});MI=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.CodeGen=t.Name=
 t.nil=t.stringify=t.str=t._=t.KeywordCxt=void 0;var e=cu();Object.defineProperty(t,"KeywordCxt",{enumerable:true,get:a(function(){
 return e.KeywordCxt},"get")});var r=et();Object.defineProperty(t,"_",{enumerable:true,get:a(function(){return r._},"get")});
@@ -2284,23 +2284,23 @@ ddSchema.",processCode:"Use option `code: {process: (code, schemaEnv: object) =>
 to `ajv.addFormat` (or `formats` option).",cache:"Map is used as cache, schema object as key.",serialize:"Map is used as\
  cache, schema object as key.",ajvErrors:"It is default now."},g={ignoreKeywordsWithRef:"",jsPropertySyntax:"",unicode:'\
 "minLength"/"maxLength" account for unicode characters by default.'},v=200;function S(ee){var q,Y,z,R,U,G,ce,be,He,We,nt,
-w,O,N,D,M,I,W,de,_e,ie,Re,Pe,Ne,we;let H=ee.strict,Le=(q=ee.code)===null||q===void 0?void 0:q.optimize,se=Le===true||Le===
+w,O,A,D,M,I,W,de,_e,ie,Re,Pe,Ae,we;let H=ee.strict,Le=(q=ee.code)===null||q===void 0?void 0:q.optimize,se=Le===true||Le===
 void 0?1:Le||0,Ye=(z=(Y=ee.code)===null||Y===void 0?void 0:Y.regExp)!==null&&z!==void 0?z:f,st=(R=ee.uriResolver)!==null&&
 R!==void 0?R:p.default;return{strictSchema:(G=(U=ee.strictSchema)!==null&&U!==void 0?U:H)!==null&&G!==void 0?G:true,strictNumbers:(be=
 (ce=ee.strictNumbers)!==null&&ce!==void 0?ce:H)!==null&&be!==void 0?be:true,strictTypes:(We=(He=ee.strictTypes)!==null&&
 He!==void 0?He:H)!==null&&We!==void 0?We:"log",strictTuples:(w=(nt=ee.strictTuples)!==null&&nt!==void 0?nt:H)!==null&&w!==
-void 0?w:"log",strictRequired:(N=(O=ee.strictRequired)!==null&&O!==void 0?O:H)!==null&&N!==void 0?N:false,code:ee.code?{
+void 0?w:"log",strictRequired:(A=(O=ee.strictRequired)!==null&&O!==void 0?O:H)!==null&&A!==void 0?A:false,code:ee.code?{
 ...ee.code,optimize:se,regExp:Ye}:{optimize:se,regExp:Ye},loopRequired:(D=ee.loopRequired)!==null&&D!==void 0?D:v,loopEnum:(M=
 ee.loopEnum)!==null&&M!==void 0?M:v,meta:(I=ee.meta)!==null&&I!==void 0?I:true,messages:(W=ee.messages)!==null&&W!==void 0?
 W:true,inlineRefs:(de=ee.inlineRefs)!==null&&de!==void 0?de:true,schemaId:(_e=ee.schemaId)!==null&&_e!==void 0?_e:"$id",
 addUsedSchema:(ie=ee.addUsedSchema)!==null&&ie!==void 0?ie:true,validateSchema:(Re=ee.validateSchema)!==null&&Re!==void 0?
-Re:true,validateFormats:(Pe=ee.validateFormats)!==null&&Pe!==void 0?Pe:true,unicodeRegExp:(Ne=ee.unicodeRegExp)!==null&&
-Ne!==void 0?Ne:true,int32range:(we=ee.int32range)!==null&&we!==void 0?we:true,uriResolver:st}}a(S,"DQ");class E{static{a(
+Re:true,validateFormats:(Pe=ee.validateFormats)!==null&&Pe!==void 0?Pe:true,unicodeRegExp:(Ae=ee.unicodeRegExp)!==null&&
+Ae!==void 0?Ae:true,int32range:(we=ee.int32range)!==null&&we!==void 0?we:true,uriResolver:st}}a(S,"DQ");class E{static{a(
 this,"kg")}constructor(q={}){this.schemas={},this.refs={},this.formats={},this._compilations=new Set,this._loading={},this.
 _cache=new Map,q=this.opts={...q,...S(q)};let{es5:Y,lines:z}=this.opts.code;this.scope=new l.ValueScope({scope:{},prefixes:y,
 es5:Y,lines:z}),this.logger=F(q.logger);let R=q.validateFormats;if(q.validateFormats=false,this.RULES=(0,s.getRules)(),T.
 call(this,b,q,"NOT SUPPORTED"),T.call(this,g,q,"DEPRECATED","warn"),this._metaOpts=P.call(this),q.formats)C.call(this);if(this.
-_addVocabularies(),this._addDefaultMetaSchema(),q.keywords)A.call(this,q.keywords);if(typeof q.meta=="object")this.addMetaSchema(
+_addVocabularies(),this._addDefaultMetaSchema(),q.keywords)N.call(this,q.keywords);if(typeof q.meta=="object")this.addMetaSchema(
 q.meta);k.call(this),q.validateFormats=R}_addVocabularies(){this.addKeyword("$async")}_addDefaultMetaSchema(){let{$data:q,
 meta:Y,schemaId:z}=this.opts,R=h;if(z==="id")R={...h},R.id=R.$id,delete R.$id;if(Y&&q)this.addMetaSchema(R,R[z],false)}defaultMeta(){
 let{meta:q,schemaId:Y}=this.opts;return this.opts.defaultMeta=typeof q=="object"?q[Y]||q:void 0}validate(q,Y){let z;if(typeof q==
@@ -2354,8 +2354,8 @@ i.default;t.default=E;function T(ee,q,Y,z="error"){for(let R in ee){let U=R;if(U
  ${ee[U]}`)}}a(T,"ND");function x(ee){return ee=(0,c.normalizeId)(ee),this.schemas[ee]||this.refs[ee]}a(x,"UD");function k(){
 let ee=this.opts.schemas;if(!ee)return;if(Array.isArray(ee))this.addSchema(ee);else for(let q in ee)this.addSchema(ee[q],
 q)}a(k,"NQ");function C(){for(let ee in this.opts.formats){let q=this.opts.formats[ee];if(q)this.addFormat(ee,q)}}a(C,"U\
-Q");function A(ee){if(Array.isArray(ee)){this.addVocabulary(ee);return}this.logger.warn("keywords option as map is depre\
-cated, pass array");for(let q in ee){let Y=ee[q];if(!Y.keyword)Y.keyword=q;this.addKeyword(Y)}}a(A,"LQ");function P(){let ee={
+Q");function N(ee){if(Array.isArray(ee)){this.addVocabulary(ee);return}this.logger.warn("keywords option as map is depre\
+cated, pass array");for(let q in ee){let Y=ee[q];if(!Y.keyword)Y.keyword=q;this.addKeyword(Y)}}a(N,"LQ");function P(){let ee={
 ...this.opts};for(let q of _)delete ee[q];return ee}a(P,"jQ");var L={log(){},warn(){},error(){}};function F(ee){if(ee===
 false)return L;if(ee===void 0)return console;if(ee.log&&ee.warn&&ee.error)return ee;throw Error("logger must implement l\
 og, warn and error methods")}a(F,"FQ");var j=/^[a-z_$][a-z0-9_$:-]*$/i;function Z(ee,q){let{RULES:Y}=this;if((0,d.eachItem)(
@@ -2375,18 +2375,18 @@ esModule",{value:true});t.callRef=t.getValidate=void 0;var e=uu(),r=ui(),n=et(),
 string",code(d){let{gen:h,schema:p,it:f}=d,{baseId:_,schemaEnv:y,validateName:b,opts:g,self:v}=f,{root:S}=y;if((p==="#"||
 p==="#/")&&_===S.baseId)return T();let E=s.resolveRef.call(v,S,_,p);if(E===void 0)throw new e.default(f.opts.uriResolver,
 _,p);if(E instanceof s.SchemaEnv)return x(E);return k(E);function T(){if(y===S)return u(d,b,y,y.$async);let C=h.scopeValue(
-"root",{ref:S});return u(d,n._`${C}.validate`,S,S.$async)}a(T,"p");function x(C){let A=c(d,C);u(d,A,C,C.$async)}a(x,"f");
-function k(C){let A=h.scopeValue("schema",g.code.source===true?{ref:C,code:(0,n.stringify)(C)}:{ref:C}),P=h.name("valid"),
-L=d.subschema({schema:C,dataTypes:[],schemaPath:n.nil,topSchemaRef:A,errSchemaPath:p},P);d.mergeEvaluated(L),d.ok(P)}a(k,
+"root",{ref:S});return u(d,n._`${C}.validate`,S,S.$async)}a(T,"p");function x(C){let N=c(d,C);u(d,N,C,C.$async)}a(x,"f");
+function k(C){let N=h.scopeValue("schema",g.code.source===true?{ref:C,code:(0,n.stringify)(C)}:{ref:C}),P=h.name("valid"),
+L=d.subschema({schema:C,dataTypes:[],schemaPath:n.nil,topSchemaRef:N,errSchemaPath:p},P);d.mergeEvaluated(L),d.ok(P)}a(k,
 "m")}};function c(d,h){let{gen:p}=d;return h.validate?p.scopeValue("validate",{ref:h.validate}):n._`${p.scopeValue("wrap\
 per",{ref:h})}.validate`}a(c,"WD");t.getValidate=c;function u(d,h,p,f){let{gen:_,it:y}=d,{allErrors:b,schemaEnv:g,opts:v}=y,
 S=v.passContext?i.default.this:n.nil;if(f)E();else T();function E(){if(!g.$async)throw Error("async schema referenced by\
  sync schema");let C=_.let("valid");_.try(()=>{if(_.code(n._`await ${(0,r.callValidateCode)(d,h,S)}`),k(h),!b)_.assign(C,
-true)},A=>{if(_.if(n._`!(${A} instanceof ${y.ValidationError})`,()=>_.throw(A)),x(A),!b)_.assign(C,false)}),d.ok(C)}a(E,
-"d");function T(){d.result((0,r.callValidateCode)(d,h,S),()=>k(h),()=>x(h))}a(T,"p");function x(C){let A=n._`${C}.errors`;
-_.assign(i.default.vErrors,n._`${i.default.vErrors} === null ? ${A} : ${i.default.vErrors}.concat(${A})`),_.assign(i.default.
-errors,n._`${i.default.vErrors}.length`)}a(x,"f");function k(C){var A;if(!y.opts.unevaluated)return;let P=(A=p===null||p===
-void 0?void 0:p.validate)===null||A===void 0?void 0:A.evaluated;if(y.props!==true)if(P&&!P.dynamicProps){if(P.props!==void 0)
+true)},N=>{if(_.if(n._`!(${N} instanceof ${y.ValidationError})`,()=>_.throw(N)),x(N),!b)_.assign(C,false)}),d.ok(C)}a(E,
+"d");function T(){d.result((0,r.callValidateCode)(d,h,S),()=>k(h),()=>x(h))}a(T,"p");function x(C){let N=n._`${C}.errors`;
+_.assign(i.default.vErrors,n._`${i.default.vErrors} === null ? ${N} : ${i.default.vErrors}.concat(${N})`),_.assign(i.default.
+errors,n._`${i.default.vErrors}.length`)}a(x,"f");function k(C){var N;if(!y.opts.unevaluated)return;let P=(N=p===null||p===
+void 0?void 0:p.validate)===null||N===void 0?void 0:N.evaluated;if(y.props!==true)if(P&&!P.dynamicProps){if(P.props!==void 0)
 y.props=o.mergeEvaluated.props(_,P.props,y.props)}else{let L=_.var("props",n._`${C}.evaluated.props`);y.props=o.mergeEvaluated.
 props(_,L,y.props,n.Name)}if(y.items!==true)if(P&&!P.dynamicItems){if(P.items!==void 0)y.items=o.mergeEvaluated.items(_,
 P.items,y.items)}else{let L=_.var("items",n._`${C}.evaluated.items`);y.items=o.mergeEvaluated.items(_,L,y.items,n.Name)}}
@@ -2441,9 +2441,9 @@ ean",$data:true,error:s,code(l){let{gen:c,data:u,$data:d,schema:h,parentSchema:p
 let("valid"),b=p.items?(0,e.getSchemaTypes)(p.items):[];l.block$data(y,g,r._`${f} === false`),l.ok(y);function g(){let T=c.
 let("i",r._`${u}.length`),x=c.let("j");l.setParams({i:T,j:x}),c.assign(y,true),c.if(r._`${T} > 1`,()=>(v()?S:E)(T,x))}a(
 g,"d");function v(){return b.length>0&&!b.some(T=>T==="object"||T==="array")}a(v,"p");function S(T,x){let k=c.name("item"),
-C=(0,e.checkDataTypes)(b,k,_.opts.strictNumbers,e.DataType.Wrong),A=c.const("indices",r._`{}`);c.for(r._`;${T}--;`,()=>{
+C=(0,e.checkDataTypes)(b,k,_.opts.strictNumbers,e.DataType.Wrong),N=c.const("indices",r._`{}`);c.for(r._`;${T}--;`,()=>{
 if(c.let(k,r._`${u}[${T}]`),c.if(C,r._`continue`),b.length>1)c.if(r._`typeof ${k} == "string"`,r._`${k} += "_"`);c.if(r.
-_`typeof ${A}[${k}] == "number"`,()=>{c.assign(x,r._`${A}[${k}]`),l.error(),c.assign(y,false).break()}).code(r._`${A}[${k}] = ${T}`)})}
+_`typeof ${N}[${k}] == "number"`,()=>{c.assign(x,r._`${N}[${k}]`),l.error(),c.assign(y,false).break()}).code(r._`${N}[${k}] = ${T}`)})}
 a(S,"f");function E(T,x){let k=(0,n.useFunc)(c,i.default),C=c.name("outer");c.label(C).for(r._`;${T}--;`,()=>c.for(r._`${x} = ${T}; ${x}--;`,
 ()=>c.if(r._`${k}(${u}[${T}], ${u}[${x}])`,()=>{l.error(),c.assign(y,false).break(C)})))}a(E,"m")}};t.default=o});XI=Q(t=>{
 Object.defineProperty(t,"__esModule",{value:true});var e=et(),r=mt(),n=Fh(),i={message:"must be equal to constant",params:a(
@@ -2523,13 +2523,13 @@ code(l){let{gen:c,schema:u,parentSchema:d,data:h,errsCount:p,it:f}=l;if(!p)throw
 opts:y}=f;if(f.props=true,y.removeAdditional!=="all"&&(0,i.alwaysValidSchema)(f,u))return;let b=(0,e.allSchemaProperties)(
 d.properties),g=(0,e.allSchemaProperties)(d.patternProperties);v(),l.ok(r._`${p} === ${n.default.errors}`);function v(){
 c.forIn("key",h,k=>{if(!b.length&&!g.length)T(k);else c.if(S(k),()=>T(k))})}a(v,"p");function S(k){let C;if(b.length>8){
-let A=(0,i.schemaRefOrVal)(f,d.properties,"properties");C=(0,e.isOwnProperty)(c,A,k)}else if(b.length)C=(0,r.or)(...b.map(
-A=>r._`${k} === ${A}`));else C=r.nil;if(g.length)C=(0,r.or)(C,...g.map(A=>r._`${(0,e.usePattern)(l,A)}.test(${k})`));return(0,
+let N=(0,i.schemaRefOrVal)(f,d.properties,"properties");C=(0,e.isOwnProperty)(c,N,k)}else if(b.length)C=(0,r.or)(...b.map(
+N=>r._`${k} === ${N}`));else C=r.nil;if(g.length)C=(0,r.or)(C,...g.map(N=>r._`${(0,e.usePattern)(l,N)}.test(${k})`));return(0,
 r.not)(C)}a(S,"f");function E(k){c.code(r._`delete ${h}[${k}]`)}a(E,"m");function T(k){if(y.removeAdditional==="all"||y.
 removeAdditional&&u===false){E(k);return}if(u===false){if(l.setParams({additionalProperty:k}),l.error(),!_)c.break();return}
 if(typeof u=="object"&&!(0,i.alwaysValidSchema)(f,u)){let C=c.name("valid");if(y.removeAdditional==="failing")x(k,C,false),
-c.if((0,r.not)(C),()=>{l.reset(),E(k)});else if(x(k,C),!_)c.if((0,r.not)(C),()=>c.break())}}a(T,"g");function x(k,C,A){let P={
-keyword:"additionalProperties",dataProp:k,dataPropType:i.Type.Str};if(A===false)Object.assign(P,{compositeRule:true,createErrors:false,
+c.if((0,r.not)(C),()=>{l.reset(),E(k)});else if(x(k,C),!_)c.if((0,r.not)(C),()=>c.break())}}a(T,"g");function x(k,C,N){let P={
+keyword:"additionalProperties",dataProp:k,dataPropType:i.Type.Str};if(N===false)Object.assign(P,{compositeRule:true,createErrors:false,
 allErrors:false});l.subschema(P,C)}a(x,"h")}};t.default=o});sP=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});
 var e=cu(),r=ui(),n=mt(),i=mw(),s={keyword:"properties",type:"object",schemaType:"object",code(o){let{gen:l,schema:c,parentSchema:u,
 data:d,it:h}=o;if(h.opts.removeAdditional==="all"&&u.additionalProperties===void 0)i.default.code(new e.KeywordCxt(h,i.default,
@@ -2586,13 +2586,13 @@ return;if(c)b();else g();function b(){let v=o.scopeValue("formats",{ref:y.format
 e._`${v}[${d}]`),E=o.let("fType"),T=o.let("format");o.if(e._`typeof ${S} == "object" && !(${S} instanceof RegExp)`,()=>o.
 assign(E,e._`${S}.type || "string"`).assign(T,e._`${S}.validate`),()=>o.assign(E,e._`"string"`).assign(T,S)),i.fail$data(
 (0,e.or)(x(),k()));function x(){if(p.strictSchema===false)return e.nil;return e._`${d} && !${T}`}a(x,"x");function k(){let C=_.
-$async?e._`(${S}.async ? await ${T}(${l}) : ${T}(${l}))`:e._`${T}(${l})`,A=e._`(typeof ${T} == "function" ? ${C} : ${T}.test(${l}))`;
-return e._`${T} && ${T} !== true && ${E} === ${s} && !${A}`}a(k,"w")}a(b,"f");function g(){let v=y.formats[u];if(!v){x();
-return}if(v===true)return;let[S,E,T]=k(v);if(S===s)i.pass(C());function x(){if(p.strictSchema===false){y.logger.warn(A());
-return}throw Error(A());function A(){return`unknown format "${u}" ignored in schema at path "${f}"`}a(A,"U")}a(x,"x");function k(A){
-let P=A instanceof RegExp?(0,e.regexpCode)(A):p.code.formats?e._`${p.code.formats}${(0,e.getProperty)(u)}`:void 0,L=o.scopeValue(
-"formats",{key:u,ref:A,code:P});if(typeof A=="object"&&!(A instanceof RegExp))return[A.type||"string",A.validate,e._`${L}.validate`];
-return["string",A,L]}a(k,"w");function C(){if(typeof v=="object"&&!(v instanceof RegExp)&&v.async){if(!_.$async)throw Error(
+$async?e._`(${S}.async ? await ${T}(${l}) : ${T}(${l}))`:e._`${T}(${l})`,N=e._`(typeof ${T} == "function" ? ${C} : ${T}.test(${l}))`;
+return e._`${T} && ${T} !== true && ${E} === ${s} && !${N}`}a(k,"w")}a(b,"f");function g(){let v=y.formats[u];if(!v){x();
+return}if(v===true)return;let[S,E,T]=k(v);if(S===s)i.pass(C());function x(){if(p.strictSchema===false){y.logger.warn(N());
+return}throw Error(N());function N(){return`unknown format "${u}" ignored in schema at path "${f}"`}a(N,"U")}a(x,"x");function k(N){
+let P=N instanceof RegExp?(0,e.regexpCode)(N):p.code.formats?e._`${p.code.formats}${(0,e.getProperty)(u)}`:void 0,L=o.scopeValue(
+"formats",{key:u,ref:N,code:P});if(typeof N=="object"&&!(N instanceof RegExp))return[N.type||"string",N.validate,e._`${L}.validate`];
+return["string",N,L]}a(k,"w");function C(){if(typeof v=="object"&&!(v instanceof RegExp)&&v.async){if(!_.$async)throw Error(
 "async format in sync schema");return e._`await ${T}(${l})`}return typeof E=="function"?e._`${T}(${l})`:e._`${T}.test(${l})`}
 a(C,"R")}a(g,"m")}};t.default=n});mP=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});var e=fP(),r=[e.default];t.
 default=r});gP=Q(t=>{Object.defineProperty(t,"__esModule",{value:true});t.contentVocabulary=t.metadataVocabulary=void 0;
@@ -2611,12 +2611,12 @@ ag",e._`${d}${(0,e.getProperty)(y)}`);u.if(e._`typeof ${g} == "string"`,()=>v(),
 Tag,tag:g,tagName:y})),c.ok(b);function v(){let T=E();u.if(false);for(let x in T)u.elseIf(e._`${g} === ${x}`),u.assign(b,
 S(T[x]));u.else(),c.error(false,{discrError:r.DiscrError.Mapping,tag:g,tagName:y}),u.endIf()}a(v,"d");function S(T){let x=u.
 name("valid"),k=c.subschema({keyword:"oneOf",schemaProp:T},x);return c.mergeEvaluated(k,e.Name),x}a(S,"p");function E(){
-var T;let x={},k=A(p),C=true;for(let F=0;F<_.length;F++){let j=_[F];if((j===null||j===void 0?void 0:j.$ref)&&!(0,s.schemaHasRulesButRef)(
+var T;let x={},k=N(p),C=true;for(let F=0;F<_.length;F++){let j=_[F];if((j===null||j===void 0?void 0:j.$ref)&&!(0,s.schemaHasRulesButRef)(
 j,f.self.RULES)){let me=j.$ref;if(j=n.resolveRef.call(f.self,f.schemaEnv.root,f.baseId,me),j instanceof n.SchemaEnv)j=j.
 schema;if(j===void 0)throw new i.default(f.opts.uriResolver,f.baseId,me)}let Z=(T=j===null||j===void 0?void 0:j.properties)===
 null||T===void 0?void 0:T[y];if(typeof Z!="object")throw Error(`discriminator: oneOf subschemas (or referenced schemas) \
-must have "properties/${y}"`);C=C&&(k||A(j)),P(Z,F)}if(!C)throw Error(`discriminator: "${y}" must be required`);return x;
-function A({required:F}){return Array.isArray(F)&&F.includes(y)}a(A,"S");function P(F,j){if(F.const)L(F.const,j);else if(F.
+must have "properties/${y}"`);C=C&&(k||N(j)),P(Z,F)}if(!C)throw Error(`discriminator: "${y}" must be required`);return x;
+function N({required:F}){return Array.isArray(F)&&F.includes(y)}a(N,"S");function P(F,j){if(F.const)L(F.const,j);else if(F.
 enum)for(let Z of F.enum)L(Z,j);else throw Error(`discriminator: "properties/${y}" must have "const" or "enum"`)}a(P,"x");
 function L(F,j){if(typeof F!="string"||F in x)throw Error(`discriminator: "${y}" values must be unique strings`);x[F]=j}
 a(L,"w")}a(E,"f")}};t.default=l});bP=Q((t,e)=>{e.exports={$schema:"http://json-schema.org/draft-07/schema#",$id:"http://\
@@ -2685,8 +2685,8 @@ if(!(L&&F))return;let[j,Z]=L.split(h),[me,ne]=F.split(h),ae=o(j,me);if(ae===void
 b=/^(?:[a-z][a-z0-9+\-.]*:)(?:\/?\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:]|%[0-9a-f]{2})*@)?(?:\[(?:(?:(?:(?:[0-9a-f]{1,4}:){6}|::(?:[0-9a-f]{1,4}:){5}|(?:[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){4}|(?:(?:[0-9a-f]{1,4}:){0,1}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){3}|(?:(?:[0-9a-f]{1,4}:){0,2}[0-9a-f]{1,4})?::(?:[0-9a-f]{1,4}:){2}|(?:(?:[0-9a-f]{1,4}:){0,3}[0-9a-f]{1,4})?::[0-9a-f]{1,4}:|(?:(?:[0-9a-f]{1,4}:){0,4}[0-9a-f]{1,4})?::)(?:[0-9a-f]{1,4}:[0-9a-f]{1,4}|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?))|(?:(?:[0-9a-f]{1,4}:){0,5}[0-9a-f]{1,4})?::[0-9a-f]{1,4}|(?:(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4})?::)|[Vv][0-9a-f]+\.[a-z0-9\-._~!$&'()*+,;=:]+)\]|(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)|(?:[a-z0-9\-._~!$&'()*+,;=]|%[0-9a-f]{2})*)(?::\d*)?(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*|\/(?:(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)?|(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})+(?:\/(?:[a-z0-9\-._~!$&'()*+,;=:@]|%[0-9a-f]{2})*)*)(?:\?(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?(?:#(?:[a-z0-9\-._~!$&'()*+,;=:@/?]|%[0-9a-f]{2})*)?$/i;
 function g(L){return y.test(L)&&b.test(L)}a(g,"one");var v=/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/gm;
 function S(L){return v.lastIndex=0,v.test(L)}a(S,"ine");var E=-2147483648,T=2147483647;function x(L){return Number.isInteger(
-L)&&L<=T&&L>=E}a(x,"lne");function k(L){return Number.isInteger(L)}a(k,"cne");function C(){return true}a(C,"FU");var A=/[^\\]\\Z/;
-function P(L){if(A.test(L))return false;try{return new RegExp(L),true}catch(F){return false}}a(P,"dne")});kP=Q(t=>{Object.
+L)&&L<=T&&L>=E}a(x,"lne");function k(L){return Number.isInteger(L)}a(k,"cne");function C(){return true}a(C,"FU");var N=/[^\\]\\Z/;
+function P(L){if(N.test(L))return false;try{return new RegExp(L),true}catch(F){return false}}a(P,"dne")});kP=Q(t=>{Object.
 defineProperty(t,"__esModule",{value:true});t.formatLimitDefinition=void 0;var e=gw(),r=et(),n=r.operators,i={formatMaximum:{
 okStr:"<=",ok:n.LTE,fail:n.GT},formatMinimum:{okStr:">=",ok:n.GTE,fail:n.LT},formatExclusiveMaximum:{okStr:"<",ok:n.LT,fail:n.
 GTE},formatExclusiveMinimum:{okStr:">",ok:n.GT,fail:n.LTE}},s={message:a(({keyword:l,schemaCode:c})=>r.str`should be ${i[l].
@@ -2706,8 +2706,8 @@ s],f=d.formats||r.formatNames;if(c(u,f,h,p),d.keywords)(0,n.default)(u);return u
 "fast"?r.fastFormats:r.fullFormats)[u];if(!h)throw Error(`Unknown format "${u}"`);return h};function c(u,d,h,p){var f,_;
 (f=(_=u.opts.code).formats)!==null&&f!==void 0||(_.formats=i._`require("ajv-formats/dist/formats").${p}`);for(let y of d)
 u.addFormat(y,h[y])}a(c,"YU");e.exports=t=l;Object.defineProperty(t,"__esModule",{value:true});t.default=l});LP=50;a(Dp,
-"da");AX=new FinalizationRegistry(({parentSignalRef:t,handler:e})=>{t.deref()?.removeEventListener("abort",e)});DP="serv\
-er-fallback-tombstone";NX=new DOMException(DP,"AbortError");UP="subagent-park";IX=new DOMException(UP,"AbortError");a(Up,
+"da");NX=new FinalizationRegistry(({parentSignalRef:t,handler:e})=>{t.deref()?.removeEventListener("abort",e)});DP="serv\
+er-fallback-tombstone";AX=new DOMException(DP,"AbortError");UP="subagent-park";IX=new DOMException(UP,"AbortError");a(Up,
 "Pr");a(MP,"pa");a(jP,"ma");a(FP,"vk");a(qP,"xk");a(Gy,"_k");a(du,"mn");a(zP,"R1");a(Qa,"Ur");bw=["PreToolUse","PostTool\
 Use","PostToolUseFailure","PostToolBatch","Notification","UserPromptSubmit","UserPromptExpansion","SessionStart","Sessio\
 nEnd","Stop","StopFailure","SubagentStart","SubagentStop","PreCompact","PostCompact","PermissionRequest","PermissionDeni\
@@ -2717,13 +2717,13 @@ e","WorktreeRemove","InstructionsLoaded","CwdChanged","FileChanged","MessageDisp
 "Se");a(xo,"hn");GP=typeof global=="object"&&global&&global.Object===Object&&global;kw=GP;ZP=typeof self=="object"&&self&&
 self.Object===Object&&self;KP=kw||ZP||Function("return this")();wi=KP;JP=wi.Symbol;yi=JP;Sw=Object.prototype;XP=Sw.hasOwnProperty;
 YP=Sw.toString;Sa=yi?yi.toStringTag:void 0;a(QP,"W1");e1=QP;t1=Object.prototype;r1=t1.toString;a(i1,"G1");n1=i1;s1="[obj\
-ect Null]";a1="[object Undefined]";Ky=yi?yi.toStringTag:void 0;a(o1,"Y1");Ln=o1;a(l1,"Q1");Ni=l1;c1="[object AsyncFuncti\
+ect Null]";a1="[object Undefined]";Ky=yi?yi.toStringTag:void 0;a(o1,"Y1");Ln=o1;a(l1,"Q1");Ai=l1;c1="[object AsyncFuncti\
 on]";u1="[object Function]";d1="[object GeneratorFunction]";p1="[object Proxy]";a(h1,"oF");qh=h1;f1=wi["__core-js_shared\
 __"];dp=f1;Jy=(function(){var t=/[^.]+$/.exec(dp&&dp.keys&&dp.keys.IE_PROTO||"");return t?"Symbol(src)_1."+t:""})();a(m1,
 "sF");g1=m1;_1=Function.prototype;y1=_1.toString;a(v1,"cF");Dn=v1;b1=/[\\^$.*+?()[\]{}|]/g;w1=/^\[object .+?Constructor\]$/;
 k1=Function.prototype;S1=Object.prototype;E1=k1.toString;T1=S1.hasOwnProperty;$1=RegExp("^"+E1.call(T1).replace(b1,"\\$&").
-replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g,"$1.*?")+"$");a(x1,"yF");C1=x1;a(O1,"_F");R1=O1;a(A1,"b\
-F");Un=A1;N1=Un(Object,"create");eo=N1;a(I1,"vF");P1=I1;a(L1,"xF");D1=L1;U1="__lodash_hash_undefined__";M1=Object.prototype;
+replace(/hasOwnProperty|(function).*?(?=\\\()| for .+?(?=\\\])/g,"$1.*?")+"$");a(x1,"yF");C1=x1;a(O1,"_F");R1=O1;a(N1,"b\
+F");Un=N1;A1=Un(Object,"create");eo=A1;a(I1,"vF");P1=I1;a(L1,"xF");D1=L1;U1="__lodash_hash_undefined__";M1=Object.prototype;
 j1=M1.hasOwnProperty;a(F1,"TF");q1=F1;z1=Object.prototype;B1=z1.hasOwnProperty;a(H1,"AF");W1=H1;V1="__lodash_hash_undefi\
 ned__";a(G1,"OF");Z1=G1;a(qs,"fi");qs.prototype.clear=P1;qs.prototype.delete=D1;qs.prototype.get=q1;qs.prototype.has=W1;
 qs.prototype.set=Z1;Xy=qs;a(K1,"CF");J1=K1;a(X1,"$F");pu=X1;a(Y1,"MF");hu=Y1;Q1=Array.prototype;eL=Q1.splice;a(tL,"UF");
@@ -2734,10 +2734,10 @@ delete=gL;Bs.prototype.get=yL;Bs.prototype.has=bL;Bs.prototype.set=kL;gu=Bs;SL="
 gu;Vt=zh;m={};bi(m,{xid:a(()=>oM,"xid"),void:a(()=>CM,"void"),uuidv7:a(()=>eM,"uuidv7"),uuidv6:a(()=>QU,"uuidv6"),uuidv4:a(
 ()=>YU,"uuidv4"),uuid:a(()=>XU,"uuid"),url:a(()=>tM,"url"),uppercase:a(()=>Hf,"uppercase"),unknown:a(()=>Ft,"unknown"),union:a(
 ()=>$t,"union"),undefined:a(()=>$M,"undefined"),ulid:a(()=>aM,"ulid"),uint64:a(()=>EM,"uint64"),uint32:a(()=>wM,"uint32"),
-tuple:a(()=>NM,"tuple"),trim:a(()=>Jf,"trim"),treeifyError:a(()=>Dw,"treeifyError"),transform:a(()=>Rm,"transform"),toUpperCase:a(
+tuple:a(()=>AM,"tuple"),trim:a(()=>Jf,"trim"),treeifyError:a(()=>Dw,"treeifyError"),transform:a(()=>Rm,"transform"),toUpperCase:a(
 ()=>Yf,"toUpperCase"),toLowerCase:a(()=>Xf,"toLowerCase"),toJSONSchema:a(()=>CS,"toJSONSchema"),templateLiteral:a(()=>qM,
 "templateLiteral"),symbol:a(()=>TM,"symbol"),superRefine:a(()=>vE,"superRefine"),success:a(()=>jM,"success"),stringbool:a(
-()=>HM,"stringbool"),stringFormat:a(()=>_M,"stringFormat"),string:a(()=>K,"string"),strictObject:a(()=>AM,"strictObject"),
+()=>HM,"stringbool"),stringFormat:a(()=>_M,"stringFormat"),string:a(()=>K,"string"),strictObject:a(()=>NM,"strictObject"),
 startsWith:a(()=>Vf,"startsWith"),size:a(()=>qf,"size"),setErrorMap:a(()=>GM,"setErrorMap"),set:a(()=>LM,"set"),safeParseAsync:a(
 ()=>US,"safeParseAsync"),safeParse:a(()=>DS,"safeParse"),registry:a(()=>gf,"registry"),regexes:a(()=>tf,"regexes"),regex:a(
 ()=>zf,"regex"),refine:a(()=>yE,"refine"),record:a(()=>Tt,"record"),readonly:a(()=>dE,"readonly"),property:a(()=>bS,"pro\
@@ -2751,25 +2751,25 @@ nan:a(()=>FM,"nan"),multipleOf:a(()=>so,"multipleOf"),minSize:a(()=>ao,"minSize"
 ()=>Zf,"mime"),maxSize:a(()=>ku,"maxSize"),maxLength:a(()=>Su,"maxLength"),map:a(()=>PM,"map"),lte:a(()=>si,"lte"),lt:a(
 ()=>xn,"lt"),lowercase:a(()=>Bf,"lowercase"),looseObject:a(()=>wr,"looseObject"),locales:a(()=>mf,"locales"),literal:a(()=>Ie,
 "literal"),length:a(()=>Eu,"length"),lazy:a(()=>fE,"lazy"),ksuid:a(()=>lM,"ksuid"),keyof:a(()=>RM,"keyof"),jwt:a(()=>gM,
-"jwt"),json:a(()=>WM,"json"),iso:a(()=>em,"iso"),ipv6:a(()=>uM,"ipv6"),ipv4:a(()=>cM,"ipv4"),intersection:a(()=>Au,"inte\
+"jwt"),json:a(()=>WM,"json"),iso:a(()=>em,"iso"),ipv6:a(()=>uM,"ipv6"),ipv4:a(()=>cM,"ipv4"),intersection:a(()=>Nu,"inte\
 rsection"),int64:a(()=>SM,"int64"),int32:a(()=>bM,"int32"),int:a(()=>Fp,"int"),instanceof:a(()=>BM,"instanceof"),includes:a(
 ()=>Wf,"includes"),guid:a(()=>JU,"guid"),gte:a(()=>Dr,"gte"),gt:a(()=>Cn,"gt"),globalRegistry:a(()=>En,"globalRegistry"),
 getErrorMap:a(()=>ZM,"getErrorMap"),function:a(()=>xS,"function"),formatError:a(()=>Zh,"formatError"),float64:a(()=>vM,"\
-float64"),float32:a(()=>yM,"float32"),flattenError:a(()=>Gh,"flattenError"),file:a(()=>UM,"file"),enum:a(()=>Ar,"enum"),
+float64"),float32:a(()=>yM,"float32"),flattenError:a(()=>Gh,"flattenError"),file:a(()=>UM,"file"),enum:a(()=>Nr,"enum"),
 endsWith:a(()=>Gf,"endsWith"),emoji:a(()=>rM,"emoji"),email:a(()=>KU,"email"),e164:a(()=>mM,"e164"),discriminatedUnion:a(
 ()=>xm,"discriminatedUnion"),date:a(()=>OM,"date"),custom:a(()=>_E,"custom"),cuid2:a(()=>sM,"cuid2"),cuid:a(()=>nM,"cuid"),
 core:a(()=>Ew,"core"),config:a(()=>kr,"config"),coerce:a(()=>bE,"coerce"),clone:a(()=>di,"clone"),cidrv6:a(()=>pM,"cidrv\
 6"),cidrv4:a(()=>dM,"cidrv4"),check:a(()=>gE,"check"),catch:a(()=>lE,"catch"),boolean:a(()=>lr,"boolean"),bigint:a(()=>kM,
 "bigint"),base64url:a(()=>fM,"base64url"),base64:a(()=>hM,"base64"),array:a(()=>ct,"array"),any:a(()=>xM,"any"),_default:a(
 ()=>rE,"_default"),_ZodString:a(()=>sm,"_ZodString"),ZodXID:a(()=>hm,"ZodXID"),ZodVoid:a(()=>WS,"ZodVoid"),ZodUnknown:a(
-()=>BS,"ZodUnknown"),ZodUnion:a(()=>$m,"ZodUnion"),ZodUndefined:a(()=>FS,"ZodUndefined"),ZodUUID:a(()=>Ai,"ZodUUID"),ZodURL:a(
+()=>BS,"ZodUnknown"),ZodUnion:a(()=>$m,"ZodUnion"),ZodUndefined:a(()=>FS,"ZodUndefined"),ZodUUID:a(()=>Ni,"ZodUUID"),ZodURL:a(
 ()=>om,"ZodURL"),ZodULID:a(()=>pm,"ZodULID"),ZodType:a(()=>rt,"ZodType"),ZodTuple:a(()=>KS,"ZodTuple"),ZodTransform:a(()=>Om,
 "ZodTransform"),ZodTemplateLiteral:a(()=>pE,"ZodTemplateLiteral"),ZodSymbol:a(()=>jS,"ZodSymbol"),ZodSuccess:a(()=>aE,"Z\
 odSuccess"),ZodStringFormat:a(()=>Lt,"ZodStringFormat"),ZodString:a(()=>Tu,"ZodString"),ZodSet:a(()=>XS,"ZodSet"),ZodRecord:a(
-()=>Cm,"ZodRecord"),ZodRealError:a(()=>Ao,"ZodRealError"),ZodReadonly:a(()=>uE,"ZodReadonly"),ZodPromise:a(()=>mE,"ZodPr\
-omise"),ZodPrefault:a(()=>iE,"ZodPrefault"),ZodPipe:a(()=>Im,"ZodPipe"),ZodOptional:a(()=>Am,"ZodOptional"),ZodObject:a(
+()=>Cm,"ZodRecord"),ZodRealError:a(()=>No,"ZodRealError"),ZodReadonly:a(()=>uE,"ZodReadonly"),ZodPromise:a(()=>mE,"ZodPr\
+omise"),ZodPrefault:a(()=>iE,"ZodPrefault"),ZodPipe:a(()=>Im,"ZodPipe"),ZodOptional:a(()=>Nm,"ZodOptional"),ZodObject:a(
 ()=>Ru,"ZodObject"),ZodNumberFormat:a(()=>Hs,"ZodNumberFormat"),ZodNumber:a(()=>$u,"ZodNumber"),ZodNullable:a(()=>eE,"Zo\
-dNullable"),ZodNull:a(()=>qS,"ZodNull"),ZodNonOptional:a(()=>Nm,"ZodNonOptional"),ZodNever:a(()=>HS,"ZodNever"),ZodNanoID:a(
+dNullable"),ZodNull:a(()=>qS,"ZodNull"),ZodNonOptional:a(()=>Am,"ZodNonOptional"),ZodNever:a(()=>HS,"ZodNever"),ZodNanoID:a(
 ()=>cm,"ZodNanoID"),ZodNaN:a(()=>cE,"ZodNaN"),ZodMap:a(()=>JS,"ZodMap"),ZodLiteral:a(()=>YS,"ZodLiteral"),ZodLazy:a(()=>hE,
 "ZodLazy"),ZodKSUID:a(()=>fm,"ZodKSUID"),ZodJWT:a(()=>km,"ZodJWT"),ZodIssueCode:a(()=>VM,"ZodIssueCode"),ZodIntersection:a(
 ()=>ZS,"ZodIntersection"),ZodISOTime:a(()=>im,"ZodISOTime"),ZodISODuration:a(()=>nm,"ZodISODuration"),ZodISODateTime:a(()=>tm,
@@ -2777,7 +2777,7 @@ dNullable"),ZodNull:a(()=>qS,"ZodNull"),ZodNonOptional:a(()=>Nm,"ZodNonOptional"
 "ZodGUID"),ZodFile:a(()=>QS,"ZodFile"),ZodError:a(()=>ZU,"ZodError"),ZodEnum:a(()=>lo,"ZodEnum"),ZodEmoji:a(()=>lm,"ZodE\
 moji"),ZodEmail:a(()=>am,"ZodEmail"),ZodE164:a(()=>wm,"ZodE164"),ZodDiscriminatedUnion:a(()=>GS,"ZodDiscriminatedUnion"),
 ZodDefault:a(()=>tE,"ZodDefault"),ZodDate:a(()=>Tm,"ZodDate"),ZodCustomStringFormat:a(()=>MS,"ZodCustomStringFormat"),ZodCustom:a(
-()=>Nu,"ZodCustom"),ZodCatch:a(()=>oE,"ZodCatch"),ZodCUID2:a(()=>dm,"ZodCUID2"),ZodCUID:a(()=>um,"ZodCUID"),ZodCIDRv6:a(
+()=>Au,"ZodCustom"),ZodCatch:a(()=>oE,"ZodCatch"),ZodCUID2:a(()=>dm,"ZodCUID2"),ZodCUID:a(()=>um,"ZodCUID"),ZodCIDRv6:a(
 ()=>ym,"ZodCIDRv6"),ZodCIDRv4:a(()=>_m,"ZodCIDRv4"),ZodBoolean:a(()=>xu,"ZodBoolean"),ZodBigIntFormat:a(()=>Sm,"ZodBigIn\
 tFormat"),ZodBigInt:a(()=>Cu,"ZodBigInt"),ZodBase64URL:a(()=>bm,"ZodBase64URL"),ZodBase64:a(()=>vm,"ZodBase64"),ZodArray:a(
 ()=>VS,"ZodArray"),ZodAny:a(()=>zS,"ZodAny"),TimePrecision:a(()=>B0,"TimePrecision"),NEVER:a(()=>Tw,"NEVER"),$output:a(()=>j0,
@@ -2794,7 +2794,7 @@ d"),_url:a(()=>kf,"_url"),_uppercase:a(()=>Hf,"_uppercase"),_unknown:a(()=>dc,"_
 uple"),_trim:a(()=>Jf,"_trim"),_transform:a(()=>LU,"_transform"),_toUpperCase:a(()=>Yf,"_toUpperCase"),_toLowerCase:a(()=>Xf,
 "_toLowerCase"),_templateLiteral:a(()=>HU,"_templateLiteral"),_symbol:a(()=>oS,"_symbol"),_success:a(()=>FU,"_success"),
 _stringbool:a(()=>TS,"_stringbool"),_stringFormat:a(()=>$S,"_stringFormat"),_string:a(()=>q0,"_string"),_startsWith:a(()=>Vf,
-"_startsWith"),_size:a(()=>qf,"_size"),_set:a(()=>AU,"_set"),_safeParseAsync:a(()=>Qh,"_safeParseAsync"),_safeParse:a(()=>Xh,
+"_startsWith"),_size:a(()=>qf,"_size"),_set:a(()=>NU,"_set"),_safeParseAsync:a(()=>Qh,"_safeParseAsync"),_safeParse:a(()=>Xh,
 "_safeParse"),_regex:a(()=>zf,"_regex"),_refine:a(()=>ES,"_refine"),_record:a(()=>OU,"_record"),_readonly:a(()=>BU,"_rea\
 donly"),_property:a(()=>bS,"_property"),_promise:a(()=>VU,"_promise"),_positive:a(()=>gS,"_positive"),_pipe:a(()=>zU,"_p\
 ipe"),_parseAsync:a(()=>Jh,"_parseAsync"),_parse:a(()=>Kh,"_parse"),_overwrite:a(()=>Fn,"_overwrite"),_optional:a(()=>DU,
@@ -2806,9 +2806,9 @@ Length"),_min:a(()=>Dr,"_min"),_mime:a(()=>Zf,"_mime"),_maxSize:a(()=>ku,"_maxSi
 ()=>si,"_max"),_map:a(()=>RU,"_map"),_lte:a(()=>si,"_lte"),_lt:a(()=>xn,"_lt"),_lowercase:a(()=>Bf,"_lowercase"),_literal:a(
 ()=>PU,"_literal"),_length:a(()=>Eu,"_length"),_lazy:a(()=>WU,"_lazy"),_ksuid:a(()=>Rf,"_ksuid"),_jwt:a(()=>Ff,"_jwt"),_isoTime:a(
 ()=>V0,"_isoTime"),_isoDuration:a(()=>G0,"_isoDuration"),_isoDateTime:a(()=>H0,"_isoDateTime"),_isoDate:a(()=>W0,"_isoDa\
-te"),_ipv6:a(()=>Nf,"_ipv6"),_ipv4:a(()=>Af,"_ipv4"),_intersection:a(()=>CU,"_intersection"),_int64:a(()=>sS,"_int64"),_int32:a(
+te"),_ipv6:a(()=>Af,"_ipv6"),_ipv4:a(()=>Nf,"_ipv4"),_intersection:a(()=>CU,"_intersection"),_int64:a(()=>sS,"_int64"),_int32:a(
 ()=>Q0,"_int32"),_int:a(()=>J0,"_int"),_includes:a(()=>Wf,"_includes"),_guid:a(()=>uc,"_guid"),_gte:a(()=>Dr,"_gte"),_gt:a(
-()=>Cn,"_gt"),_float64:a(()=>Y0,"_float64"),_float32:a(()=>X0,"_float32"),_file:a(()=>kS,"_file"),_enum:a(()=>NU,"_enum"),
+()=>Cn,"_gt"),_float64:a(()=>Y0,"_float64"),_float32:a(()=>X0,"_float32"),_file:a(()=>kS,"_file"),_enum:a(()=>AU,"_enum"),
 _endsWith:a(()=>Gf,"_endsWith"),_emoji:a(()=>Sf,"_emoji"),_email:a(()=>_f,"_email"),_e164:a(()=>jf,"_e164"),_discriminatedUnion:a(
 ()=>xU,"_discriminatedUnion"),_default:a(()=>MU,"_default"),_date:a(()=>hS,"_date"),_custom:a(()=>SS,"_custom"),_cuid2:a(
 ()=>xf,"_cuid2"),_cuid:a(()=>$f,"_cuid"),_coercedString:a(()=>z0,"_coercedString"),_coercedNumber:a(()=>K0,"_coercedNumb\
@@ -2827,7 +2827,7 @@ ing"),$ZodSet:a(()=>w0,"$ZodSet"),$ZodRegistry:a(()=>no,"$ZodRegistry"),$ZodReco
 "$ZodPrefault"),$ZodPipe:a(()=>ff,"$ZodPipe"),$ZodOptional:a(()=>T0,"$ZodOptional"),$ZodObject:a(()=>df,"$ZodObject"),$ZodNumberFormat:a(
 ()=>l0,"$ZodNumberFormat"),$ZodNumber:a(()=>of,"$ZodNumber"),$ZodNullable:a(()=>$0,"$ZodNullable"),$ZodNull:a(()=>p0,"$Z\
 odNull"),$ZodNonOptional:a(()=>O0,"$ZodNonOptional"),$ZodNever:a(()=>f0,"$ZodNever"),$ZodNanoID:a(()=>qk,"$ZodNanoID"),$ZodNaN:a(
-()=>N0,"$ZodNaN"),$ZodMap:a(()=>b0,"$ZodMap"),$ZodLiteral:a(()=>S0,"$ZodLiteral"),$ZodLazy:a(()=>D0,"$ZodLazy"),$ZodKSUID:a(
+()=>A0,"$ZodNaN"),$ZodMap:a(()=>b0,"$ZodMap"),$ZodLiteral:a(()=>S0,"$ZodLiteral"),$ZodLazy:a(()=>D0,"$ZodLazy"),$ZodKSUID:a(
 ()=>Vk,"$ZodKSUID"),$ZodJWT:a(()=>a0,"$ZodJWT"),$ZodIntersection:a(()=>y0,"$ZodIntersection"),$ZodISOTime:a(()=>Kk,"$Zod\
 ISOTime"),$ZodISODuration:a(()=>Jk,"$ZodISODuration"),$ZodISODateTime:a(()=>Gk,"$ZodISODateTime"),$ZodISODate:a(()=>Zk,"\
 $ZodISODate"),$ZodIPv6:a(()=>Yk,"$ZodIPv6"),$ZodIPv4:a(()=>Xk,"$ZodIPv4"),$ZodGUID:a(()=>Dk,"$ZodGUID"),$ZodFunction:a(()=>pc,
@@ -2836,35 +2836,35 @@ $ZodISODate"),$ZodIPv6:a(()=>Yk,"$ZodIPv6"),$ZodIPv4:a(()=>Xk,"$ZodIPv4"),$ZodGU
 iscriminatedUnion"),$ZodDefault:a(()=>x0,"$ZodDefault"),$ZodDate:a(()=>g0,"$ZodDate"),$ZodCustomStringFormat:a(()=>o0,"$\
 ZodCustomStringFormat"),$ZodCustom:a(()=>U0,"$ZodCustom"),$ZodCheckUpperCase:a(()=>Ck,"$ZodCheckUpperCase"),$ZodCheckStringFormat:a(
 ()=>Oo,"$ZodCheckStringFormat"),$ZodCheckStartsWith:a(()=>Rk,"$ZodCheckStartsWith"),$ZodCheckSizeEquals:a(()=>kk,"$ZodCh\
-eckSizeEquals"),$ZodCheckRegex:a(()=>$k,"$ZodCheckRegex"),$ZodCheckProperty:a(()=>Nk,"$ZodCheckProperty"),$ZodCheckOverwrite:a(
+eckSizeEquals"),$ZodCheckRegex:a(()=>$k,"$ZodCheckRegex"),$ZodCheckProperty:a(()=>Ak,"$ZodCheckProperty"),$ZodCheckOverwrite:a(
 ()=>Pk,"$ZodCheckOverwrite"),$ZodCheckNumberFormat:a(()=>yk,"$ZodCheckNumberFormat"),$ZodCheckMultipleOf:a(()=>_k,"$ZodC\
 heckMultipleOf"),$ZodCheckMinSize:a(()=>wk,"$ZodCheckMinSize"),$ZodCheckMinLength:a(()=>Ek,"$ZodCheckMinLength"),$ZodCheckMimeType:a(
 ()=>Ik,"$ZodCheckMimeType"),$ZodCheckMaxSize:a(()=>bk,"$ZodCheckMaxSize"),$ZodCheckMaxLength:a(()=>Sk,"$ZodCheckMaxLengt\
 h"),$ZodCheckLowerCase:a(()=>xk,"$ZodCheckLowerCase"),$ZodCheckLessThan:a(()=>nf,"$ZodCheckLessThan"),$ZodCheckLengthEquals:a(
 ()=>Tk,"$ZodCheckLengthEquals"),$ZodCheckIncludes:a(()=>Ok,"$ZodCheckIncludes"),$ZodCheckGreaterThan:a(()=>sf,"$ZodCheck\
-GreaterThan"),$ZodCheckEndsWith:a(()=>Ak,"$ZodCheckEndsWith"),$ZodCheckBigIntFormat:a(()=>vk,"$ZodCheckBigIntFormat"),$ZodCheck:a(
-()=>Yt,"$ZodCheck"),$ZodCatch:a(()=>A0,"$ZodCatch"),$ZodCUID2:a(()=>Bk,"$ZodCUID2"),$ZodCUID:a(()=>zk,"$ZodCUID"),$ZodCIDRv6:a(
+GreaterThan"),$ZodCheckEndsWith:a(()=>Nk,"$ZodCheckEndsWith"),$ZodCheckBigIntFormat:a(()=>vk,"$ZodCheckBigIntFormat"),$ZodCheck:a(
+()=>Yt,"$ZodCheck"),$ZodCatch:a(()=>N0,"$ZodCatch"),$ZodCUID2:a(()=>Bk,"$ZodCUID2"),$ZodCUID:a(()=>zk,"$ZodCUID"),$ZodCIDRv6:a(
 ()=>e0,"$ZodCIDRv6"),$ZodCIDRv4:a(()=>Qk,"$ZodCIDRv4"),$ZodBoolean:a(()=>lf,"$ZodBoolean"),$ZodBigIntFormat:a(()=>c0,"$Z\
 odBigIntFormat"),$ZodBigInt:a(()=>cf,"$ZodBigInt"),$ZodBase64URL:a(()=>i0,"$ZodBase64URL"),$ZodBase64:a(()=>t0,"$ZodBase\
 64"),$ZodAsyncError:a(()=>Ki,"$ZodAsyncError"),$ZodArray:a(()=>uf,"$ZodArray"),$ZodAny:a(()=>h0,"$ZodAny")});Tw=Object.freeze(
 {status:"aborted"});a(B,"_");$w=Symbol("zod_brand");Ki=class extends Error{static{a(this,"zr")}constructor(){super("Enco\
 untered Promise during synchronous parse. Use .parseAsync() instead.")}};nc={};a(kr,"Fe");lt={};bi(lt,{unwrapMessage:a(()=>Ba,
 "unwrapMessage"),stringifyPrimitive:a(()=>Je,"stringifyPrimitive"),required:a(()=>zL,"required"),randomString:a(()=>IL,"\
-randomString"),propertyKeyTypes:a(()=>sc,"propertyKeyTypes"),promiseAllObject:a(()=>NL,"promiseAllObject"),primitiveTypes:a(
+randomString"),propertyKeyTypes:a(()=>sc,"propertyKeyTypes"),promiseAllObject:a(()=>AL,"promiseAllObject"),primitiveTypes:a(
 ()=>Rw,"primitiveTypes"),prefixIssues:a(()=>Wr,"prefixIssues"),pick:a(()=>UL,"pick"),partial:a(()=>qL,"partial"),optionalKeys:a(
-()=>Aw,"optionalKeys"),omit:a(()=>ML,"omit"),numKeys:a(()=>PL,"numKeys"),nullish:a(()=>Mn,"nullish"),normalizeParams:a(()=>ue,
+()=>Nw,"optionalKeys"),omit:a(()=>ML,"omit"),numKeys:a(()=>PL,"numKeys"),nullish:a(()=>Mn,"nullish"),normalizeParams:a(()=>ue,
 "normalizeParams"),merge:a(()=>FL,"merge"),jsonStringifyReplacer:a(()=>xw,"jsonStringifyReplacer"),joinValues:a(()=>fe,"\
 joinValues"),issue:a(()=>Pw,"issue"),isPlainObject:a(()=>io,"isPlainObject"),isObject:a(()=>ro,"isObject"),getSizableOrigin:a(
 ()=>vu,"getSizableOrigin"),getParsedType:a(()=>LL,"getParsedType"),getLengthableOrigin:a(()=>bu,"getLengthableOrigin"),getEnumValues:a(
-()=>Bh,"getEnumValues"),getElementAtPath:a(()=>AL,"getElementAtPath"),floatSafeRemainder:a(()=>Cw,"floatSafeRemainder"),
+()=>Bh,"getEnumValues"),getElementAtPath:a(()=>NL,"getElementAtPath"),floatSafeRemainder:a(()=>Cw,"floatSafeRemainder"),
 finalizeIssue:a(()=>oi,"finalizeIssue"),extend:a(()=>jL,"extend"),escapeRegex:a(()=>jn,"escapeRegex"),esc:a(()=>ds,"esc"),
 defineLazy:a(()=>wt,"defineLazy"),createTransparentProxy:a(()=>DL,"createTransparentProxy"),clone:a(()=>di,"clone"),cleanRegex:a(
 ()=>yu,"cleanRegex"),cleanEnum:a(()=>BL,"cleanEnum"),captureStackTrace:a(()=>Wh,"captureStackTrace"),cached:a(()=>_u,"ca\
 ched"),assignProp:a(()=>Hh,"assignProp"),assertNotEqual:a(()=>xL,"assertNotEqual"),assertNever:a(()=>OL,"assertNever"),assertIs:a(
 ()=>CL,"assertIs"),assertEqual:a(()=>$L,"assertEqual"),assert:a(()=>RL,"assert"),allowsEval:a(()=>Ow,"allowsEval"),aborted:a(
-()=>gs,"aborted"),NUMBER_FORMAT_RANGES:a(()=>Nw,"NUMBER_FORMAT_RANGES"),Class:a(()=>Mp,"Class"),BIGINT_FORMAT_RANGES:a(()=>Iw,
+()=>gs,"aborted"),NUMBER_FORMAT_RANGES:a(()=>Aw,"NUMBER_FORMAT_RANGES"),Class:a(()=>Mp,"Class"),BIGINT_FORMAT_RANGES:a(()=>Iw,
 "BIGINT_FORMAT_RANGES")});a($L,"JF");a(xL,"XF");a(CL,"YF");a(OL,"QF");a(RL,"e4");a(Bh,"ba");a(fe,"E");a(xw,"bh");a(_u,"S\
-a");a(Mn,"vn");a(yu,"va");a(Cw,"Sh");a(wt,"ge");a(Hh,"vh");a(AL,"t4");a(NL,"r4");a(IL,"n4");a(ds,"po");Wh=Error.captureStackTrace?
+a");a(Mn,"vn");a(yu,"va");a(Cw,"Sh");a(wt,"ge");a(Hh,"vh");a(NL,"t4");a(AL,"r4");a(IL,"n4");a(ds,"po");Wh=Error.captureStackTrace?
 Error.captureStackTrace:(...t)=>{};a(ro,"hi");Ow=_u(()=>{if(typeof navigator<"u"&&navigator?.userAgent?.includes("Cloudf\
 lare"))return false;try{return new Function(""),true}catch(t){return false}});a(io,"yi");a(PL,"o4");LL=a(t=>{let e=typeof t;
 switch(e){case"undefined":return"undefined";case"string":return"string";case"number":return Number.isNaN(t)?"nan":"numbe\
@@ -2873,7 +2873,7 @@ object":if(Array.isArray(t))return"array";if(t===null)return"null";if(t.then&&ty
 catch==="function")return"promise";if(typeof Map<"u"&&t instanceof Map)return"map";if(typeof Set<"u"&&t instanceof Set)return"\
 set";if(typeof Date<"u"&&t instanceof Date)return"date";if(typeof File<"u"&&t instanceof File)return"file";return"object";default:
 throw Error(`Unknown data type: ${e}`)}},"i4");sc=new Set(["string","number","symbol"]);Rw=new Set(["string","number","b\
-igint","boolean","symbol","undefined"]);a(jn,"Fr");a(di,"at");a(ue,"O");a(DL,"s4");a(Je,"D");a(Aw,"kh");Nw={safeint:[Number.
+igint","boolean","symbol","undefined"]);a(jn,"Fr");a(di,"at");a(ue,"O");a(DL,"s4");a(Je,"D");a(Nw,"kh");Aw={safeint:[Number.
 MIN_SAFE_INTEGER,Number.MAX_SAFE_INTEGER],int32:[-2147483648,2147483647],uint32:[0,4294967295],float32:[-34028234663852886e22,
 34028234663852886e22],float64:[-Number.MAX_VALUE,Number.MAX_VALUE]};Iw={int64:[BigInt("-9223372036854775808"),BigInt("92\
 23372036854775807")],uint64:[BigInt(0),BigInt("18446744073709551615")]};a(UL,"a4");a(ML,"l4");a(jL,"c4");a(FL,"u4");a(qL,
@@ -2930,7 +2930,7 @@ Yt.init(t,e),t._zod.onattach.push(r=>{var n;(n=r._zod.bag).multipleOf??(n.multip
 value!==typeof e.value)throw Error("Cannot mix number and bigint in multiple_of check.");if(typeof r.value==="bigint"?r.
 value%e.value===BigInt(0):Cw(r.value,e.value)===0)return;r.issues.push({origin:typeof r.value,code:"not_multiple_of",divisor:e.
 value,input:r.value,inst:t,continue:!e.abort})}});yk=B("$ZodCheckNumberFormat",(t,e)=>{Yt.init(t,e),e.format=e.format||"\
-float64";let r=e.format?.includes("int"),n=r?"int":"number",[i,s]=Nw[e.format];t._zod.onattach.push(o=>{let l=o._zod.bag;
+float64";let r=e.format?.includes("int"),n=r?"int":"number",[i,s]=Aw[e.format];t._zod.onattach.push(o=>{let l=o._zod.bag;
 if(l.format=e.format,l.minimum=i,l.maximum=s,r)l.pattern=ck}),t._zod.check=o=>{let l=o.value;if(r){if(!Number.isInteger(
 l)){o.issues.push({expected:n,format:e.format,code:"invalid_type",input:l,inst:t});return}if(!Number.isSafeInteger(l)){if(l>
 0)o.issues.push({input:l,code:"too_big",maximum:Number.MAX_SAFE_INTEGER,note:"Integers must be within the safe integer r\
@@ -2975,10 +2975,10 @@ typeof e.position==="number"?`^.{${e.position}}${r}`:r);e.pattern=n,t._zod.onatt
 Rk=B("$ZodCheckStartsWith",(t,e)=>{Yt.init(t,e);let r=new RegExp(`^${jn(e.prefix)}.*`);e.pattern??(e.pattern=r),t._zod.onattach.
 push(n=>{let i=n._zod.bag;i.patterns??(i.patterns=new Set),i.patterns.add(r)}),t._zod.check=n=>{if(n.value.startsWith(e.
 prefix))return;n.issues.push({origin:"string",code:"invalid_format",format:"starts_with",prefix:e.prefix,input:n.value,inst:t,
-continue:!e.abort})}});Ak=B("$ZodCheckEndsWith",(t,e)=>{Yt.init(t,e);let r=new RegExp(`.*${jn(e.suffix)}$`);e.pattern??(e.
+continue:!e.abort})}});Nk=B("$ZodCheckEndsWith",(t,e)=>{Yt.init(t,e);let r=new RegExp(`.*${jn(e.suffix)}$`);e.pattern??(e.
 pattern=r),t._zod.onattach.push(n=>{let i=n._zod.bag;i.patterns??(i.patterns=new Set),i.patterns.add(r)}),t._zod.check=n=>{
 if(n.value.endsWith(e.suffix))return;n.issues.push({origin:"string",code:"invalid_format",format:"ends_with",suffix:e.suffix,
-input:n.value,inst:t,continue:!e.abort})}});a(Yy,"tE");Nk=B("$ZodCheckProperty",(t,e)=>{Yt.init(t,e),t._zod.check=r=>{let n=e.
+input:n.value,inst:t,continue:!e.abort})}});a(Yy,"tE");Ak=B("$ZodCheckProperty",(t,e)=>{Yt.init(t,e),t._zod.check=r=>{let n=e.
 schema._zod.run({value:r.value[e.property],issues:[]},{});if(n instanceof Promise)return n.then(i=>Yy(i,r,e.property));Yy(
 n,r,e.property);return}});Ik=B("$ZodCheckMimeType",(t,e)=>{Yt.init(t,e);let r=new Set(e.mime);t._zod.onattach.push(n=>{n.
 _zod.bag.mime=e.mime}),t._zod.check=n=>{if(r.has(n.value.type))return;n.issues.push({code:"invalid_value",values:e.mime,
@@ -3055,9 +3055,9 @@ issues.push({expected:"date",code:"invalid_type",input:i,...s?{received:"Invalid
 "$ZodArray",(t,e)=>{Ve.init(t,e),t._zod.parse=(r,n)=>{let i=r.value;if(!Array.isArray(i))return r.issues.push({expected:"\
 array",code:"invalid_type",input:i,inst:t}),r;r.value=Array(i.length);let s=[];for(let o=0;o<i.length;o++){let l=i[o],c=e.
 element._zod.run({value:l,issues:[]},n);if(c instanceof Promise)s.push(c.then(u=>Qy(u,r,o)));else Qy(c,r,o)}if(s.length)
-return Promise.all(s).then(()=>r);return r}});a(Al,"od");a(ev,"iE");df=B("$ZodObject",(t,e)=>{Ve.init(t,e);let r=_u(()=>{
+return Promise.all(s).then(()=>r);return r}});a(Nl,"od");a(ev,"iE");df=B("$ZodObject",(t,e)=>{Ve.init(t,e);let r=_u(()=>{
 let d=Object.keys(e.shape);for(let p of d)if(!(e.shape[p]instanceof Ve))throw Error(`Invalid element at key "${p}": expe\
-cted a Zod schema`);let h=Aw(e.shape);return{shape:e.shape,keys:d,keySet:new Set(d),numKeys:d.length,optionalKeys:new Set(
+cted a Zod schema`);let h=Nw(e.shape);return{shape:e.shape,keys:d,keySet:new Set(d),numKeys:d.length,optionalKeys:new Set(
 h)}});wt(t._zod,"propValues",()=>{let d=e.shape,h={};for(let p in d){let f=d[p]._zod;if(f.values){h[p]??(h[p]=new Set);for(let _ of f.
 values)h[p].add(_)}}return h});let n=a(d=>{let h=new lc(["shape","payload","ctx"]),p=r.value,f=a(g=>{let v=ds(g);return`\
 shape[${v}]._zod.run({ value: input[${v}], issues: [] }, ctx)`},"g");h.write("const input = payload.value;");let _=Object.
@@ -3090,9 +3090,9 @@ oad;");let b=h.compile();return(g,v)=>b(d,g,v)},"o"),i,s=ro,o=!nc.jitless,l=o&&O
 u??(u=r.value);let p=d.value;if(!s(p))return d.issues.push({expected:"object",code:"invalid_type",input:p,inst:t}),d;let f=[];
 if(o&&l&&h?.async===false&&h.jitless!==true){if(!i)i=n(e.shape);d=i(d,h)}else{d.value={};let v=u.shape;for(let S of u.keys){
 let E=v[S],T=E._zod.run({value:p[S],issues:[]},h),x=E._zod.optin==="optional"&&E._zod.optout==="optional";if(T instanceof
-Promise)f.push(T.then(k=>x?ev(k,d,S,p):Al(k,d,S)));else if(x)ev(T,d,S,p);else Al(T,d,S)}}if(!c)return f.length?Promise.all(
+Promise)f.push(T.then(k=>x?ev(k,d,S,p):Nl(k,d,S)));else if(x)ev(T,d,S,p);else Nl(T,d,S)}}if(!c)return f.length?Promise.all(
 f).then(()=>d):d;let _=[],y=u.keySet,b=c._zod,g=b.def.type;for(let v of Object.keys(p)){if(y.has(v))continue;if(g==="nev\
-er"){_.push(v);continue}let S=b.run({value:p[v],issues:[]},h);if(S instanceof Promise)f.push(S.then(E=>Al(E,d,v)));else Al(
+er"){_.push(v);continue}let S=b.run({value:p[v],issues:[]},h);if(S instanceof Promise)f.push(S.then(E=>Nl(E,d,v)));else Nl(
 S,d,v)}if(_.length)d.issues.push({code:"unrecognized_keys",keys:_,input:p,inst:t});if(!f.length)return d;return Promise.
 all(f).then(()=>d)}});a(tv,"sE");pf=B("$ZodUnion",(t,e)=>{Ve.init(t,e),wt(t._zod,"optin",()=>e.options.some(r=>r._zod.optin===
 "optional")?"optional":void 0),wt(t._zod,"optout",()=>e.options.some(r=>r._zod.optout==="optional")?"optional":void 0),wt(
@@ -3116,9 +3116,9 @@ l,c])=>rv(r,l,c));return rv(r,s,o)}});a(jp,"xy");a(rv,"aE");wu=B("$ZodTuple",(t,
 issues.push({input:o,inst:t,expected:"tuple",code:"invalid_type"}),i;i.value=[];let l=[];if(!e.rest){let u=o.length>r.length,
 d=o.length<n-1;if(u||d)return i.issues.push({input:o,inst:t,origin:"array",...u?{code:"too_big",maximum:r.length}:{code:"\
 too_small",minimum:r.length}}),i}let c=-1;for(let u of r){if(c++,c>=o.length){if(c>=n)continue}let d=u._zod.run({value:o[c],
-issues:[]},s);if(d instanceof Promise)l.push(d.then(h=>Nl(h,i,c)));else Nl(d,i,c)}if(e.rest){let u=o.slice(r.length);for(let d of u){
-c++;let h=e.rest._zod.run({value:d,issues:[]},s);if(h instanceof Promise)l.push(h.then(p=>Nl(p,i,c)));else Nl(h,i,c)}}if(l.
-length)return Promise.all(l).then(()=>i);return i}});a(Nl,"id");v0=B("$ZodRecord",(t,e)=>{Ve.init(t,e),t._zod.parse=(r,n)=>{
+issues:[]},s);if(d instanceof Promise)l.push(d.then(h=>Al(h,i,c)));else Al(d,i,c)}if(e.rest){let u=o.slice(r.length);for(let d of u){
+c++;let h=e.rest._zod.run({value:d,issues:[]},s);if(h instanceof Promise)l.push(h.then(p=>Al(p,i,c)));else Al(h,i,c)}}if(l.
+length)return Promise.all(l).then(()=>i);return i}});a(Al,"id");v0=B("$ZodRecord",(t,e)=>{Ve.init(t,e),t._zod.parse=(r,n)=>{
 let i=r.value;if(!io(i))return r.issues.push({expected:"record",code:"invalid_type",input:i,inst:t}),r;let s=[];if(e.keyType.
 _zod.values){let o=e.keyType._zod.values;r.value={};for(let c of o)if(typeof c==="string"||typeof c==="number"||typeof c===
 "symbol"){let u=e.valueType._zod.run({value:i[c],issues:[]},n);if(u instanceof Promise)s.push(u.then(d=>{if(d.issues.length)
@@ -3161,11 +3161,11 @@ value=e.defaultValue;return e.innerType._zod.run(r,n)}});O0=B("$ZodNonOptional",
 ()=>{let r=e.innerType._zod.values;return r?new Set([...r].filter(n=>n!==void 0)):void 0}),t._zod.parse=(r,n)=>{let i=e.
 innerType._zod.run(r,n);if(i instanceof Promise)return i.then(s=>av(s,t));return av(i,t)}});a(av,"dE");R0=B("$ZodSuccess",
 (t,e)=>{Ve.init(t,e),t._zod.parse=(r,n)=>{let i=e.innerType._zod.run(r,n);if(i instanceof Promise)return i.then(s=>(r.value=
-s.issues.length===0,r));return r.value=i.issues.length===0,r}});A0=B("$ZodCatch",(t,e)=>{Ve.init(t,e),t._zod.optin="opti\
+s.issues.length===0,r));return r.value=i.issues.length===0,r}});N0=B("$ZodCatch",(t,e)=>{Ve.init(t,e),t._zod.optin="opti\
 onal",wt(t._zod,"optout",()=>e.innerType._zod.optout),wt(t._zod,"values",()=>e.innerType._zod.values),t._zod.parse=(r,n)=>{
 let i=e.innerType._zod.run(r,n);if(i instanceof Promise)return i.then(s=>{if(r.value=s.value,s.issues.length)r.value=e.catchValue(
 {...r,error:{issues:s.issues.map(o=>oi(o,n,kr()))},input:r.value}),r.issues=[];return r});if(r.value=i.value,i.issues.length)
-r.value=e.catchValue({...r,error:{issues:i.issues.map(s=>oi(s,n,kr()))},input:r.value}),r.issues=[];return r}});N0=B("$Z\
+r.value=e.catchValue({...r,error:{issues:i.issues.map(s=>oi(s,n,kr()))},input:r.value}),r.issues=[];return r}});A0=B("$Z\
 odNaN",(t,e)=>{Ve.init(t,e),t._zod.parse=(r,n)=>{if(typeof r.value!=="number"||!Number.isNaN(r.value))return r.issues.push(
 {input:r.value,inst:t,expected:"nan",code:"invalid_type"}),r;return r}});ff=B("$ZodPipe",(t,e)=>{Ve.init(t,e),wt(t._zod,
 "values",()=>e.in._zod.values),wt(t._zod,"optin",()=>e.in._zod.optin),wt(t._zod,"optout",()=>e.out._zod.optout),t._zod.parse=
@@ -3189,7 +3189,7 @@ t._zod.check=r=>{let n=r.value,i=e.fn(n);if(i instanceof Promise)return i.then(s
 "mE");mf={};bi(mf,{zhTW:a(()=>TU,"zhTW"),zhCN:a(()=>SU,"zhCN"),vi:a(()=>wU,"vi"),ur:a(()=>vU,"ur"),ua:a(()=>_U,"ua"),tr:a(
 ()=>mU,"tr"),th:a(()=>pU,"th"),ta:a(()=>uU,"ta"),sv:a(()=>lU,"sv"),sl:a(()=>aU,"sl"),ru:a(()=>nU,"ru"),pt:a(()=>rU,"pt"),
 ps:a(()=>YD,"ps"),pl:a(()=>eU,"pl"),ota:a(()=>JD,"ota"),no:a(()=>ZD,"no"),nl:a(()=>VD,"nl"),ms:a(()=>HD,"ms"),mk:a(()=>zD,
-"mk"),ko:a(()=>FD,"ko"),kh:a(()=>MD,"kh"),ja:a(()=>DD,"ja"),it:a(()=>PD,"it"),id:a(()=>ND,"id"),hu:a(()=>RD,"hu"),he:a(()=>CD,
+"mk"),ko:a(()=>FD,"ko"),kh:a(()=>MD,"kh"),ja:a(()=>DD,"ja"),it:a(()=>PD,"it"),id:a(()=>AD,"id"),hu:a(()=>RD,"hu"),he:a(()=>CD,
 "he"),frCA:a(()=>$D,"frCA"),fr:a(()=>ED,"fr"),fi:a(()=>kD,"fi"),fa:a(()=>bD,"fa"),es:a(()=>yD,"es"),eo:a(()=>gD,"eo"),en:a(
 ()=>M0,"en"),de:a(()=>dD,"de"),cs:a(()=>cD,"cs"),ca:a(()=>oD,"ca"),be:a(()=>sD,"be"),az:a(()=>iD,"az"),ar:a(()=>tD,"ar")});
 eD=a(()=>{let t={string:{unit:"حرف",verb:"أن يحوي"},file:{unit:"بايت",verb:"أن يحوي"},array:{unit:"عن\
@@ -3533,7 +3533,7 @@ ith")return`Érvénytelen string: "${s.suffix}" értékkel kell végződnie`;if(
 ntának kell megfelelnie`;return`Érvénytelen ${n[s.format]??i.format}`}case"not_multiple_of":return`Érvénytelen szám: ${i.
 divisor} többszörösének kell lennie`;case"unrecognized_keys":return`Ismeretlen kulcs${i.keys.length>1?"s":""}: ${fe(
 i.keys,", ")}`;case"invalid_key":return`Érvénytelen kulcs ${i.origin}`;case"invalid_union":return"Érvénytelen bemenet";case"\
-invalid_element":return`Érvénytelen érték: ${i.origin}`;default:return"Érvénytelen bemenet"}}},"F4");a(RD,"Fy");AD=
+invalid_element":return`Érvénytelen érték: ${i.origin}`;default:return"Érvénytelen bemenet"}}},"F4");a(RD,"Fy");ND=
 a(()=>{let t={string:{unit:"karakter",verb:"memiliki"},file:{unit:"byte",verb:"memiliki"},array:{unit:"item",verb:"memil\
 iki"},set:{unit:"item",verb:"memiliki"}};function e(i){return t[i]??null}a(e,"t");let r=a(i=>{let s=typeof i;switch(s){case"\
 number":return Number.isNaN(i)?"NaN":"number";case"object":{if(Array.isArray(i))return"array";if(i===null)return"null";if(Object.
@@ -3555,7 +3555,7 @@ valid_format":{let s=i;if(s.format==="starts_with")return`String tidak valid: ha
 return`${n[s.format]??i.format} tidak valid`}case"not_multiple_of":return`Angka tidak valid: harus kelipatan dari ${i.divisor}`;case"\
 unrecognized_keys":return`Kunci tidak dikenali ${i.keys.length>1?"s":""}: ${fe(i.keys,", ")}`;case"invalid_key":return`K\
 unci tidak valid di ${i.origin}`;case"invalid_union":return"Input tidak valid";case"invalid_element":return`Nilai tidak \
-valid di ${i.origin}`;default:return"Input tidak valid"}}},"H4");a(ND,"Hy");ID=a(()=>{let t={string:{unit:"caratteri",verb:"\
+valid di ${i.origin}`;default:return"Input tidak valid"}}},"H4");a(AD,"Hy");ID=a(()=>{let t={string:{unit:"caratteri",verb:"\
 avere"},file:{unit:"byte",verb:"avere"},array:{unit:"elementi",verb:"avere"},set:{unit:"elementi",verb:"avere"}};function e(i){
 return t[i]??null}a(e,"t");let r=a(i=>{let s=typeof i;switch(s){case"number":return Number.isNaN(i)?"NaN":"numero";case"\
 object":{if(Array.isArray(i))return"vettore";if(i===null)return"null";if(Object.getPrototypeOf(i)!==Object.prototype&&i.
@@ -4106,14 +4106,14 @@ if(this._idmap.has(n.id))throw Error(`ID ${n.id} already exists in the registry`
 return this._map.delete(e),this}get(e){let r=e._zod.parent;if(r){let n={...this.get(r)??{}};return delete n.id,{...n,...this.
 _map.get(e)}}return this._map.get(e)}has(e){return this._map.has(e)}};a(gf,"Ca");En=gf();a(q0,"op");a(z0,"p_");a(_f,"$a");
 a(uc,"Pi");a(yf,"Ma");a(vf,"Da");a(bf,"Na");a(wf,"Ua");a(kf,"La");a(Sf,"ja");a(Ef,"za");a($f,"Fa");a(xf,"Ha");a(Cf,"Ba");
-a(Of,"qa");a(Rf,"Va");a(Af,"Wa");a(Nf,"Ka");a(Pf,"Za");a(Lf,"Ga");a(Df,"Ja");a(Uf,"Xa");a(jf,"Ya");a(Ff,"Qa");B0={Any:null,
+a(Of,"qa");a(Rf,"Va");a(Nf,"Wa");a(Af,"Ka");a(Pf,"Za");a(Lf,"Ga");a(Df,"Ja");a(Uf,"Xa");a(jf,"Ya");a(Ff,"Qa");B0={Any:null,
 Minute:-1,Second:0,Millisecond:3,Microsecond:6};a(H0,"f_");a(W0,"m_");a(V0,"g_");a(G0,"h_");a(Z0,"sp");a(K0,"y_");a(J0,"\
 ap");a(X0,"lp");a(Y0,"cp");a(Q0,"up");a(eS,"dp");a(tS,"pp");a(rS,"__");a(iS,"fp");a(nS,"b_");a(sS,"mp");a(aS,"gp");a(oS,
 "hp");a(lS,"yp");a(cS,"_p");a(uS,"bp");a(dc,"_o");a(dS,"Sp");a(pS,"vp");a(hS,"xp");a(fS,"S_");a(mS,"wp");a(xn,"Hr");a(si,
 "Gt");a(Cn,"Br");a(Dr,"Tt");a(gS,"v_");a(_S,"x_");a(yS,"w_");a(vS,"k_");a(so,"bo");a(ku,"Ii");a(ao,"So");a(qf,"el");a(Su,
 "Ai");a(bs,"Pn");a(Eu,"Ri");a(zf,"tl");a(Bf,"rl");a(Hf,"nl");a(Wf,"ol");a(Vf,"il");a(Gf,"sl");a(bS,"E_");a(Zf,"al");a(Fn,
 "qr");a(Kf,"ll");a(Jf,"cl");a(Xf,"ul");a(Yf,"dl");a(Qf,"pl");a($U,"f2");a(xU,"m2");a(CU,"g2");a(wS,"T_");a(OU,"h2");a(RU,
-"y2");a(AU,"_2");a(NU,"b2");a(IU,"S2");a(PU,"v2");a(kS,"kp");a(LU,"x2");a(DU,"w2");a(UU,"k2");a(MU,"E2");a(jU,"T2");a(FU,
+"y2");a(NU,"_2");a(AU,"b2");a(IU,"S2");a(PU,"v2");a(kS,"kp");a(LU,"x2");a(DU,"w2");a(UU,"k2");a(MU,"E2");a(jU,"T2");a(FU,
 "P2");a(qU,"I2");a(zU,"A2");a(BU,"R2");a(HU,"O2");a(WU,"C2");a(VU,"$2");a(SS,"Ep");a(ES,"Tp");a(TS,"Pp");a($S,"Ip");pc=class{static{
 a(this,"P_")}constructor(e){this._def=e,this.def=e}implement(e){if(typeof e!=="function")throw Error("implement() must b\
 e called with a function");let r=a((...n)=>{let i=this._def.input?ac(this._def.input,n,void 0,{callee:r}):n;if(!Array.isArray(
@@ -4204,21 +4204,21 @@ path:p.path??[]})},"s");for(let d of[...this.seen.entries()].reverse())l(d[0],{t
 ://json-schema.org/draft-07/schema#";else console.warn(`Invalid target: ${this.target}`);Object.assign(c,i.def);let u=n.
 external?.defs??{};for(let d of this.seen.entries()){let h=d[1];if(h.def&&h.defId)u[h.defId]=h.def}if(!n.external&&Object.
 keys(u).length>0)if(this.target==="draft-2020-12")c.$defs=u;else c.definitions=u;try{return JSON.parse(JSON.stringify(c))}catch(d){
-throw Error("Error converting schema to JSON.")}}};a(CS,"Oi");a(ar,"Xe");GU={};em={};bi(em,{time:a(()=>AS,"time"),duration:a(
-()=>NS,"duration"),datetime:a(()=>OS,"datetime"),date:a(()=>RS,"date"),ZodISOTime:a(()=>im,"ZodISOTime"),ZodISODuration:a(
+throw Error("Error converting schema to JSON.")}}};a(CS,"Oi");a(ar,"Xe");GU={};em={};bi(em,{time:a(()=>NS,"time"),duration:a(
+()=>AS,"duration"),datetime:a(()=>OS,"datetime"),date:a(()=>RS,"date"),ZodISOTime:a(()=>im,"ZodISOTime"),ZodISODuration:a(
 ()=>nm,"ZodISODuration"),ZodISODateTime:a(()=>tm,"ZodISODateTime"),ZodISODate:a(()=>rm,"ZodISODate")});tm=B("ZodISODateT\
 ime",(t,e)=>{Gk.init(t,e),Lt.init(t,e)});a(OS,"I_");rm=B("ZodISODate",(t,e)=>{Zk.init(t,e),Lt.init(t,e)});a(RS,"A_");im=
-B("ZodISOTime",(t,e)=>{Kk.init(t,e),Lt.init(t,e)});a(AS,"R_");nm=B("ZodISODuration",(t,e)=>{Jk.init(t,e),Lt.init(t,e)});
-a(NS,"O_");IS=a((t,e)=>{Vh.init(t,e),t.name="ZodError",Object.defineProperties(t,{format:{value:a(r=>Zh(t,r),"value")},flatten:{
+B("ZodISOTime",(t,e)=>{Kk.init(t,e),Lt.init(t,e)});a(NS,"R_");nm=B("ZodISODuration",(t,e)=>{Jk.init(t,e),Lt.init(t,e)});
+a(AS,"O_");IS=a((t,e)=>{Vh.init(t,e),t.name="ZodError",Object.defineProperties(t,{format:{value:a(r=>Zh(t,r),"value")},flatten:{
 value:a(r=>Gh(t,r),"value")},addIssue:{value:a(r=>t.issues.push(r),"value")},addIssues:{value:a(r=>t.issues.push(...r),"\
-value")},isEmpty:{get(){return t.issues.length===0}}})},"xE");ZU=B("ZodError",IS);Ao=B("ZodError",IS,{Parent:Error});PS=
-Kh(Ao);LS=Jh(Ao);DS=Xh(Ao);US=Qh(Ao);rt=B("ZodType",(t,e)=>(Ve.init(t,e),t.def=e,Object.defineProperty(t,"_def",{value:e}),
+value")},isEmpty:{get(){return t.issues.length===0}}})},"xE");ZU=B("ZodError",IS);No=B("ZodError",IS,{Parent:Error});PS=
+Kh(No);LS=Jh(No);DS=Xh(No);US=Qh(No);rt=B("ZodType",(t,e)=>(Ve.init(t,e),t.def=e,Object.defineProperty(t,"_def",{value:e}),
 t.check=(...r)=>t.clone({...e,checks:[...e.checks??[],...r.map(n=>typeof n==="function"?{_zod:{check:n,def:{check:"custo\
 m"},onattach:[]}}:n)]}),t.clone=(r,n)=>di(t,r,n),t.brand=()=>t,t.register=(r,n)=>(r.add(t,n),t),t.parse=(r,n)=>PS(t,r,n,
 {callee:t.parse}),t.safeParse=(r,n)=>DS(t,r,n),t.parseAsync=async(r,n)=>LS(t,r,n,{callee:t.parseAsync}),t.safeParseAsync=
 async(r,n)=>US(t,r,n),t.spa=t.safeParseAsync,t.refine=(r,n)=>t.check(yE(r,n)),t.superRefine=r=>t.check(vE(r)),t.overwrite=
 r=>t.check(Fn(r)),t.optional=()=>It(t),t.nullable=()=>fc(t),t.nullish=()=>It(fc(t)),t.nonoptional=r=>sE(t,r),t.array=()=>ct(
-t),t.or=r=>$t([t,r]),t.and=r=>Au(t,r),t.transform=r=>mc(t,Rm(r)),t.default=r=>rE(t,r),t.prefault=r=>nE(t,r),t.catch=r=>lE(
+t),t.or=r=>$t([t,r]),t.and=r=>Nu(t,r),t.transform=r=>mc(t,Rm(r)),t.default=r=>rE(t,r),t.prefault=r=>nE(t,r),t.catch=r=>lE(
 t,r),t.pipe=r=>mc(t,r),t.readonly=()=>dE(t),t.describe=r=>{let n=t.clone();return En.add(n,{description:r}),n},Object.defineProperty(
 t,"description",{get(){return En.get(t)?.description},configurable:true}),t.meta=(...r)=>{if(r.length===0)return En.get(
 t);let n=t.clone();return En.add(n,r[0]),n},t.isOptional=()=>t.safeParse(void 0).success,t.isNullable=()=>t.safeParse(null).
@@ -4228,14 +4228,14 @@ check(Vf(...n)),t.endsWith=(...n)=>t.check(Gf(...n)),t.min=(...n)=>t.check(bs(..
 (...n)=>t.check(Eu(...n)),t.nonempty=(...n)=>t.check(bs(1,...n)),t.lowercase=n=>t.check(Bf(n)),t.uppercase=n=>t.check(Hf(
 n)),t.trim=()=>t.check(Jf()),t.normalize=(...n)=>t.check(Kf(...n)),t.toLowerCase=()=>t.check(Xf()),t.toUpperCase=()=>t.check(
 Yf())});Tu=B("ZodString",(t,e)=>{Ro.init(t,e),sm.init(t,e),t.email=r=>t.check(_f(am,r)),t.url=r=>t.check(kf(om,r)),t.jwt=
-r=>t.check(Ff(km,r)),t.emoji=r=>t.check(Sf(lm,r)),t.guid=r=>t.check(uc(hc,r)),t.uuid=r=>t.check(yf(Ai,r)),t.uuidv4=r=>t.
-check(vf(Ai,r)),t.uuidv6=r=>t.check(bf(Ai,r)),t.uuidv7=r=>t.check(wf(Ai,r)),t.nanoid=r=>t.check(Ef(cm,r)),t.guid=r=>t.check(
+r=>t.check(Ff(km,r)),t.emoji=r=>t.check(Sf(lm,r)),t.guid=r=>t.check(uc(hc,r)),t.uuid=r=>t.check(yf(Ni,r)),t.uuidv4=r=>t.
+check(vf(Ni,r)),t.uuidv6=r=>t.check(bf(Ni,r)),t.uuidv7=r=>t.check(wf(Ni,r)),t.nanoid=r=>t.check(Ef(cm,r)),t.guid=r=>t.check(
 uc(hc,r)),t.cuid=r=>t.check($f(um,r)),t.cuid2=r=>t.check(xf(dm,r)),t.ulid=r=>t.check(Cf(pm,r)),t.base64=r=>t.check(Df(vm,
-r)),t.base64url=r=>t.check(Uf(bm,r)),t.xid=r=>t.check(Of(hm,r)),t.ksuid=r=>t.check(Rf(fm,r)),t.ipv4=r=>t.check(Af(mm,r)),
-t.ipv6=r=>t.check(Nf(gm,r)),t.cidrv4=r=>t.check(Pf(_m,r)),t.cidrv6=r=>t.check(Lf(ym,r)),t.e164=r=>t.check(jf(wm,r)),t.datetime=
-r=>t.check(OS(r)),t.date=r=>t.check(RS(r)),t.time=r=>t.check(AS(r)),t.duration=r=>t.check(NS(r))});a(K,"v");Lt=B("ZodStr\
+r)),t.base64url=r=>t.check(Uf(bm,r)),t.xid=r=>t.check(Of(hm,r)),t.ksuid=r=>t.check(Rf(fm,r)),t.ipv4=r=>t.check(Nf(mm,r)),
+t.ipv6=r=>t.check(Af(gm,r)),t.cidrv4=r=>t.check(Pf(_m,r)),t.cidrv6=r=>t.check(Lf(ym,r)),t.e164=r=>t.check(jf(wm,r)),t.datetime=
+r=>t.check(OS(r)),t.date=r=>t.check(RS(r)),t.time=r=>t.check(NS(r)),t.duration=r=>t.check(AS(r))});a(K,"v");Lt=B("ZodStr\
 ingFormat",(t,e)=>{Ot.init(t,e),sm.init(t,e)});am=B("ZodEmail",(t,e)=>{Mk.init(t,e),Lt.init(t,e)});a(KU,"U2");hc=B("ZodG\
-UID",(t,e)=>{Dk.init(t,e),Lt.init(t,e)});a(JU,"L2");Ai=B("ZodUUID",(t,e)=>{Uk.init(t,e),Lt.init(t,e)});a(XU,"j2");a(YU,"\
+UID",(t,e)=>{Dk.init(t,e),Lt.init(t,e)});a(JU,"L2");Ni=B("ZodUUID",(t,e)=>{Uk.init(t,e),Lt.init(t,e)});a(XU,"j2");a(YU,"\
 z2");a(QU,"F2");a(eM,"H2");om=B("ZodURL",(t,e)=>{jk.init(t,e),Lt.init(t,e)});a(tM,"B2");lm=B("ZodEmoji",(t,e)=>{Fk.init(
 t,e),Lt.init(t,e)});a(rM,"q2");cm=B("ZodNanoID",(t,e)=>{qk.init(t,e),Lt.init(t,e)});a(iM,"V2");um=B("ZodCUID",(t,e)=>{zk.
 init(t,e),Lt.init(t,e)});a(nM,"W2");dm=B("ZodCUID2",(t,e)=>{Bk.init(t,e),Lt.init(t,e)});a(sM,"K2");pm=B("ZodULID",(t,e)=>{
@@ -4267,21 +4267,21 @@ e),rt.init(t,e),t.min=(n,i)=>t.check(Dr(n,i)),t.max=(n,i)=>t.check(si(n,i));let 
 r.minimum):null,t.maxDate=r.maximum?new Date(r.maximum):null});a(OM,"yH");VS=B("ZodArray",(t,e)=>{uf.init(t,e),rt.init(t,
 e),t.element=e.element,t.min=(r,n)=>t.check(bs(r,n)),t.nonempty=r=>t.check(bs(1,r)),t.max=(r,n)=>t.check(Su(r,n)),t.length=
 (r,n)=>t.check(Eu(r,n)),t.unwrap=()=>t.element});a(ct,"ie");a(RM,"_H");Ru=B("ZodObject",(t,e)=>{df.init(t,e),rt.init(t,e),
-lt.defineLazy(t,"shape",()=>e.shape),t.keyof=()=>Ar(Object.keys(t._zod.def.shape)),t.catchall=r=>t.clone({...t._zod.def,
+lt.defineLazy(t,"shape",()=>e.shape),t.keyof=()=>Nr(Object.keys(t._zod.def.shape)),t.catchall=r=>t.clone({...t._zod.def,
 catchall:r}),t.passthrough=()=>t.clone({...t._zod.def,catchall:Ft()}),t.loose=()=>t.clone({...t._zod.def,catchall:Ft()}),
 t.strict=()=>t.clone({...t._zod.def,catchall:Ou()}),t.strip=()=>t.clone({...t._zod.def,catchall:void 0}),t.extend=r=>lt.
-extend(t,r),t.merge=r=>lt.merge(t,r),t.pick=r=>lt.pick(t,r),t.omit=r=>lt.omit(t,r),t.partial=(...r)=>lt.partial(Am,t,r[0]),
-t.required=(...r)=>lt.required(Nm,t,r[0])});a(Ee,"z");a(AM,"bH");a(wr,"lt");$m=B("ZodUnion",(t,e)=>{pf.init(t,e),rt.init(
+extend(t,r),t.merge=r=>lt.merge(t,r),t.pick=r=>lt.pick(t,r),t.omit=r=>lt.omit(t,r),t.partial=(...r)=>lt.partial(Nm,t,r[0]),
+t.required=(...r)=>lt.required(Am,t,r[0])});a(Ee,"z");a(NM,"bH");a(wr,"lt");$m=B("ZodUnion",(t,e)=>{pf.init(t,e),rt.init(
 t,e),t.options=e.options});a($t,"xe");GS=B("ZodDiscriminatedUnion",(t,e)=>{$m.init(t,e),_0.init(t,e)});a(xm,"Hp");ZS=B("\
-ZodIntersection",(t,e)=>{y0.init(t,e),rt.init(t,e)});a(Au,"_l");KS=B("ZodTuple",(t,e)=>{wu.init(t,e),rt.init(t,e),t.rest=
-r=>t.clone({...t._zod.def,rest:r})});a(NM,"SH");Cm=B("ZodRecord",(t,e)=>{v0.init(t,e),rt.init(t,e),t.keyType=e.keyType,t.
+ZodIntersection",(t,e)=>{y0.init(t,e),rt.init(t,e)});a(Nu,"_l");KS=B("ZodTuple",(t,e)=>{wu.init(t,e),rt.init(t,e),t.rest=
+r=>t.clone({...t._zod.def,rest:r})});a(AM,"SH");Cm=B("ZodRecord",(t,e)=>{v0.init(t,e),rt.init(t,e),t.keyType=e.keyType,t.
 valueType=e.valueType});a(Tt,"we");a(IM,"vH");JS=B("ZodMap",(t,e)=>{b0.init(t,e),rt.init(t,e),t.keyType=e.keyType,t.valueType=
 e.valueType});a(PM,"xH");XS=B("ZodSet",(t,e)=>{w0.init(t,e),rt.init(t,e),t.min=(...r)=>t.check(ao(...r)),t.nonempty=r=>t.
 check(ao(1,r)),t.max=(...r)=>t.check(ku(...r)),t.size=(...r)=>t.check(qf(...r))});a(LM,"wH");lo=B("ZodEnum",(t,e)=>{k0.init(
 t,e),rt.init(t,e),t.enum=e.entries,t.options=Object.values(e.entries);let r=new Set(Object.keys(e.entries));t.extract=(n,i)=>{
 let s={};for(let o of n)if(r.has(o))s[o]=e.entries[o];else throw Error(`Key ${o} not found in enum`);return new lo({...e,
 checks:[],...lt.normalizeParams(i),entries:s})},t.exclude=(n,i)=>{let s={...e.entries};for(let o of n)if(r.has(o))delete s[o];else
-throw Error(`Key ${o} not found in enum`);return new lo({...e,checks:[],...lt.normalizeParams(i),entries:s})}});a(Ar,"gt");
+throw Error(`Key ${o} not found in enum`);return new lo({...e,checks:[],...lt.normalizeParams(i),entries:s})}});a(Nr,"gt");
 a(DM,"kH");YS=B("ZodLiteral",(t,e)=>{S0.init(t,e),rt.init(t,e),t.values=new Set(e.values),Object.defineProperty(t,"value",
 {get(){if(e.values.length>1)throw Error("This schema contains multiple valid literal values. Use `.values` instead.");return e.
 values[0]}})});a(Ie,"H");QS=B("ZodFile",(t,e)=>{E0.init(t,e),rt.init(t,e),t.min=(r,n)=>t.check(ao(r,n)),t.max=(r,n)=>t.check(
@@ -4289,17 +4289,17 @@ ku(r,n)),t.mime=(r,n)=>t.check(Zf(Array.isArray(r)?r:[r],n))});a(UM,"EH");Om=B("
 t,e),t._zod.parse=(r,n)=>{r.addIssue=s=>{if(typeof s==="string")r.issues.push(lt.issue(s,r.value,e));else{let o=s;if(o.fatal)
 o.continue=false;o.code??(o.code="custom"),o.input??(o.input=r.value),o.inst??(o.inst=t),o.continue??(o.continue=true),r.
 issues.push(lt.issue(o))}};let i=e.transform(r.value,r);if(i instanceof Promise)return i.then(s=>(r.value=s,r));return r.
-value=i,r}});a(Rm,"ib");Am=B("ZodOptional",(t,e)=>{T0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType});a(It,"A\
+value=i,r}});a(Rm,"ib");Nm=B("ZodOptional",(t,e)=>{T0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType});a(It,"A\
 e");eE=B("ZodNullable",(t,e)=>{$0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType});a(fc,"Np");a(MM,"TH");tE=B(
 "ZodDefault",(t,e)=>{x0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType,t.removeDefault=t.unwrap});a(rE,"FE");iE=
-B("ZodPrefault",(t,e)=>{C0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType});a(nE,"BE");Nm=B("ZodNonOptional",(t,e)=>{
+B("ZodPrefault",(t,e)=>{C0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType});a(nE,"BE");Am=B("ZodNonOptional",(t,e)=>{
 O0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.innerType});a(sE,"qE");aE=B("ZodSuccess",(t,e)=>{R0.init(t,e),rt.init(
-t,e),t.unwrap=()=>t._zod.def.innerType});a(jM,"PH");oE=B("ZodCatch",(t,e)=>{A0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.
-def.innerType,t.removeCatch=t.unwrap});a(lE,"KE");cE=B("ZodNaN",(t,e)=>{N0.init(t,e),rt.init(t,e)});a(FM,"IH");Im=B("Zod\
+t,e),t.unwrap=()=>t._zod.def.innerType});a(jM,"PH");oE=B("ZodCatch",(t,e)=>{N0.init(t,e),rt.init(t,e),t.unwrap=()=>t._zod.
+def.innerType,t.removeCatch=t.unwrap});a(lE,"KE");cE=B("ZodNaN",(t,e)=>{A0.init(t,e),rt.init(t,e)});a(FM,"IH");Im=B("Zod\
 Pipe",(t,e)=>{ff.init(t,e),rt.init(t,e),t.in=e.in,t.out=e.out});a(mc,"Up");uE=B("ZodReadonly",(t,e)=>{I0.init(t,e),rt.init(
 t,e)});a(dE,"JE");pE=B("ZodTemplateLiteral",(t,e)=>{P0.init(t,e),rt.init(t,e)});a(qM,"AH");hE=B("ZodLazy",(t,e)=>{D0.init(
 t,e),rt.init(t,e),t.unwrap=()=>t._zod.def.getter()});a(fE,"QE");mE=B("ZodPromise",(t,e)=>{L0.init(t,e),rt.init(t,e),t.unwrap=
-()=>t._zod.def.innerType});a(zM,"RH");Nu=B("ZodCustom",(t,e)=>{U0.init(t,e),rt.init(t,e)});a(gE,"tT");a(_E,"cb");a(yE,"r\
+()=>t._zod.def.innerType});a(zM,"RH");Au=B("ZodCustom",(t,e)=>{U0.init(t,e),rt.init(t,e)});a(gE,"tT");a(_E,"cb");a(yE,"r\
 T");a(vE,"nT");a(BM,"OH");HM=a((...t)=>TS({Pipe:Im,Boolean:xu,String:Tu,Transform:Om},...t),"CH");a(WM,"$H");a(Pm,"qp");
 VM={invalid_type:"invalid_type",too_big:"too_big",too_small:"too_small",invalid_format:"invalid_format",not_multiple_of:"\
 not_multiple_of",unrecognized_keys:"unrecognized_keys",invalid_union:"invalid_union",invalid_key:"invalid_key",invalid_element:"\
@@ -4466,7 +4466,7 @@ id")return"Android";if(t==="darwin")return"MacOS";if(t==="win32")return"Windows"
 "Rl");a(_j,"yT");a($E,"hb");a(xE,"Kp");a(Um,"Ol");a(yj,"_T");vj=a(({headers:t,body:e})=>({bodyHeaders:{"content-type":"a\
 pplication/json"},body:JSON.stringify(e)}),"bT");a(bj,"ST");wj="urn:ietf:params:oauth:grant-type:jwt-bearer";kj="refresh\
 _token";CE="/v1/oauth/token";$c="oauth-2025-04-20";Sj="oidc-federation-2026-04-01";Ej=120;Mm=30;Tj=5;_v=1048576;a(OE,"Gp");
-a(RE,"Jp");pp=2e3;$j=new Set(["error","error_description","error_uri"]);a(Vr,"Pt");a(AE,"Xp");a(NE,"Yp");a(xj,"iB");Et=class extends Me{static{
+a(RE,"Jp");pp=2e3;$j=new Set(["error","error_description","error_uri"]);a(Vr,"Pt");a(NE,"Xp");a(AE,"Yp");a(xj,"iB");Et=class extends Me{static{
 a(this,"ye")}constructor(e,r=null,n=null,i=null){super(e);this.statusCode=r,this.body=n,this.requestId=i}};a(Tn,"dr");Hp=
 class{static{a(this,"_b")}constructor(e,r){this.cached=null,this.pendingRefresh=null,this.nextForce=false,this.lastAdvisoryError=
 0,this.provider=e,this.onAdvisoryRefreshError=r}async getToken(){let e=this.nextForce;this.nextForce=false;let r=this.cached;
@@ -4484,7 +4484,7 @@ debug:Ha};kv=new WeakMap;a(pr,"He");Sn=a(t=>{if(t.options)t.options={...t.option
 t.headers=Object.fromEntries((t.headers instanceof Headers?[...t.headers]:Object.entries(t.headers)).map(([e,r])=>[e,e.toLowerCase()===
 "x-api-key"||e.toLowerCase()==="authorization"||e.toLowerCase()==="cookie"||e.toLowerCase()==="set-cookie"?"***":r]));if("\
 retryOfRequestLogID"in t){if(t.retryOfRequestLogID)t.retryOf=t.retryOfRequestLogID;delete t.retryOfRequestLogID}return t},
-"Kr");IE="1.0";Rj=/^[A-Za-z0-9_.-]+$/;a(PE,"OT");Aj=a(async t=>{var e,r;let n=await Fm();if(n===null)return null;let i=t??
+"Kr");IE="1.0";Rj=/^[A-Za-z0-9_.-]+$/;a(PE,"OT");Nj=a(async t=>{var e,r;let n=await Fm();if(n===null)return null;let i=t??
 await LE();if(i===null)return null;PE(i);let s=await import("node:fs"),o=(await import("node:path")).join(n,"configs",`${i}\
 .json`),l;try{l=await s.promises.readFile(o,"utf-8")}catch(d){if(d?.code!=="ENOENT")throw Error(`failed to read config f\
 ile ${o}: ${d}`);l=null}if(l===null){let d=St("ANTHROPIC_ORGANIZATION_ID"),h=St("ANTHROPIC_IDENTITY_TOKEN_FILE"),p=St("A\
@@ -4499,7 +4499,7 @@ ASE_URL")),(e=c.authentication).scope??(e.scope=St("ANTHROPIC_SCOPE")),c.authent
 authentication.identity_token){let d=St("ANTHROPIC_IDENTITY_TOKEN_FILE");if(d)c.authentication.identity_token={source:"f\
 ile",path:d}}if(!c.authentication.federation_rule_id)c.authentication.federation_rule_id=St("ANTHROPIC_FEDERATION_RULE_I\
 D")??"";(r=c.authentication).service_account_id??(r.service_account_id=St("ANTHROPIC_SERVICE_ACCOUNT_ID"))}return{config:c,
-fromFile:true}},"CT");Nj=a(async(t,e)=>{if(t?.authentication.credentials_path)return t.authentication.credentials_path;let r=await Fm();
+fromFile:true}},"CT");Aj=a(async(t,e)=>{if(t?.authentication.credentials_path)return t.authentication.credentials_path;let r=await Fm();
 if(!r)return null;let n=e??await LE();if(!n)return null;return PE(n),(await import("node:path")).join(r,"credentials",`${n}\
 .json`)},"$T");Fm=a(async()=>{if(!Ij())return null;let t=await import("node:path"),e=St("ANTHROPIC_CONFIG_DIR");if(e)return e;
 if(Dm()["X-Stainless-OS"]==="Windows"){let i=St("APPDATA");if(i)return t.join(i,"Anthropic");let s=St("USERPROFILE");if(s)
@@ -4558,7 +4558,7 @@ throw new Me("No next page expected; please check `.hasNextPage()` before callin
 Pl,"f").requestAPIList(this.constructor,e)}async*iterPages(){let e=this;yield e;while(e.hasNextPage())e=await e.getNextPage(),
 yield e}async*[(Pl=new WeakMap,Symbol.asyncIterator)](){for await(let e of this.iterPages())for(let r of e.getPaginatedItems())
 yield r}};Vp=class extends Cc{static{a(this,"of")}constructor(e,r,n){super(e,r,async(i,s)=>new n(i,s.response,await UE(i,
-s),s.options))}async*[Symbol.asyncIterator](){let e=await this;for await(let r of e)yield r}};An=class extends Oc{static{
+s),s.options))}async*[Symbol.asyncIterator](){let e=await this;for await(let r of e)yield r}};Nn=class extends Oc{static{
 a(this,"pr")}constructor(e,r,n,i){super(e,r,n,i);this.data=n.data||[],this.has_more=n.has_more||false,this.first_id=n.first_id||
 null,this.last_id=n.last_id||null}getPaginatedItems(){return this.data??[]}hasNextPage(){if(this.has_more===false)return false;
 return super.hasNextPage()}nextPageRequestOptions(){if(this.options.query?.before_id){let r=this.first_id;if(!r)return null;
@@ -4607,8 +4607,8 @@ nts?beta=true",yr,{query:i,...r,headers:le([{"anthropic-beta":[...n??[],"managed
 let{betas:i}=r??{};return this._client.delete(Oe`/v1/environments/${e}?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??
 [],"managed-agents-2026-04-01"].toString()},n?.headers])})}archive(e,r={},n){let{betas:i}=r??{};return this._client.post(
 Oe`/v1/environments/${e}/archive?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??[],"managed-agents-2026-04-01"].toString()},
-n?.headers])})}};Xa=Symbol("anthropic.sdk.stainlessHelper");a(Xl,"af");a(HE,"Rb");a(WE,"lf");a(tF,"WT");Ac=class extends Pt{static{
-a(this,"Ll")}list(e={},r){let{betas:n,...i}=e??{};return this._client.getAPIList("/v1/files?beta=true",An,{query:i,...r,
+n?.headers])})}};Xa=Symbol("anthropic.sdk.stainlessHelper");a(Xl,"af");a(HE,"Rb");a(WE,"lf");a(tF,"WT");Nc=class extends Pt{static{
+a(this,"Ll")}list(e={},r){let{betas:n,...i}=e??{};return this._client.getAPIList("/v1/files?beta=true",Nn,{query:i,...r,
 headers:le([{"anthropic-beta":[...n??[],"files-api-2025-04-14"].toString()},r?.headers])})}delete(e,r={},n){let{betas:i}=r??
 {};return this._client.delete(Oe`/v1/files/${e}?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??[],"files-api-2025\
 -04-14"].toString()},n?.headers])})}download(e,r={},n){let{betas:i}=r??{};return this._client.get(Oe`/v1/files/${e}/content?beta=true`,
@@ -4616,10 +4616,10 @@ headers:le([{"anthropic-beta":[...n??[],"files-api-2025-04-14"].toString()},r?.h
 __binaryResponse:true})}retrieveMetadata(e,r={},n){let{betas:i}=r??{};return this._client.get(Oe`/v1/files/${e}?beta=true`,
 {...n,headers:le([{"anthropic-beta":[...i??[],"files-api-2025-04-14"].toString()},n?.headers])})}upload(e,r){let{betas:n,
 ...i}=e;return this._client.post("/v1/files?beta=true",qm({body:i,...r,headers:le([{"anthropic-beta":[...n??[],"files-ap\
-i-2025-04-14"].toString()},tF(i.file),r?.headers])},this._client))}};Nc=class extends Pt{static{a(this,"jl")}retrieve(e,r={},n){
+i-2025-04-14"].toString()},tF(i.file),r?.headers])},this._client))}};Ac=class extends Pt{static{a(this,"jl")}retrieve(e,r={},n){
 let{betas:i}=r??{};return this._client.get(Oe`/v1/models/${e}?beta=true`,{...n,headers:le([{...i?.toString()!=null?{"ant\
 hropic-beta":i?.toString()}:void 0},n?.headers])})}list(e={},r){let{betas:n,...i}=e??{};return this._client.getAPIList("\
-/v1/models?beta=true",An,{query:i,...r,headers:le([{...n?.toString()!=null?{"anthropic-beta":n?.toString()}:void 0},r?.headers])})}};
+/v1/models?beta=true",Nn,{query:i,...r,headers:le([{...n?.toString()!=null?{"anthropic-beta":n?.toString()}:void 0},r?.headers])})}};
 Ic=class extends Pt{static{a(this,"zl")}create(e,r){let{betas:n,...i}=e;return this._client.post("/v1/user_profiles?beta\
 =true",{body:i,...r,headers:le([{"anthropic-beta":[...n??[],"user-profiles-2026-03-24"].toString()},r?.headers])})}retrieve(e,r={},n){
 let{betas:i}=r??{};return this._client.get(Oe`/v1/user_profiles/${e}?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??
@@ -4677,7 +4677,7 @@ let{betas:n,...i}=e;return this._client.post("/v1/messages/batches?beta=true",{b
 ...n??[],"message-batches-2024-09-24"].toString()},r?.headers])})}retrieve(e,r={},n){let{betas:i}=r??{};return this._client.
 get(Oe`/v1/messages/batches/${e}?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??[],"message-batches-2024-09-24"].
 toString()},n?.headers])})}list(e={},r){let{betas:n,...i}=e??{};return this._client.getAPIList("/v1/messages/batches?bet\
-a=true",An,{query:i,...r,headers:le([{"anthropic-beta":[...n??[],"message-batches-2024-09-24"].toString()},r?.headers])})}delete(e,r={},n){
+a=true",Nn,{query:i,...r,headers:le([{"anthropic-beta":[...n??[],"message-batches-2024-09-24"].toString()},r?.headers])})}delete(e,r={},n){
 let{betas:i}=r??{};return this._client.delete(Oe`/v1/messages/batches/${e}?beta=true`,{...n,headers:le([{"anthropic-beta":[
 ...i??[],"message-batches-2024-09-24"].toString()},n?.headers])})}cancel(e,r={},n){let{betas:i}=r??{};return this._client.
 post(Oe`/v1/messages/batches/${e}/cancel?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??[],"message-batches-2024-\
@@ -4753,7 +4753,7 @@ e.delta.text,n.text||"");break}case"citations_delta":{if(n.type==="text")this._e
 []);break}case"input_json_delta":{if(Rv(n)&&n.input)this._emit("inputJson",e.delta.partial_json,n.input);break}case"thin\
 king_delta":{if(n.type==="thinking")this._emit("thinking",e.delta.thinking,n.thinking);break}case"signature_delta":{if(n.
 type==="thinking")this._emit("signature",n.signature);break}case"compaction_delta":{if(n.type==="compaction"&&n.content)
-this._emit("compaction",n.content);break}default:Av(e.delta)}break}case"message_stop":{this._addMessageParam(r),this._addMessage(
+this._emit("compaction",n.content);break}default:Nv(e.delta)}break}case"message_stop":{this._addMessageParam(r),this._addMessage(
 $v(r,V(this,is,"f"),{logger:V(this,Ra,"f")}),true);break}case"content_block_stop":{this._emit("contentBlock",r.content.at(
 -1));break}case"message_start":{ke(this,qi,r,"f");break}case"content_block_start":case"message_delta":break}},"Db"),gp=a(
 function(){if(this.ended)throw new Me("stream has ended, this shouldn't happen");let e=V(this,qi,"f");if(!e)throw new Me(
@@ -4774,14 +4774,14 @@ i)try{s.input=KE(i)}catch(o){let l=new Me(`Unable to parse tool parameter JSON f
 adjust your prompt. Error: ${o}. JSON: ${i}`);V(this,ql,"f").call(this,l)}r.content[e.index]=s}break}case"thinking_delta":{
 if(n?.type==="thinking")r.content[e.index]={...n,thinking:n.thinking+e.delta.thinking};break}case"signature_delta":{if(n?.
 type==="thinking")r.content[e.index]={...n,signature:e.delta.signature};break}case"compaction_delta":{if(n?.type==="comp\
-action")r.content[e.index]={...n,content:(n.content||"")+e.delta.content};break}default:Av(e.delta)}return r}case"conten\
+action")r.content[e.index]={...n,content:(n.content||"")+e.delta.content};break}default:Nv(e.delta)}return r}case"conten\
 t_block_stop":return r}},"GT"),Symbol.asyncIterator)](){let e=[],r=[],n=false;return this.on("streamEvent",i=>{let s=r.shift();
 if(s)s.resolve(i);else e.push(i)}),this.on("end",()=>{n=true;for(let i of r)i.resolve(void 0);r.length=0}),this.on("abor\
 t",i=>{n=true;for(let s of r)s.reject(i);r.length=0}),this.on("error",i=>{n=true;for(let s of r)s.reject(i);r.length=0}),
 {next:a(async()=>{if(!e.length){if(n)return{value:void 0,done:true};return new Promise((i,s)=>r.push({resolve:i,reject:s})).
 then(i=>i?{value:i,done:false}:{value:void 0,done:true})}return{value:e.shift(),done:false}},"next"),return:a(async()=>(this.
 abort(),{value:void 0,done:true}),"return")}}toReadableStream(){return new Rn(this[Symbol.asyncIterator].bind(this),this.
-controller).toReadableStream()}};a(Av,"YT");jc=class extends Error{static{a(this,"Hi")}constructor(e){let r=typeof e==="\
+controller).toReadableStream()}};a(Nv,"YT");jc=class extends Error{static{a(this,"Hi")}constructor(e){let r=typeof e==="\
 string"?e:e.map(n=>{if(n.type==="text")return n.text;return`[${n.type}]`}).join(" ");super(r);this.name="ToolError",this.
 content=e}};aF=1e5;oF=`You have been working on the task described above but have not yet completed it. Write a continua\
 tion summary that will allow you (or another instance of yourself) to resume work efficiently in a future context window\
@@ -4809,15 +4809,15 @@ Domain-specific details that aren't obvious
 Any promises made to the user
 Be concise but complete—err on the side of including information that would prevent duplicate work or repeated mistakes.\
  Write in a way that enables immediate resumption of the task.
-Wrap your summary in <summary></summary> tags.`;a(Iv,"rP");Fc=class{static{a(this,"ec")}constructor(e,r,n){Aa.add(this),
+Wrap your summary in <summary></summary> tags.`;a(Iv,"rP");Fc=class{static{a(this,"ec")}constructor(e,r,n){Na.add(this),
 this.client=e,ns.set(this,false),wn.set(this,false),or.set(this,void 0),xr.set(this,void 0),Ir.set(this,void 0),Ri.set(this,
-void 0),zi.set(this,void 0),Na.set(this,0),ke(this,or,{params:{...r,messages:structuredClone(r.messages)}},"f");let i=["\
+void 0),zi.set(this,void 0),Aa.set(this,0),ke(this,or,{params:{...r,messages:structuredClone(r.messages)}},"f");let i=["\
 BetaToolRunner",...HE(r.tools,r.messages)].join(", ");if(ke(this,xr,{...n,headers:le([{"x-stainless-helper":i},n?.headers])},
 "f"),ke(this,zi,Iv(),"f"),r.compactionControl?.enabled)console.warn('Anthropic: The `compactionControl` parameter is dep\
 recated and will be removed in a future version. Use server-side compaction instead by passing `edits: [{ type: "compact\
 _20260112" }]` in the params passed to `toolRunner()`. See https://platform.claude.com/docs/en/build-with-claude/compact\
-ion')}async*[(ns=new WeakMap,wn=new WeakMap,or=new WeakMap,xr=new WeakMap,Ir=new WeakMap,Ri=new WeakMap,zi=new WeakMap,Na=
-new WeakMap,Aa=new WeakSet,Nv=a(async function(){let e=V(this,or,"f").params.compactionControl;if(!e||!e.enabled)return false;
+ion')}async*[(ns=new WeakMap,wn=new WeakMap,or=new WeakMap,xr=new WeakMap,Ir=new WeakMap,Ri=new WeakMap,zi=new WeakMap,Aa=
+new WeakMap,Na=new WeakSet,Av=a(async function(){let e=V(this,or,"f").params.compactionControl;if(!e||!e.enabled)return false;
 let r=0;if(V(this,Ir,"f")!==void 0)try{let c=await V(this,Ir,"f");r=c.usage.input_tokens+(c.usage.cache_creation_input_tokens??
 0)+(c.usage.cache_read_input_tokens??0)+c.usage.output_tokens}catch{return false}let n=e.contextTokenThreshold??aF;if(r<
 n)return false;let i=e.model??V(this,or,"f").params.model,s=e.summaryPrompt??oF,o=V(this,or,"f").params.messages;if(o[o.
@@ -4827,20 +4827,20 @@ user",content:[{type:"text",text:s}]}],max_tokens:V(this,or,"f").params.max_toke
 [V(this,xr,"f").headers,{"x-stainless-helper":"compaction"}])});if(l.content[0]?.type!=="text")throw new Me("Expected te\
 xt response for compaction");return V(this,or,"f").params.messages=[{role:"user",content:l.content}],true},"tP"),Symbol.
 asyncIterator)](){var e;if(V(this,ns,"f"))throw new Me("Cannot iterate over a consumed stream");ke(this,ns,true,"f"),ke(
-this,wn,true,"f"),ke(this,Ri,void 0,"f");try{while(true){let r;try{if(V(this,or,"f").params.max_iterations&&V(this,Na,"f")>=
-V(this,or,"f").params.max_iterations)break;ke(this,wn,false,"f"),ke(this,Ri,void 0,"f"),ke(this,Na,(e=V(this,Na,"f"),e++,
+this,wn,true,"f"),ke(this,Ri,void 0,"f");try{while(true){let r;try{if(V(this,or,"f").params.max_iterations&&V(this,Aa,"f")>=
+V(this,or,"f").params.max_iterations)break;ke(this,wn,false,"f"),ke(this,Ri,void 0,"f"),ke(this,Aa,(e=V(this,Aa,"f"),e++,
 e),"f"),ke(this,Ir,void 0,"f");let{max_iterations:n,compactionControl:i,...s}=V(this,or,"f").params;if(s.stream)r=this.client.
 beta.messages.stream({...s},V(this,xr,"f")),ke(this,Ir,r.finalMessage(),"f"),V(this,Ir,"f").catch(()=>{}),yield r;else ke(
 this,Ir,this.client.beta.messages.create({...s,stream:false},V(this,xr,"f")),"f"),yield V(this,Ir,"f");if(!await V(this,
-Aa,"m",Nv).call(this)){if(!V(this,wn,"f")){let{role:l,content:c}=await V(this,Ir,"f");V(this,or,"f").params.messages.push(
-{role:l,content:c})}let o=await V(this,Aa,"m",Jp).call(this,V(this,or,"f").params.messages.at(-1));if(o)V(this,or,"f").params.
+Na,"m",Av).call(this)){if(!V(this,wn,"f")){let{role:l,content:c}=await V(this,Ir,"f");V(this,or,"f").params.messages.push(
+{role:l,content:c})}let o=await V(this,Na,"m",Jp).call(this,V(this,or,"f").params.messages.at(-1));if(o)V(this,or,"f").params.
 messages.push(o);else if(!V(this,wn,"f"))break}}finally{if(r)r.abort()}}if(!V(this,Ir,"f"))throw new Me("ToolRunner conc\
 luded without a message from the server");V(this,zi,"f").resolve(await V(this,Ir,"f"))}catch(r){throw ke(this,ns,false,"\
 f"),V(this,zi,"f").promise.catch(()=>{}),V(this,zi,"f").reject(r),ke(this,zi,Iv(),"f"),r}}setMessagesParams(e){if(typeof e===
 "function")V(this,or,"f").params=e(V(this,or,"f").params);else V(this,or,"f").params=e;ke(this,wn,true,"f"),ke(this,Ri,void 0,
 "f")}setRequestOptions(e){if(typeof e==="function")ke(this,xr,e(V(this,xr,"f")),"f");else ke(this,xr,{...V(this,xr,"f"),
 ...e},"f")}async generateToolResponse(e=V(this,xr,"f").signal){let r=await V(this,Ir,"f")??this.params.messages.at(-1);if(!r)
-return null;return V(this,Aa,"m",Jp).call(this,r,e)}done(){return V(this,zi,"f").promise}async runUntilDone(){if(!V(this,
+return null;return V(this,Na,"m",Jp).call(this,r,e)}done(){return V(this,zi,"f").promise}async runUntilDone(){if(!V(this,
 ns,"f"))for await(let e of this);return this.done()}get params(){return V(this,or,"f").params}pushMessages(...e){this.setMessagesParams(
 r=>({...r,messages:[...r.messages,...e]}))}then(e,r){return this.runUntilDone().then(e,r)}};Jp=a(async function(t,e=V(this,
 xr,"f").signal){if(V(this,Ri,"f")!==void 0)return V(this,Ri,"f");return ke(this,Ri,lF(V(this,or,"f").params,t,{...V(this,
@@ -4848,7 +4848,7 @@ xr,"f"),signal:e}),"f"),V(this,Ri,"f")},"Ub");a(lF,"zB");Pv={"claude-1.3":"Novem
 er 6th, 2024","claude-instant-1.1":"November 6th, 2024","claude-instant-1.1-100k":"November 6th, 2024","claude-instant-1\
 .2":"November 6th, 2024","claude-3-sonnet-20240229":"July 21st, 2025","claude-3-opus-20240229":"January 5th, 2026","clau\
 de-2.1":"July 21st, 2025","claude-2.0":"July 21st, 2025","claude-3-7-sonnet-latest":"February 19th, 2026","claude-3-7-so\
-nnet-20250219":"February 19th, 2026"};cF=["claude-mythos-preview","claude-opus-4-6"];Nn=class extends Pt{static{a(this,"\
+nnet-20250219":"February 19th, 2026"};cF=["claude-mythos-preview","claude-opus-4-6"];An=class extends Pt{static{a(this,"\
 On")}constructor(){super(...arguments);this.batches=new Mc(this._client)}create(e,r){let n=Lv(e),{betas:i,...s}=n;if(s.model in
 Pv)console.warn(`The model '${s.model}' is deprecated and will reach end-of-life on ${Pv[s.model]}
 Please migrate to a newer model. Visit https://docs.anthropic.com/en/docs/resources/model-deprecations for more informat\
@@ -4862,7 +4862,7 @@ null?{"anthropic-beta":i?.toString()}:void 0},l,r?.headers]),stream:n.stream??fa
 n,e,{logger:this._client.logger??console}))}stream(e,r){return Kp.createMessage(this,e,r)}countTokens(e,r){let n=Lv(e),{
 betas:i,...s}=n;return this._client.post("/v1/messages/count_tokens?beta=true",{body:s,...r,headers:le([{"anthropic-beta":[
 ...i??[],"token-counting-2024-11-01"].toString()},r?.headers])})}toolRunner(e,r){return new Fc(this._client,e,r)}};a(Lv,
-"oP");Nn.Batches=Mc;Nn.BetaToolRunner=Fc;Nn.ToolError=jc;qc=class extends Pt{static{a(this,"tc")}list(e,r={},n){let{betas:i,
+"oP");An.Batches=Mc;An.BetaToolRunner=Fc;An.ToolError=jc;qc=class extends Pt{static{a(this,"tc")}list(e,r={},n){let{betas:i,
 ...s}=r??{};return this._client.getAPIList(Oe`/v1/sessions/${e}/events?beta=true`,yr,{query:s,...n,headers:le([{"anthrop\
 ic-beta":[...i??[],"managed-agents-2026-04-01"].toString()},n?.headers])})}send(e,r,n){let{betas:i,...s}=r;return this._client.
 post(Oe`/v1/sessions/${e}/events?beta=true`,{body:s,...n,headers:le([{"anthropic-beta":[...i??[],"managed-agents-2026-04\
@@ -4923,11 +4923,11 @@ e",yr,{query:i,...r,headers:le([{"anthropic-beta":[...n??[],"managed-agents-2026
 let{betas:i}=r??{};return this._client.delete(Oe`/v1/vaults/${e}?beta=true`,{...n,headers:le([{"anthropic-beta":[...i??[],
 "managed-agents-2026-04-01"].toString()},n?.headers])})}archive(e,r={},n){let{betas:i}=r??{};return this._client.post(Oe`/v1/vaults/${e}/archive?beta=true`,
 {...n,headers:le([{"anthropic-beta":[...i??[],"managed-agents-2026-04-01"].toString()},n?.headers])})}};ho.Credentials=Hc;
-Or=class extends Pt{static{a(this,"ct")}constructor(){super(...arguments);this.models=new Nc(this._client),this.messages=
-new Nn(this._client),this.agents=new uo(this._client),this.environments=new Rc(this._client),this.sessions=new Ss(this._client),
-this.vaults=new ho(this._client),this.memoryStores=new ks(this._client),this.files=new Ac(this._client),this.skills=new po(
-this._client),this.userProfiles=new Ic(this._client)}};Or.Models=Nc;Or.Messages=Nn;Or.Agents=uo;Or.Environments=Rc;Or.Sessions=
-Ss;Or.Vaults=ho;Or.MemoryStores=ks;Or.Files=Ac;Or.Skills=po;Or.UserProfiles=Ic;Wc=class extends Pt{static{a(this,"Wi")}create(e,r){
+Or=class extends Pt{static{a(this,"ct")}constructor(){super(...arguments);this.models=new Ac(this._client),this.messages=
+new An(this._client),this.agents=new uo(this._client),this.environments=new Rc(this._client),this.sessions=new Ss(this._client),
+this.vaults=new ho(this._client),this.memoryStores=new ks(this._client),this.files=new Nc(this._client),this.skills=new po(
+this._client),this.userProfiles=new Ic(this._client)}};Or.Models=Ac;Or.Messages=An;Or.Agents=uo;Or.Environments=Rc;Or.Sessions=
+Ss;Or.Vaults=ho;Or.MemoryStores=ks;Or.Files=Nc;Or.Skills=po;Or.UserProfiles=Ic;Wc=class extends Pt{static{a(this,"Wi")}create(e,r){
 let{betas:n,...i}=e;return this._client.post("/v1/complete",{body:i,timeout:this._client._options.timeout??6e5,...r,headers:le(
 [{...n?.toString()!=null?{"anthropic-beta":n?.toString()}:void 0},r?.headers]),stream:e.stream??false})}};a(JE,"iP");a(Dv,
 "Lb");a(XE,"jb");a(uF,"JB");jv="__json_buf";a(Fv,"cP");Xp=class t{static{a(this,"dc")}constructor(e,r){Br.add(this),this.
@@ -5004,7 +5004,7 @@ return new Promise((i,s)=>r.push({resolve:i,reject:s})).then(i=>i?{value:i,done:
 value:e.shift(),done:false}},"next"),return:a(async()=>(this.abort(),{value:void 0,done:true}),"return")}}toReadableStream(){
 return new Rn(this[Symbol.asyncIterator].bind(this),this.controller).toReadableStream()}};a(qv,"uP");Vc=class extends Pt{static{
 a(this,"pc")}create(e,r){return this._client.post("/v1/messages/batches",{body:e,...r})}retrieve(e,r){return this._client.
-get(Oe`/v1/messages/batches/${e}`,r)}list(e={},r){return this._client.getAPIList("/v1/messages/batches",An,{query:e,...r})}delete(e,r){
+get(Oe`/v1/messages/batches/${e}`,r)}list(e={},r){return this._client.getAPIList("/v1/messages/batches",Nn,{query:e,...r})}delete(e,r){
 return this._client.delete(Oe`/v1/messages/batches/${e}`,r)}cancel(e,r){return this._client.post(Oe`/v1/messages/batches/${e}/cancel`,
 r)}async results(e,r){let n=await this.retrieve(e);if(!n.results_url)throw new Me(`No batch \`results_url\`; Has it finish\
 ed processing? ${n.processing_status} - ${n.id}`);return this._client.get(n.results_url,{...r,headers:le([{Accept:"appli\
@@ -5028,7 +5028,7 @@ h, 2026","claude-3-5-haiku-latest":"February 19th, 2026","claude-3-5-haiku-20241
 -20250514":"June 15th, 2026"};dF=["claude-mythos-preview","claude-opus-4-6"];fo.Batches=Vc;Gc=class extends Pt{static{a(
 this,"Zi")}retrieve(e,r={},n){let{betas:i}=r??{};return this._client.get(Oe`/v1/models/${e}`,{...n,headers:le([{...i?.toString()!=
 null?{"anthropic-beta":i?.toString()}:void 0},n?.headers])})}list(e={},r){let{betas:n,...i}=e??{};return this._client.getAPIList(
-"/v1/models",An,{query:i,...r,headers:le([{...n?.toString()!=null?{"anthropic-beta":n?.toString()}:void 0},r?.headers])})}};
+"/v1/models",Nn,{query:i,...r,headers:le([{...n?.toString()!=null?{"anthropic-beta":n?.toString()}:void 0},r?.headers])})}};
 pF="\\n\\nHuman:";hF="\\n\\nAssistant:";Wt=class{static{a(this,"Ue")}get credentials(){return this._authState.provider}constructor({
 baseURL:e=St("ANTHROPIC_BASE_URL"),apiKey:r,authToken:n,...i}={}){if(Yp.add(this),this._requestAuthFlags=new WeakMap,Yl.
 set(this,void 0),r===void 0)r=i.profile!=null?null:St("ANTHROPIC_API_KEY")??null;if(n===void 0)n=i.profile!=null?null:St(
@@ -5153,7 +5153,7 @@ a(fF,"eq");a(Bm,"Gi");Qp=class extends Error{static{a(this,"ht")}telemetryMessag
 elemetrySafeError",this.telemetryMessage=r??e}};mF=a((t,e)=>{try{if(t!==null&&typeof t==="object"&&!("telemetryMessage"in
 t)&&Object.isExtensible(t))Object.assign(t,{telemetryMessage:e})}catch{}return t},"gP");a(Iu,"Ar");a(Ql,"Ji");a(Gr,"Be");
 a(Hm,"Xr");a(QE,"Kb");gF=new Set(["ENOENT","EACCES","EPERM","ENOTDIR","ELOOP","ENAMETOOLONG","EROFS"]);a(_F,"hP");RF=new Set(
-["EXDEV","EPERM","EEXIST","EBUSY"]);AF=new Set(["EPERM","EBUSY","EACCES"]);NF=4;IF=50;KX=new Int32Array(new SharedArrayBuffer(
+["EXDEV","EPERM","EEXIST","EBUSY"]);NF=new Set(["EPERM","EBUSY","EACCES"]);AF=4;IF=50;KX=new Int32Array(new SharedArrayBuffer(
 4));a(PF,"dq");a(LF,"pq");DF=new Set(["ENOSPC","EIO","EDQUOT","EFBIG"]);a(UF,"yP");eh=class{static{a(this,"xP")}read(e){
 return Vv(e,"utf8")}readBytes(e){return Vv(e)}write(e,r,n){return kp(e,r,{encoding:"utf8",mode:n})}async mkdir(e){try{await kF(
 e,{recursive:true})}catch(r){if(Gr(r)!=="EEXIST")throw r}}atomicWrite(e,r,n){return UF(e,r,n)}delete(e){return EF(e)}list(e){
@@ -5172,12 +5172,12 @@ t,"callee")&&!dq.call(t,"callee")};mo=pq;hq=Array.isArray;Ji=hq;Va={};bi(Va,{def
 fq;nT=typeof Va=="object"&&Va&&!Va.nodeType&&Va;Kv=nT&&typeof Tf=="object"&&Tf&&!Tf.nodeType&&Tf;gq=Kv&&Kv.exports===nT;
 Jv=gq?wi.Buffer:void 0;_q=Jv?Jv.isBuffer:void 0;yq=_q||mq;Vm=yq;vq=9007199254740991;bq=/^(?:0|[1-9]\d*)$/;a(wq,"Zq");Pu=
 wq;kq=9007199254740991;a(Sq,"Jq");Gm=Sq;Eq="[object Arguments]";Tq="[object Array]";$q="[object Boolean]";xq="[object Da\
-te]";Cq="[object Error]";Oq="[object Function]";Rq="[object Map]";Aq="[object Number]";Nq="[object Object]";Iq="[object \
+te]";Cq="[object Error]";Oq="[object Function]";Rq="[object Map]";Nq="[object Number]";Aq="[object Object]";Iq="[object \
 RegExp]";Pq="[object Set]";Lq="[object String]";Dq="[object WeakMap]";Uq="[object ArrayBuffer]";Mq="[object DataView]";jq=
 "[object Float32Array]";Fq="[object Float64Array]";qq="[object Int8Array]";zq="[object Int16Array]";Bq="[object Int32Arr\
-ay]";Hq="[object Uint8Array]";Wq="[object Uint8ClampedArray]";Vq="[object Uint16Array]";Gq="[object Uint32Array]";Nt={};
-Nt[jq]=Nt[Fq]=Nt[qq]=Nt[zq]=Nt[Bq]=Nt[Hq]=Nt[Wq]=Nt[Vq]=Nt[Gq]=true;Nt[Eq]=Nt[Tq]=Nt[Uq]=Nt[$q]=Nt[Mq]=Nt[xq]=Nt[Cq]=Nt[Oq]=
-Nt[Rq]=Nt[Aq]=Nt[Nq]=Nt[Iq]=Nt[Pq]=Nt[Lq]=Nt[Dq]=false;a(Zq,"v6");Kq=Zq;a(Jq,"x6");Xq=Jq;Ga={};bi(Ga,{default:a(()=>th,"\
+ay]";Hq="[object Uint8Array]";Wq="[object Uint8ClampedArray]";Vq="[object Uint16Array]";Gq="[object Uint32Array]";At={};
+At[jq]=At[Fq]=At[qq]=At[zq]=At[Bq]=At[Hq]=At[Wq]=At[Vq]=At[Gq]=true;At[Eq]=At[Tq]=At[Uq]=At[$q]=At[Mq]=At[xq]=At[Cq]=At[Oq]=
+At[Rq]=At[Nq]=At[Aq]=At[Iq]=At[Pq]=At[Lq]=At[Dq]=false;a(Zq,"v6");Kq=Zq;a(Jq,"x6");Xq=Jq;Ga={};bi(Ga,{default:a(()=>th,"\
 default")});sT=typeof Ga=="object"&&Ga&&!Ga.nodeType&&Ga;Ya=sT&&typeof If=="object"&&If&&!If.nodeType&&If;Yq=Ya&&Ya.exports===
 sT;Tp=Yq&&kw.process;Qq=(function(){try{var t=Ya&&Ya.require&&Ya.require("util").types;if(t)return t;return Tp&&Tp.binding&&
 Tp.binding("util")}catch(e){}})();th=Qq;Xv=th&&th.isTypedArray;e2=Xv?Xq(Xv):Kq;aT=e2;t2=Object.prototype;r2=t2.hasOwnProperty;
@@ -5187,11 +5187,11 @@ cT=g2;Za={};bi(Za,{default:a(()=>dT,"default")});uT=typeof Za=="object"&&Za&&!Za
 Mf&&!Mf.nodeType&&Mf;_2=Yv&&Yv.exports===uT;Qv=_2?wi.Buffer:void 0;eb=Qv?Qv.allocUnsafe:void 0;a(y2,"q6");dT=y2;a(v2,"V6");
 b2=v2;w2=Object.prototype;YX=w2.propertyIsEnumerable;a(k2,"X6");S2=k2;E2=lT(Object.getPrototypeOf,Object);pT=E2;T2=Un(wi,
 "DataView");rh=T2;$2=Un(wi,"Promise");ih=$2;x2=Un(wi,"Set");nh=x2;C2=Un(wi,"WeakMap");sh=C2;tb="[object Map]";O2="[objec\
-t Object]";rb="[object Promise]";ib="[object Set]";nb="[object WeakMap]";sb="[object DataView]";R2=Dn(rh);A2=Dn(to);N2=Dn(
+t Object]";rb="[object Promise]";ib="[object Set]";nb="[object WeakMap]";sb="[object DataView]";R2=Dn(rh);N2=Dn(to);A2=Dn(
 ih);I2=Dn(nh);P2=Dn(sh);os=Ln;if(rh&&os(new rh(new ArrayBuffer(1)))!=sb||to&&os(new to)!=tb||ih&&os(ih.resolve())!=rb||nh&&
 os(new nh)!=ib||sh&&os(new sh)!=nb)os=a(function(t){var e=Ln(t),r=e==O2?t.constructor:void 0,n=r?Dn(r):"";if(n)switch(n){case R2:
-return sb;case A2:return tb;case N2:return rb;case I2:return ib;case P2:return nb}return e},"$o");L2=wi.Uint8Array;ab=L2;
-a(D2,"gV");U2=D2;a(M2,"hV");j2=M2;ob=Object.create;F2=(function(){function t(){}a(t,"e");return function(e){if(!Ni(e))return{};
+return sb;case N2:return tb;case A2:return rb;case I2:return ib;case P2:return nb}return e},"$o");L2=wi.Uint8Array;ab=L2;
+a(D2,"gV");U2=D2;a(M2,"hV");j2=M2;ob=Object.create;F2=(function(){function t(){}a(t,"e");return function(e){if(!Ai(e))return{};
 if(ob)return ob(e);t.prototype=e;var r=new t;return t.prototype=void 0,r}})();q2=F2;a(z2,"_V");B2=z2;H2="__lodash_hash_u\
 ndefined__";a(W2,"SV");V2=W2;a(G2,"vV");Z2=G2;a(ah,"Bf");ah.prototype.add=ah.prototype.push=V2;ah.prototype.has=Z2;cb=yi?
 yi.prototype:void 0;eY=cb?cb.valueOf:void 0;K2=Object.prototype;tY=K2.hasOwnProperty;J2=Object.prototype;rY=J2.hasOwnProperty;
@@ -5201,7 +5201,7 @@ oz=/\\(\\)?/g;lz=sz(function(t){var e=[];if(t.charCodeAt(0)===46)e.push("");retu
 i?s.replace(oz,"$1"):n||r)}),e});cz=lz;a(uz,"fW");dz=uz;pz=1/0;ub=yi?yi.prototype:void 0;db=ub?ub.toString:void 0;a(hT,"\
 $I");hz=hT;a(fz,"gW");mz=fz;a(gz,"hW");Lu=gz;_z=1/0;a(yz,"_W");Jm=yz;a(vz,"bW");bz=vz;a(wz,"vW");kz=wz;a(Sz,"xW");Ez=Sz;
 a(Tz,"wW");$z=Tz;a(xz,"PW");fT=xz;mT="[\\w-]{1,63}";oY=new RegExp(`^${mT}$`);lY=new RegExp(`^a(?:${mT}-)?[0-9a-f]{16}$`);
-a(Rz,"qI");Az="3ab19d7e-9f35-45c2-926e-75e271cc60b3";a(Nz,"VI");a(Iz,"QI");Pz={renderTarget:"ink",workspace:"local",canDrive:true,
+a(Rz,"qI");Nz="3ab19d7e-9f35-45c2-926e-75e271cc60b3";a(Az,"VI");a(Iz,"QI");Pz={renderTarget:"ink",workspace:"local",canDrive:true,
 transcriptSource:"local-jsonl",remote:null};a(Lz,"BW");Dz=Lz();Uz=a(()=>{return},"VW");a(gT,"iS");Mz=xo();cY=Mz.subscribe;
 a(pb,"tA");jz=xo();uY=jz.subscribe;Fz=xo();dY=Fz.subscribe;qz=xo();pY=qz.subscribe;zz=xo();hY=zz.subscribe;a(Gz,"rA");a(
 Zz,"XW");Kc=class{static{a(this,"sS")}#i=new Set;register(e){let r=Zz(e);this.#i.add(r);let n=a(()=>{this.#i.delete(r)},
@@ -5289,8 +5289,8 @@ _eyJpYXQiO[a-zA-Z0-9+/]{10,200}(?:LCJyZWdpb25fdXJs|InJlZ2lvbl91cmwi|cmVnaW9uX3Vy
 {id:"shopify-shared-secret",source:"shpss_[a-fA-F0-9]{32}",confidence:"high"},{id:"private-key",source:_T,flags:"i",confidence:"\
 high"}];vb=null;a(TB,"EK");a($B,"TK");xB=512;CB=512;ja=new Map;a(OB,"gA");uh={verbose:0,debug:1,info:2,warn:3,error:4};RB=
 Vt(()=>{let t=process.env.CLAUDE_CODE_DEBUG_LOG_LEVEL?.toLowerCase().trim();if(t&&Object.hasOwn(uh,t))return t;return"de\
-bug"});AB=false;a(Du,"rm");yT=Vt(()=>{let t=Du();return AB||Cr(process.env.DEBUG)||Cr(process.env.DEBUG_SDK)||t.includes(
-"--debug")||t.includes("-d")||vT()||t.some(e=>e.startsWith("--debug="))||bT()!==null});NB=Vt(()=>{let t=Du().find(r=>r.startsWith(
+bug"});NB=false;a(Du,"rm");yT=Vt(()=>{let t=Du();return NB||Cr(process.env.DEBUG)||Cr(process.env.DEBUG_SDK)||t.includes(
+"--debug")||t.includes("-d")||vT()||t.some(e=>e.startsWith("--debug="))||bT()!==null});AB=Vt(()=>{let t=Du().find(r=>r.startsWith(
 "--debug="));if(!t)return null;let e=t.substring(8);return Xz(e)});vT=Vt(()=>{let t=Du();return t.includes("--debug-to-s\
 tderr")||t.includes("-d2e")});bT=Vt(()=>{let t=Du();for(let e=0;e<t.length;e++){let r=t[e];if(r.startsWith("--debug-file\
 ="))return bb(r.substring(13));if(r==="--debug-file"&&e+1<t.length)return bb(t[e+1])}return null});a(bb,"_A");a(IB,"NK");
@@ -5315,7 +5315,7 @@ return c.exitCode},kill:c.kill.bind(c),on:c.on.bind(c),once:c.once.bind(c),off:c
 agent:r,betas:n,cwd:i,executable:s=this.getDefaultExecutable(),executableArgs:o=[],extraArgs:l={},pathToClaudeCodeExecutable:c,
 env:u={...process.env},thinkingConfig:d,maxTurns:h,maxBudgetUsd:p,taskBudget:f,model:_,fallbackModel:y,jsonSchema:b,permissionMode:g,
 allowDangerouslySkipPermissions:v,permissionPromptToolName:S,continueConversation:E,resume:T,settingSources:x,skills:k,disallowedTools:C=[],
-tools:A,mcpServers:P,strictMcpConfig:L,canUseTool:F,includePartialMessages:j,plugins:Z,sandbox:me}=this.options,{allowedTools:ne=[]}=this.
+tools:N,mcpServers:P,strictMcpConfig:L,canUseTool:F,includePartialMessages:j,plugins:Z,sandbox:me}=this.options,{allowedTools:ne=[]}=this.
 options;if(k!==void 0){let R=k==="all"?["Skill"]:k.map(G=>`Skill(${G})`),U=new Set(ne);ne=[...ne,...R.filter(G=>!U.has(G))]}
 let ae=["--output-format","stream-json","--verbose","--input-format","stream-json"];if(d){switch(d.type){case"enabled":if(d.
 budgetTokens===void 0)ae.push("--thinking","adaptive");else ae.push("--max-thinking-tokens",d.budgetTokens.toString());break;case"\
@@ -5329,7 +5329,7 @@ options.debug)ae.push("--debug");if(!this.options.debugFile&&!this.options.spawn
 ne or the other.");ae.push("--permission-prompt-tool","stdio")}else if(S)ae.push("--permission-prompt-tool",S);if(E)ae.push(
 "--continue");if(T)ae.push("--resume",T);if(this.options.channels&&this.options.channels.length>0)ae.push("--channels",...this.
 options.channels);if(ne.length>0)ae.push("--allowedTools",ne.join(","));if(C.length>0)ae.push("--disallowedTools",C.join(
-","));if(A!==void 0)if(Array.isArray(A))if(A.length===0)ae.push("--tools","");else ae.push("--tools",A.join(","));else ae.
+","));if(N!==void 0)if(Array.isArray(N))if(N.length===0)ae.push("--tools","");else ae.push("--tools",N.join(","));else ae.
 push("--tools","default");if(P&&Object.keys(P).length>0)ae.push("--mcp-config",br({mcpServers:P}));if(x!==void 0)ae.push(
 `--setting-sources=${x.join(",")}`);if(L)ae.push("--strict-mcp-config");if(g)ae.push("--permission-mode",g);if(v)ae.push(
 "--allow-dangerously-skip-permissions");if(y){if(_&&y===_)throw Error("Fallback model cannot be the same as the main mod\
@@ -5575,7 +5575,7 @@ https://platform.claude.com/oauth/code/callback",CLIENT_ID:"9d1c250a-e61b-44d9-8
 7612-477b-4836-a601-b0589eda7704",OAUTH_FILE_SUFFIX:"",MCP_PROXY_URL:"https://mcp-proxy.anthropic.com",MCP_PROXY_PATH:"/\
 v1/mcp/{server_id}"};k4=void 0;a(S4,"N5");E4=["https://beacon.claude-ai.staging.ant.dev","https://claude.fedstart.com","\
 https://claude-staging.fedstart.com"];a(T4,"cC");$4="-credentials";a(x4,"dC");C4=/^[a-zA-Z0-9._-]+$/;a(O4,"pC");a(R4,"F5");
-a(A4,"fC");(function(t){t.assertEqual=i=>{};function e(i){}a(e,"t");t.assertIs=e;function r(i){throw Error()}a(r,"r");t.
+a(N4,"fC");(function(t){t.assertEqual=i=>{};function e(i){}a(e,"t");t.assertIs=e;function r(i){throw Error()}a(r,"r");t.
 assertNever=r,t.arrayToEnum=i=>{let s={};for(let o of i)s[o]=o;return s},t.getValidEnumValues=i=>{let s=t.objectKeys(i).
 filter(l=>typeof i[i[l]]!=="number"),o={};for(let l of s)o[l]=i[l];return t.objectValues(o)},t.objectValues=i=>t.objectKeys(
 i).map(function(s){return i[s]}),t.objectKeys=typeof Object.keys==="function"?i=>Object.keys(i):i=>{let s=[];for(let o in i)
@@ -5603,7 +5603,7 @@ l[u]._errors.push(r(o));l=l[u],c++}}},"o");return i(this),n}static assert(e){if(
 Error: ${e}`)}toString(){return this.message}get message(){return JSON.stringify(this.issues,ft.jsonStringifyReplacer,2)}get isEmpty(){
 return this.issues.length===0}flatten(e=r=>r.message){let r={},n=[];for(let i of this.issues)if(i.path.length>0){let s=i.
 path[0];r[s]=r[s]||[],r[s].push(e(i))}else n.push(e(i));return{formErrors:n,fieldErrors:r}}get formErrors(){return this.
-flatten()}};Zr.create=t=>new Zr(t);N4=a((t,e)=>{let r;switch(t.code){case oe.invalid_type:if(t.received===$e.undefined)r=
+flatten()}};Zr.create=t=>new Zr(t);A4=a((t,e)=>{let r;switch(t.code){case oe.invalid_type:if(t.received===$e.undefined)r=
 "Required";else r=`Expected ${t.expected}, received ${t.received}`;break;case oe.invalid_literal:r=`Invalid literal valu\
 e, expected ${JSON.stringify(t.expected,ft.jsonStringifyReplacer)}`;break;case oe.unrecognized_keys:r=`Unrecognized key(\
 s) in object: ${ft.joinValues(t.keys,", ")}`;break;case oe.invalid_union:r="Invalid input";break;case oe.invalid_union_discriminator:
@@ -5629,7 +5629,7 @@ type==="date")r=`Date must be ${t.exact?"exactly":t.inclusive?"smaller than or e
 t.maximum))}`;else r="Invalid input";break;case oe.custom:r="Invalid input";break;case oe.invalid_intersection_types:r="\
 Intersection results could not be merged";break;case oe.not_multiple_of:r=`Number must be a multiple of ${t.multipleOf}`;
 break;case oe.not_finite:r="Number must be finite";break;default:r=e.defaultError,ft.assertNever(t)}return{message:r}},"\
-H5");go=N4;I4=go;a(yh,"Rc");vh=a(t=>{let{data:e,path:r,errorMaps:n,issueData:i}=t,s=[...r,...i.path||[]],o={...i,path:s};
+H5");go=A4;I4=go;a(yh,"Rc");vh=a(t=>{let{data:e,path:r,errorMaps:n,issueData:i}=t,s=[...r,...i.path||[]],o={...i,path:s};
 if(i.message!==void 0)return{...i,path:s,message:i.message};let l="",c=n.filter(u=>!!u).slice().reverse();for(let u of c)
 l=u(o,{data:e,defaultError:l}).message;return{...i,path:s,message:l}},"Sm");a(ye,"L");Er=class t{static{a(this,"dt")}constructor(){
 this.value="valid"}dirty(){if(this.value==="valid")this.value="dirty"}abort(){if(this.value!=="aborted")this.value="abor\
@@ -5641,7 +5641,7 @@ if(o.status==="dirty")e.dirty();if(s.value!=="__proto__"&&(typeof o.value<"u"||i
 value,value:n}}};ze=Object.freeze({status:"aborted"});Ja=a(t=>({status:"dirty",value:t}),"Es");Rr=a(t=>({status:"valid",
 value:t}),"bt");Cb=a(t=>t.status==="aborted","Iv");Ob=a(t=>t.status==="dirty","Av");Ts=a(t=>t.status==="valid","Ho");Xc=
 a(t=>typeof Promise<"u"&&t instanceof Promise,"Oc");(function(t){t.errToObj=e=>typeof e==="string"?{message:e}:e||{},t.toString=
-e=>typeof e==="string"?e:e?.message})(Ae||(Ae={}));Kr=class{static{a(this,"gr")}constructor(e,r,n,i){this._cachedPath=[],
+e=>typeof e==="string"?e:e?.message})(Ne||(Ne={}));Kr=class{static{a(this,"gr")}constructor(e,r,n,i){this._cachedPath=[],
 this.parent=e,this.data=r,this._path=n,this._key=i}get path(){if(!this._cachedPath.length)if(Array.isArray(this._key))this.
 _cachedPath.push(...this._path,...this._key);else this._cachedPath.push(...this._path,this._key);return this._cachedPath}};
 Rb=a((t,e)=>{if(Ts(e))return{success:true,data:e.value};else{if(!t.common.issues.length)throw Error("Validation failed b\
@@ -5730,24 +5730,24 @@ invalid_string,message:i.message}),r.dirty()}else if(i.kind==="base64"){if(!G4.t
 ye(n,{validation:"base64",code:oe.invalid_string,message:i.message}),r.dirty()}else if(i.kind==="base64url"){if(!Z4.test(
 e.data))n=this._getOrReturnCtx(e,n),ye(n,{validation:"base64url",code:oe.invalid_string,message:i.message}),r.dirty()}else
 ft.assertNever(i);return{status:r.value,value:e.data}}_regex(e,r,n){return this.refinement(i=>e.test(i),{validation:r,code:oe.
-invalid_string,...Ae.errToObj(n)})}_addCheck(e){return new t({...this._def,checks:[...this._def.checks,e]})}email(e){return this.
-_addCheck({kind:"email",...Ae.errToObj(e)})}url(e){return this._addCheck({kind:"url",...Ae.errToObj(e)})}emoji(e){return this.
-_addCheck({kind:"emoji",...Ae.errToObj(e)})}uuid(e){return this._addCheck({kind:"uuid",...Ae.errToObj(e)})}nanoid(e){return this.
-_addCheck({kind:"nanoid",...Ae.errToObj(e)})}cuid(e){return this._addCheck({kind:"cuid",...Ae.errToObj(e)})}cuid2(e){return this.
-_addCheck({kind:"cuid2",...Ae.errToObj(e)})}ulid(e){return this._addCheck({kind:"ulid",...Ae.errToObj(e)})}base64(e){return this.
-_addCheck({kind:"base64",...Ae.errToObj(e)})}base64url(e){return this._addCheck({kind:"base64url",...Ae.errToObj(e)})}jwt(e){
-return this._addCheck({kind:"jwt",...Ae.errToObj(e)})}ip(e){return this._addCheck({kind:"ip",...Ae.errToObj(e)})}cidr(e){
-return this._addCheck({kind:"cidr",...Ae.errToObj(e)})}datetime(e){if(typeof e==="string")return this._addCheck({kind:"d\
+invalid_string,...Ne.errToObj(n)})}_addCheck(e){return new t({...this._def,checks:[...this._def.checks,e]})}email(e){return this.
+_addCheck({kind:"email",...Ne.errToObj(e)})}url(e){return this._addCheck({kind:"url",...Ne.errToObj(e)})}emoji(e){return this.
+_addCheck({kind:"emoji",...Ne.errToObj(e)})}uuid(e){return this._addCheck({kind:"uuid",...Ne.errToObj(e)})}nanoid(e){return this.
+_addCheck({kind:"nanoid",...Ne.errToObj(e)})}cuid(e){return this._addCheck({kind:"cuid",...Ne.errToObj(e)})}cuid2(e){return this.
+_addCheck({kind:"cuid2",...Ne.errToObj(e)})}ulid(e){return this._addCheck({kind:"ulid",...Ne.errToObj(e)})}base64(e){return this.
+_addCheck({kind:"base64",...Ne.errToObj(e)})}base64url(e){return this._addCheck({kind:"base64url",...Ne.errToObj(e)})}jwt(e){
+return this._addCheck({kind:"jwt",...Ne.errToObj(e)})}ip(e){return this._addCheck({kind:"ip",...Ne.errToObj(e)})}cidr(e){
+return this._addCheck({kind:"cidr",...Ne.errToObj(e)})}datetime(e){if(typeof e==="string")return this._addCheck({kind:"d\
 atetime",precision:null,offset:false,local:false,message:e});return this._addCheck({kind:"datetime",precision:typeof e?.
-precision>"u"?null:e?.precision,offset:e?.offset??false,local:e?.local??false,...Ae.errToObj(e?.message)})}date(e){return this.
+precision>"u"?null:e?.precision,offset:e?.offset??false,local:e?.local??false,...Ne.errToObj(e?.message)})}date(e){return this.
 _addCheck({kind:"date",message:e})}time(e){if(typeof e==="string")return this._addCheck({kind:"time",precision:null,message:e});
-return this._addCheck({kind:"time",precision:typeof e?.precision>"u"?null:e?.precision,...Ae.errToObj(e?.message)})}duration(e){
-return this._addCheck({kind:"duration",...Ae.errToObj(e)})}regex(e,r){return this._addCheck({kind:"regex",regex:e,...Ae.
-errToObj(r)})}includes(e,r){return this._addCheck({kind:"includes",value:e,position:r?.position,...Ae.errToObj(r?.message)})}startsWith(e,r){
-return this._addCheck({kind:"startsWith",value:e,...Ae.errToObj(r)})}endsWith(e,r){return this._addCheck({kind:"endsWith",
-value:e,...Ae.errToObj(r)})}min(e,r){return this._addCheck({kind:"min",value:e,...Ae.errToObj(r)})}max(e,r){return this.
-_addCheck({kind:"max",value:e,...Ae.errToObj(r)})}length(e,r){return this._addCheck({kind:"length",value:e,...Ae.errToObj(
-r)})}nonempty(e){return this.min(1,Ae.errToObj(e))}trim(){return new t({...this._def,checks:[...this._def.checks,{kind:"\
+return this._addCheck({kind:"time",precision:typeof e?.precision>"u"?null:e?.precision,...Ne.errToObj(e?.message)})}duration(e){
+return this._addCheck({kind:"duration",...Ne.errToObj(e)})}regex(e,r){return this._addCheck({kind:"regex",regex:e,...Ne.
+errToObj(r)})}includes(e,r){return this._addCheck({kind:"includes",value:e,position:r?.position,...Ne.errToObj(r?.message)})}startsWith(e,r){
+return this._addCheck({kind:"startsWith",value:e,...Ne.errToObj(r)})}endsWith(e,r){return this._addCheck({kind:"endsWith",
+value:e,...Ne.errToObj(r)})}min(e,r){return this._addCheck({kind:"min",value:e,...Ne.errToObj(r)})}max(e,r){return this.
+_addCheck({kind:"max",value:e,...Ne.errToObj(r)})}length(e,r){return this._addCheck({kind:"length",value:e,...Ne.errToObj(
+r)})}nonempty(e){return this.min(1,Ne.errToObj(e))}trim(){return new t({...this._def,checks:[...this._def.checks,{kind:"\
 trim"}]})}toLowerCase(){return new t({...this._def,checks:[...this._def.checks,{kind:"toLowerCase"}]})}toUpperCase(){return new t(
 {...this._def,checks:[...this._def.checks,{kind:"toUpperCase"}]})}get isDatetime(){return!!this._def.checks.find(e=>e.kind===
 "datetime")}get isDate(){return!!this._def.checks.find(e=>e.kind==="date")}get isTime(){return!!this._def.checks.find(e=>e.
@@ -5771,17 +5771,17 @@ e.data>i.value:e.data>=i.value)r=this._getOrReturnCtx(e,r),ye(r,{code:oe.too_big
 inclusive,exact:false,message:i.message}),n.dirty()}else if(i.kind==="multipleOf"){if(tH(e.data,i.value)!==0)r=this._getOrReturnCtx(
 e,r),ye(r,{code:oe.not_multiple_of,multipleOf:i.value,message:i.message}),n.dirty()}else if(i.kind==="finite"){if(!Number.
 isFinite(e.data))r=this._getOrReturnCtx(e,r),ye(r,{code:oe.not_finite,message:i.message}),n.dirty()}else ft.assertNever(
-i);return{status:n.value,value:e.data}}gte(e,r){return this.setLimit("min",e,true,Ae.toString(r))}gt(e,r){return this.setLimit(
-"min",e,false,Ae.toString(r))}lte(e,r){return this.setLimit("max",e,true,Ae.toString(r))}lt(e,r){return this.setLimit("m\
-ax",e,false,Ae.toString(r))}setLimit(e,r,n,i){return new t({...this._def,checks:[...this._def.checks,{kind:e,value:r,inclusive:n,
-message:Ae.toString(i)}]})}_addCheck(e){return new t({...this._def,checks:[...this._def.checks,e]})}int(e){return this._addCheck(
-{kind:"int",message:Ae.toString(e)})}positive(e){return this._addCheck({kind:"min",value:0,inclusive:false,message:Ae.toString(
-e)})}negative(e){return this._addCheck({kind:"max",value:0,inclusive:false,message:Ae.toString(e)})}nonpositive(e){return this.
-_addCheck({kind:"max",value:0,inclusive:true,message:Ae.toString(e)})}nonnegative(e){return this._addCheck({kind:"min",value:0,
-inclusive:true,message:Ae.toString(e)})}multipleOf(e,r){return this._addCheck({kind:"multipleOf",value:e,message:Ae.toString(
-r)})}finite(e){return this._addCheck({kind:"finite",message:Ae.toString(e)})}safe(e){return this._addCheck({kind:"min",inclusive:true,
-value:Number.MIN_SAFE_INTEGER,message:Ae.toString(e)})._addCheck({kind:"max",inclusive:true,value:Number.MAX_SAFE_INTEGER,
-message:Ae.toString(e)})}get minValue(){let e=null;for(let r of this._def.checks)if(r.kind==="min"){if(e===null||r.value>
+i);return{status:n.value,value:e.data}}gte(e,r){return this.setLimit("min",e,true,Ne.toString(r))}gt(e,r){return this.setLimit(
+"min",e,false,Ne.toString(r))}lte(e,r){return this.setLimit("max",e,true,Ne.toString(r))}lt(e,r){return this.setLimit("m\
+ax",e,false,Ne.toString(r))}setLimit(e,r,n,i){return new t({...this._def,checks:[...this._def.checks,{kind:e,value:r,inclusive:n,
+message:Ne.toString(i)}]})}_addCheck(e){return new t({...this._def,checks:[...this._def.checks,e]})}int(e){return this._addCheck(
+{kind:"int",message:Ne.toString(e)})}positive(e){return this._addCheck({kind:"min",value:0,inclusive:false,message:Ne.toString(
+e)})}negative(e){return this._addCheck({kind:"max",value:0,inclusive:false,message:Ne.toString(e)})}nonpositive(e){return this.
+_addCheck({kind:"max",value:0,inclusive:true,message:Ne.toString(e)})}nonnegative(e){return this._addCheck({kind:"min",value:0,
+inclusive:true,message:Ne.toString(e)})}multipleOf(e,r){return this._addCheck({kind:"multipleOf",value:e,message:Ne.toString(
+r)})}finite(e){return this._addCheck({kind:"finite",message:Ne.toString(e)})}safe(e){return this._addCheck({kind:"min",inclusive:true,
+value:Number.MIN_SAFE_INTEGER,message:Ne.toString(e)})._addCheck({kind:"max",inclusive:true,value:Number.MAX_SAFE_INTEGER,
+message:Ne.toString(e)})}get minValue(){let e=null;for(let r of this._def.checks)if(r.kind==="min"){if(e===null||r.value>
 e)e=r.value}return e}get maxValue(){let e=null;for(let r of this._def.checks)if(r.kind==="max"){if(e===null||r.value<e)e=
 r.value}return e}get isInt(){return!!this._def.checks.find(e=>e.kind==="int"||e.kind==="multipleOf"&&ft.isInteger(e.value))}get isFinite(){
 let e=null,r=null;for(let n of this._def.checks)if(n.kind==="finite"||n.kind==="int"||n.kind==="multipleOf")return true;else if(n.
@@ -5795,14 +5795,14 @@ kind==="max"){if(i.inclusive?e.data>i.value:e.data>=i.value)r=this._getOrReturnC
 nt",maximum:i.value,inclusive:i.inclusive,message:i.message}),n.dirty()}else if(i.kind==="multipleOf"){if(e.data%i.value!==
 BigInt(0))r=this._getOrReturnCtx(e,r),ye(r,{code:oe.not_multiple_of,multipleOf:i.value,message:i.message}),n.dirty()}else
 ft.assertNever(i);return{status:n.value,value:e.data}}_getInvalidInput(e){let r=this._getOrReturnCtx(e);return ye(r,{code:oe.
-invalid_type,expected:$e.bigint,received:r.parsedType}),ze}gte(e,r){return this.setLimit("min",e,true,Ae.toString(r))}gt(e,r){
-return this.setLimit("min",e,false,Ae.toString(r))}lte(e,r){return this.setLimit("max",e,true,Ae.toString(r))}lt(e,r){return this.
-setLimit("max",e,false,Ae.toString(r))}setLimit(e,r,n,i){return new t({...this._def,checks:[...this._def.checks,{kind:e,
-value:r,inclusive:n,message:Ae.toString(i)}]})}_addCheck(e){return new t({...this._def,checks:[...this._def.checks,e]})}positive(e){
-return this._addCheck({kind:"min",value:BigInt(0),inclusive:false,message:Ae.toString(e)})}negative(e){return this._addCheck(
-{kind:"max",value:BigInt(0),inclusive:false,message:Ae.toString(e)})}nonpositive(e){return this._addCheck({kind:"max",value:BigInt(
-0),inclusive:true,message:Ae.toString(e)})}nonnegative(e){return this._addCheck({kind:"min",value:BigInt(0),inclusive:true,
-message:Ae.toString(e)})}multipleOf(e,r){return this._addCheck({kind:"multipleOf",value:e,message:Ae.toString(r)})}get minValue(){
+invalid_type,expected:$e.bigint,received:r.parsedType}),ze}gte(e,r){return this.setLimit("min",e,true,Ne.toString(r))}gt(e,r){
+return this.setLimit("min",e,false,Ne.toString(r))}lte(e,r){return this.setLimit("max",e,true,Ne.toString(r))}lt(e,r){return this.
+setLimit("max",e,false,Ne.toString(r))}setLimit(e,r,n,i){return new t({...this._def,checks:[...this._def.checks,{kind:e,
+value:r,inclusive:n,message:Ne.toString(i)}]})}_addCheck(e){return new t({...this._def,checks:[...this._def.checks,e]})}positive(e){
+return this._addCheck({kind:"min",value:BigInt(0),inclusive:false,message:Ne.toString(e)})}negative(e){return this._addCheck(
+{kind:"max",value:BigInt(0),inclusive:false,message:Ne.toString(e)})}nonpositive(e){return this._addCheck({kind:"max",value:BigInt(
+0),inclusive:true,message:Ne.toString(e)})}nonnegative(e){return this._addCheck({kind:"min",value:BigInt(0),inclusive:true,
+message:Ne.toString(e)})}multipleOf(e,r){return this._addCheck({kind:"multipleOf",value:e,message:Ne.toString(r)})}get minValue(){
 let e=null;for(let r of this._def.checks)if(r.kind==="min"){if(e===null||r.value>e)e=r.value}return e}get maxValue(){let e=null;
 for(let r of this._def.checks)if(r.kind==="max"){if(e===null||r.value<e)e=r.value}return e}};yo.create=t=>new yo({checks:[],
 typeName:Be.ZodBigInt,coerce:t?.coerce??false,...Ke(t)});vo=class extends tt{static{a(this,"vm")}_parse(e){if(this._def.
@@ -5816,7 +5816,7 @@ e,n),ye(n,{code:oe.too_small,message:i.message,inclusive:true,exact:false,minimu
 kind==="max"){if(e.data.getTime()>i.value)n=this._getOrReturnCtx(e,n),ye(n,{code:oe.too_big,message:i.message,inclusive:true,
 exact:false,maximum:i.value,type:"date"}),r.dirty()}else ft.assertNever(i);return{status:r.value,value:new Date(e.data.getTime())}}_addCheck(e){
 return new t({...this._def,checks:[...this._def.checks,e]})}min(e,r){return this._addCheck({kind:"min",value:e.getTime(),
-message:Ae.toString(r)})}max(e,r){return this._addCheck({kind:"max",value:e.getTime(),message:Ae.toString(r)})}get minDate(){
+message:Ne.toString(r)})}max(e,r){return this._addCheck({kind:"max",value:e.getTime(),message:Ne.toString(r)})}get minDate(){
 let e=null;for(let r of this._def.checks)if(r.kind==="min"){if(e===null||r.value>e)e=r.value}return e!=null?new Date(e):
 null}get maxDate(){let e=null;for(let r of this._def.checks)if(r.kind==="max"){if(e===null||r.value<e)e=r.value}return e!=
 null?new Date(e):null}};bo.create=t=>new bo({checks:[],coerce:t?.coerce||false,typeName:Be.ZodDate,...Ke(t)});wo=class extends tt{static{
@@ -5842,8 +5842,8 @@ exact:false,message:i.minLength.message}),n.dirty()}if(i.maxLength!==null){if(r.
 too_big,maximum:i.maxLength.value,type:"array",inclusive:true,exact:false,message:i.maxLength.message}),n.dirty()}if(r.common.
 async)return Promise.all([...r.data].map((o,l)=>i.type._parseAsync(new Kr(r,o,r.path,l)))).then(o=>Er.mergeArray(n,o));let s=[
 ...r.data].map((o,l)=>i.type._parseSync(new Kr(r,o,r.path,l)));return Er.mergeArray(n,s)}get element(){return this._def.
-type}min(e,r){return new t({...this._def,minLength:{value:e,message:Ae.toString(r)}})}max(e,r){return new t({...this._def,
-maxLength:{value:e,message:Ae.toString(r)}})}length(e,r){return new t({...this._def,exactLength:{value:e,message:Ae.toString(
+type}min(e,r){return new t({...this._def,minLength:{value:e,message:Ne.toString(r)}})}max(e,r){return new t({...this._def,
+maxLength:{value:e,message:Ne.toString(r)}})}length(e,r){return new t({...this._def,exactLength:{value:e,message:Ne.toString(
 r)}})}nonempty(e){return this.min(1,e)}};Xi.create=(t,e)=>new Xi({type:t,minLength:null,maxLength:null,exactLength:null,
 typeName:Be.ZodArray,...Ke(e)});a(fs,"Ts");Mr=class t extends tt{static{a(this,"je")}constructor(){super(...arguments);this.
 _cached=null,this.nonstrict=this.passthrough,this.augment=this.extend}_getCached(){if(this._cached!==null)return this._cached;
@@ -5858,8 +5858,8 @@ dirty()}else if(c==="strip");else throw Error("Internal ZodObject error: invalid
 catchall;for(let u of o){let d=n.data[u];l.push({key:{status:"valid",value:u},value:c._parse(new Kr(n,d,n.path,u)),alwaysSet:u in
 n.data})}}if(n.common.async)return Promise.resolve().then(async()=>{let c=[];for(let u of l){let d=await u.key,h=await u.
 value;c.push({key:d,value:h,alwaysSet:u.alwaysSet})}return c}).then(c=>Er.mergeObjectSync(r,c));else return Er.mergeObjectSync(
-r,l)}get shape(){return this._def.shape()}strict(e){return Ae.errToObj,new t({...this._def,unknownKeys:"strict",...e!==void 0?
-{errorMap:a((r,n)=>{let i=this._def.errorMap?.(r,n).message??n.defaultError;if(r.code==="unrecognized_keys")return{message:Ae.
+r,l)}get shape(){return this._def.shape()}strict(e){return Ne.errToObj,new t({...this._def,unknownKeys:"strict",...e!==void 0?
+{errorMap:a((r,n)=>{let i=this._def.errorMap?.(r,n).message??n.defaultError;if(r.code==="unrecognized_keys")return{message:Ne.
 errToObj(e).message??i};return{message:i}},"errorMap")}:{}})}strip(){return new t({...this._def,unknownKeys:"strip"})}passthrough(){
 return new t({...this._def,unknownKeys:"passthrough"})}extend(e){return new t({...this._def,shape:a(()=>({...this._def.shape(),
 ...e}),"shape")})}merge(e){return new t({unknownKeys:e._def.unknownKeys,catchall:e._def.catchall,shape:a(()=>({...this._def.
@@ -5882,8 +5882,8 @@ for(let c of n){let u={...r,common:{...r.common,issues:[]},parent:null},d=c._par
 if(d.status==="valid")return d;else if(d.status==="dirty"&&!s)s={result:d,ctx:u};if(u.common.issues.length)o.push(u.common.
 issues)}if(s)return r.common.issues.push(...s.ctx.common.issues),s.result;let l=o.map(c=>new Zr(c));return ye(r,{code:oe.
 invalid_union,unionErrors:l}),ze}}get options(){return this._def.options}};Os.create=(t,e)=>new Os({options:t,typeName:Be.
-ZodUnion,...Ke(e)});xi=a(t=>{if(t instanceof As)return xi(t.schema);else if(t instanceof li)return xi(t.innerType());else if(t instanceof
-Ns)return[t.value];else if(t instanceof Is)return t.options;else if(t instanceof Ps)return ft.objectValues(t.enum);else if(t instanceof
+ZodUnion,...Ke(e)});xi=a(t=>{if(t instanceof Ns)return xi(t.schema);else if(t instanceof li)return xi(t.innerType());else if(t instanceof
+As)return[t.value];else if(t instanceof Is)return t.options;else if(t instanceof Ps)return ft.objectValues(t.enum);else if(t instanceof
 Ls)return xi(t._def.innerType);else if(t instanceof xs)return[void 0];else if(t instanceof Cs)return[null];else if(t instanceof
 ai)return[void 0,...xi(t.unwrap())];else if(t instanceof Pi)return[null,...xi(t.unwrap())];else if(t instanceof Yc)return xi(
 t.unwrap());else if(t instanceof Us)return xi(t.unwrap());else if(t instanceof Ds)return xi(t._def.innerType);else return[]},
@@ -5932,7 +5932,7 @@ ye(n,{code:oe.too_big,maximum:i.maxSize.value,type:"set",inclusive:true,exact:fa
 let s=this._def.valueType;function o(c){let u=new Set;for(let d of c){if(d.status==="aborted")return ze;if(d.status==="d\
 irty")r.dirty();u.add(d.value)}return{status:r.value,value:u}}a(o,"i");let l=[...n.data.values()].map((c,u)=>s._parse(new Kr(
 n,c,n.path,u)));if(n.common.async)return Promise.all(l).then(c=>o(c));else return o(l)}min(e,r){return new t({...this._def,
-minSize:{value:e,message:Ae.toString(r)}})}max(e,r){return new t({...this._def,maxSize:{value:e,message:Ae.toString(r)}})}size(e,r){
+minSize:{value:e,message:Ne.toString(r)}})}max(e,r){return new t({...this._def,maxSize:{value:e,message:Ne.toString(r)}})}size(e,r){
 return this.min(e,r).max(e,r)}nonempty(e){return this.min(1,e)}};To.create=(t,e)=>new To({valueType:t,minSize:null,maxSize:null,
 typeName:Be.ZodSet,...Ke(e)});Sh=class t extends tt{static{a(this,"Cc")}constructor(){super(...arguments);this.validate=
 this.implement}_parse(e){let{ctx:r}=this._processInputParams(e);if(r.parsedType!==$e.function)return ye(r,{code:oe.invalid_type,
@@ -5947,11 +5947,11 @@ if(!u.success)throw new Zr([n(c,u.error)]);let d=Reflect.apply(o,this,u.data),h=
 throw new Zr([i(d,h.error)]);return h.data})}}parameters(){return this._def.args}returnType(){return this._def.returns}args(...e){
 return new t({...this._def,args:Ii.create(e).rest(Zi.create())})}returns(e){return new t({...this._def,returns:e})}implement(e){
 return this.parse(e)}strictImplement(e){return this.parse(e)}static create(e,r,n){return new t({args:e?e:Ii.create([]).rest(
-Zi.create()),returns:r||Zi.create(),typeName:Be.ZodFunction,...Ke(n)})}};As=class extends tt{static{a(this,"Lc")}get schema(){
+Zi.create()),returns:r||Zi.create(),typeName:Be.ZodFunction,...Ke(n)})}};Ns=class extends tt{static{a(this,"Lc")}get schema(){
 return this._def.getter()}_parse(e){let{ctx:r}=this._processInputParams(e);return this._def.getter()._parse({data:r.data,
-path:r.path,parent:r})}};As.create=(t,e)=>new As({getter:t,typeName:Be.ZodLazy,...Ke(e)});Ns=class extends tt{static{a(this,
+path:r.path,parent:r})}};Ns.create=(t,e)=>new Ns({getter:t,typeName:Be.ZodLazy,...Ke(e)});As=class extends tt{static{a(this,
 "jc")}_parse(e){if(e.data!==this._def.value){let r=this._getOrReturnCtx(e);return ye(r,{received:r.data,code:oe.invalid_literal,
-expected:this._def.value}),ze}return{status:"valid",value:e.data}}get value(){return this._def.value}};Ns.create=(t,e)=>new Ns(
+expected:this._def.value}),ze}return{status:"valid",value:e.data}}get value(){return this._def.value}};As.create=(t,e)=>new As(
 {value:t,typeName:Be.ZodLiteral,...Ke(e)});a(RT,"_C");Is=class t extends tt{static{a(this,"qo")}_parse(e){if(typeof e.data!==
 "string"){let r=this._getOrReturnCtx(e),n=this._def.values;return ye(r,{expected:ft.joinValues(n),received:r.parsedType,
 code:oe.invalid_type}),ze}if(!this._cache)this._cache=new Set(this._def.values);if(!this._cache.has(e.data)){let r=this.
@@ -6022,27 +6022,27 @@ odNullable",t.ZodDefault="ZodDefault",t.ZodCatch="ZodCatch",t.ZodPromise="ZodPro
 "ZodPipeline",t.ZodReadonly="ZodReadonly"})(Be||(Be={}));LY=$s.create;DY=_o.create;UY=$o.create;MY=yo.create;jY=vo.create;
 FY=bo.create;qY=wo.create;zY=xs.create;BY=Cs.create;HY=ko.create;WY=Zi.create;VY=vi.create;GY=So.create;ZY=Xi.create;KY=
 Mr.create;JY=Mr.strictCreate;XY=Os.create;YY=bh.create;QY=Rs.create;e8=Ii.create;t8=kh.create;r8=Eo.create;i8=To.create;
-n8=Sh.create;s8=As.create;a8=Ns.create;o8=Is.create;l8=Ps.create;c8=In.create;u8=li.create;d8=ai.create;p8=Pi.create;h8=
+n8=Sh.create;s8=Ns.create;a8=As.create;o8=Is.create;l8=Ps.create;c8=In.create;u8=li.create;d8=ai.create;p8=Pi.create;h8=
 li.createWithPreprocess;f8=Qc.create;rH=B("ZodMiniType",(t,e)=>{if(!t._zod)throw Error("Uninitialized schema in ZodMiniT\
 ype.");Ve.init(t,e),t.def=e,t.parse=(r,n)=>ac(t,r,n,{callee:t.parse}),t.safeParse=(r,n)=>Yh(t,r,n),t.parseAsync=async(r,n)=>oc(
 t,r,n,{callee:t.parseAsync}),t.safeParseAsync=async(r,n)=>ef(t,r,n),t.check=(...r)=>t.clone({...e,checks:[...e.checks??[],
 ...r.map(n=>typeof n==="function"?{_zod:{check:n,def:{check:"custom"},onattach:[]}}:n)]}),t.clone=(r,n)=>di(t,r,n),t.brand=
 ()=>t,t.register=(r,n)=>(r.add(t,n),t)});m8=B("ZodMiniObject",(t,e)=>{df.init(t,e),rH.init(t,e),lt.defineLazy(t,"shape",
 ()=>e.shape)});iH="io.modelcontextprotocol/related-task";Uu="2.0";cr=_E(t=>t!==null&&(typeof t==="object"||typeof t==="f\
-unction"));AT=$t([K(),yt().int()]);NT=K();g8=wr({ttl:yt().optional(),pollInterval:yt().optional()});nH=Ee({ttl:yt().optional()});
-sH=Ee({taskId:K()});eg=wr({progressToken:AT.optional(),[iH]:sH.optional()});jr=Ee({_meta:eg.optional()});Mu=jr.extend({task:nH.
+unction"));NT=$t([K(),yt().int()]);AT=K();g8=wr({ttl:yt().optional(),pollInterval:yt().optional()});nH=Ee({ttl:yt().optional()});
+sH=Ee({taskId:K()});eg=wr({progressToken:NT.optional(),[iH]:sH.optional()});jr=Ee({_meta:eg.optional()});Mu=jr.extend({task:nH.
 optional()});hr=Ee({method:K(),params:jr.loose().optional()});Jr=Ee({_meta:eg.optional()});Xr=Ee({method:K(),params:Jr.loose().
 optional()});fr=wr({_meta:eg.optional()});ju=$t([K(),yt().int()]);aH=Ee({jsonrpc:Ie(Uu),id:ju,...hr.shape}).strict();oH=
 Ee({jsonrpc:Ie(Uu),...Xr.shape}).strict();IT=Ee({jsonrpc:Ie(Uu),id:ju,result:fr}).strict();(function(t){t[t.ConnectionClosed=
 -32e3]="ConnectionClosed",t[t.RequestTimeout=-32001]="RequestTimeout",t[t.ParseError=-32700]="ParseError",t[t.InvalidRequest=
 -32600]="InvalidRequest",t[t.MethodNotFound=-32601]="MethodNotFound",t[t.InvalidParams=-32602]="InvalidParams",t[t.InternalError=
--32603]="InternalError",t[t.UrlElicitationRequired=-32042]="UrlElicitationRequired"})(Ab||(Ab={}));PT=Ee({jsonrpc:Ie(Uu),
+-32603]="InternalError",t[t.UrlElicitationRequired=-32042]="UrlElicitationRequired"})(Nb||(Nb={}));PT=Ee({jsonrpc:Ie(Uu),
 id:ju.optional(),error:Ee({code:yt().int(),message:K(),data:Ft().optional()})}).strict();_8=$t([aH,oH,IT,PT]);y8=$t([IT,
 PT]);LT=fr.strict();lH=Jr.extend({requestId:ju.optional(),reason:K().optional()});DT=Xr.extend({method:Ie("notifications\
-/cancelled"),params:lH});cH=Ee({src:K(),mimeType:K().optional(),sizes:ct(K()).optional(),theme:Ar(["light","dark"]).optional()});
-No=Ee({icons:ct(cH).optional()});Ms=Ee({name:K(),title:K().optional()});UT=Ms.extend({...Ms.shape,...No.shape,version:K(),
-websiteUrl:K().optional(),description:K().optional()});uH=Au(Ee({applyDefaults:lr().optional()}),Tt(K(),Ft()));dH=Pm(t=>{
-if(t&&typeof t==="object"&&!Array.isArray(t)){if(Object.keys(t).length===0)return{form:{}}}return t},Au(Ee({form:uH.optional(),
+/cancelled"),params:lH});cH=Ee({src:K(),mimeType:K().optional(),sizes:ct(K()).optional(),theme:Nr(["light","dark"]).optional()});
+Ao=Ee({icons:ct(cH).optional()});Ms=Ee({name:K(),title:K().optional()});UT=Ms.extend({...Ms.shape,...Ao.shape,version:K(),
+websiteUrl:K().optional(),description:K().optional()});uH=Nu(Ee({applyDefaults:lr().optional()}),Tt(K(),Ft()));dH=Pm(t=>{
+if(t&&typeof t==="object"&&!Array.isArray(t)){if(Object.keys(t).length===0)return{form:{}}}return t},Nu(Ee({form:uH.optional(),
 url:cr.optional()}),Tt(K(),Ft()).optional()));pH=wr({list:cr.optional(),cancel:cr.optional(),requests:wr({sampling:wr({createMessage:cr.
 optional()}).optional(),elicitation:wr({create:cr.optional()}).optional()}).optional()});hH=wr({list:cr.optional(),cancel:cr.
 optional(),requests:wr({tools:wr({call:cr.optional()}).optional()}).optional()});fH=Ee({experimental:Tt(K(),cr).optional(),
@@ -6053,24 +6053,24 @@ completions:cr.optional(),prompts:Ee({listChanged:lr().optional()}).optional(),r
 optional()}).optional(),tools:Ee({listChanged:lr().optional()}).optional(),tasks:hH.optional(),extensions:Tt(K(),cr).optional()});
 yH=fr.extend({protocolVersion:K(),capabilities:_H,serverInfo:UT,instructions:K().optional()});vH=Xr.extend({method:Ie("n\
 otifications/initialized"),params:Jr.optional()});MT=hr.extend({method:Ie("ping"),params:jr.optional()});bH=Ee({progress:yt(),
-total:It(yt()),message:It(K())});wH=Ee({...Jr.shape,...bH.shape,progressToken:AT});jT=Xr.extend({method:Ie("notification\
-s/progress"),params:wH});kH=jr.extend({cursor:NT.optional()});Io=hr.extend({params:kH.optional()});Po=fr.extend({nextCursor:NT.
-optional()});SH=Ar(["working","input_required","completed","failed","cancelled"]);Lo=Ee({taskId:K(),status:SH,ttl:$t([yt(),
+total:It(yt()),message:It(K())});wH=Ee({...Jr.shape,...bH.shape,progressToken:NT});jT=Xr.extend({method:Ie("notification\
+s/progress"),params:wH});kH=jr.extend({cursor:AT.optional()});Io=hr.extend({params:kH.optional()});Po=fr.extend({nextCursor:AT.
+optional()});SH=Nr(["working","input_required","completed","failed","cancelled"]);Lo=Ee({taskId:K(),status:SH,ttl:$t([yt(),
 Em()]),createdAt:K(),lastUpdatedAt:K(),pollInterval:It(yt()),statusMessage:It(K())});FT=fr.extend({task:Lo});EH=Jr.merge(
 Lo);qT=Xr.extend({method:Ie("notifications/tasks/status"),params:EH});zT=hr.extend({method:Ie("tasks/get"),params:jr.extend(
 {taskId:K()})});BT=fr.merge(Lo);HT=hr.extend({method:Ie("tasks/result"),params:jr.extend({taskId:K()})});v8=fr.loose();WT=
 Io.extend({method:Ie("tasks/list")});VT=Po.extend({tasks:ct(Lo)});GT=hr.extend({method:Ie("tasks/cancel"),params:jr.extend(
 {taskId:K()})});b8=fr.merge(Lo);ZT=Ee({uri:K(),mimeType:It(K()),_meta:Tt(K(),Ft()).optional()});KT=ZT.extend({text:K()});
 tg=K().refine(t=>{try{return atob(t),true}catch{return false}},{message:"Invalid Base64 string"});JT=ZT.extend({blob:tg});
-Do=Ar(["user","assistant"]);Gs=Ee({audience:ct(Do).optional(),priority:yt().min(0).max(1).optional(),lastModified:em.datetime(
-{offset:true}).optional()});XT=Ee({...Ms.shape,...No.shape,uri:K(),description:It(K()),mimeType:It(K()),size:It(yt()),annotations:Gs.
-optional(),_meta:It(wr({}))});TH=Ee({...Ms.shape,...No.shape,uriTemplate:K(),description:It(K()),mimeType:It(K()),annotations:Gs.
+Do=Nr(["user","assistant"]);Gs=Ee({audience:ct(Do).optional(),priority:yt().min(0).max(1).optional(),lastModified:em.datetime(
+{offset:true}).optional()});XT=Ee({...Ms.shape,...Ao.shape,uri:K(),description:It(K()),mimeType:It(K()),size:It(yt()),annotations:Gs.
+optional(),_meta:It(wr({}))});TH=Ee({...Ms.shape,...Ao.shape,uriTemplate:K(),description:It(K()),mimeType:It(K()),annotations:Gs.
 optional(),_meta:It(wr({}))});$H=Io.extend({method:Ie("resources/list")});xH=Po.extend({resources:ct(XT)});CH=Io.extend(
-{method:Ie("resources/templates/list")});OH=Po.extend({resourceTemplates:ct(TH)});rg=jr.extend({uri:K()});RH=rg;AH=hr.extend(
-{method:Ie("resources/read"),params:RH});NH=fr.extend({contents:ct($t([KT,JT]))});IH=Xr.extend({method:Ie("notifications\
+{method:Ie("resources/templates/list")});OH=Po.extend({resourceTemplates:ct(TH)});rg=jr.extend({uri:K()});RH=rg;NH=hr.extend(
+{method:Ie("resources/read"),params:RH});AH=fr.extend({contents:ct($t([KT,JT]))});IH=Xr.extend({method:Ie("notifications\
 /resources/list_changed"),params:Jr.optional()});PH=rg;LH=hr.extend({method:Ie("resources/subscribe"),params:PH});DH=rg;
 UH=hr.extend({method:Ie("resources/unsubscribe"),params:DH});MH=Jr.extend({uri:K()});jH=Xr.extend({method:Ie("notificati\
-ons/resources/updated"),params:MH});FH=Ee({name:K(),description:It(K()),required:It(lr())});qH=Ee({...Ms.shape,...No.shape,
+ons/resources/updated"),params:MH});FH=Ee({name:K(),description:It(K()),required:It(lr())});qH=Ee({...Ms.shape,...Ao.shape,
 description:It(K()),arguments:It(ct(FH)),_meta:It(wr({}))});zH=Io.extend({method:Ie("prompts/list")});BH=Po.extend({prompts:ct(
 qH)});HH=jr.extend({name:K(),arguments:Tt(K(),K()).optional()});WH=hr.extend({method:Ie("prompts/get"),params:HH});ig=Ee(
 {type:Ie("text"),text:K(),annotations:Gs.optional(),_meta:Tt(K(),Ft()).optional()});ng=Ee({type:Ie("image"),data:tg,mimeType:K(),
@@ -6080,29 +6080,29 @@ GH=Ee({type:Ie("resource"),resource:$t([KT,JT]),annotations:Gs.optional(),_meta:
 type:Ie("resource_link")});ag=$t([ig,ng,sg,ZH,GH]);KH=Ee({role:Do,content:ag});JH=fr.extend({description:K().optional(),
 messages:ct(KH)});XH=Xr.extend({method:Ie("notifications/prompts/list_changed"),params:Jr.optional()});YH=Ee({title:K().
 optional(),readOnlyHint:lr().optional(),destructiveHint:lr().optional(),idempotentHint:lr().optional(),openWorldHint:lr().
-optional()});QH=Ee({taskSupport:Ar(["required","optional","forbidden"]).optional()});YT=Ee({...Ms.shape,...No.shape,description:K().
+optional()});QH=Ee({taskSupport:Nr(["required","optional","forbidden"]).optional()});YT=Ee({...Ms.shape,...Ao.shape,description:K().
 optional(),inputSchema:Ee({type:Ie("object"),properties:Tt(K(),cr).optional(),required:ct(K()).optional()}).catchall(Ft()),
 outputSchema:Ee({type:Ie("object"),properties:Tt(K(),cr).optional(),required:ct(K()).optional()}).catchall(Ft()).optional(),
 annotations:YH.optional(),execution:QH.optional(),_meta:Tt(K(),Ft()).optional()});eW=Io.extend({method:Ie("tools/list")});
 tW=Po.extend({tools:ct(YT)});QT=fr.extend({content:ct(ag).default([]),structuredContent:Tt(K(),Ft()).optional(),isError:lr().
 optional()});w8=QT.or(fr.extend({toolResult:Ft()}));rW=Mu.extend({name:K(),arguments:Tt(K(),Ft()).optional()});iW=hr.extend(
 {method:Ie("tools/call"),params:rW});nW=Xr.extend({method:Ie("notifications/tools/list_changed"),params:Jr.optional()});
-k8=Ee({autoRefresh:lr().default(true),debounceMs:yt().int().nonnegative().default(300)});e$=Ar(["debug","info","notice",
+k8=Ee({autoRefresh:lr().default(true),debounceMs:yt().int().nonnegative().default(300)});e$=Nr(["debug","info","notice",
 "warning","error","critical","alert","emergency"]);sW=jr.extend({level:e$});aW=hr.extend({method:Ie("logging/setLevel"),
 params:sW});oW=Jr.extend({level:e$,logger:K().optional(),data:Ft()});lW=Xr.extend({method:Ie("notifications/message"),params:oW});
 cW=Ee({name:K().optional()});uW=Ee({hints:ct(cW).optional(),costPriority:yt().min(0).max(1).optional(),speedPriority:yt().
-min(0).max(1).optional(),intelligencePriority:yt().min(0).max(1).optional()});dW=Ee({mode:Ar(["auto","required","none"]).
+min(0).max(1).optional(),intelligencePriority:yt().min(0).max(1).optional()});dW=Ee({mode:Nr(["auto","required","none"]).
 optional()});pW=Ee({type:Ie("tool_result"),toolUseId:K().describe("The unique identifier for the corresponding tool call\
 ."),content:ct(ag).default([]),structuredContent:Ee({}).loose().optional(),isError:lr().optional(),_meta:Tt(K(),Ft()).optional()});
 hW=xm("type",[ig,ng,sg]);eu=xm("type",[ig,ng,sg,VH,pW]);fW=Ee({role:Do,content:$t([eu,ct(eu)]),_meta:Tt(K(),Ft()).optional()});
-mW=Mu.extend({messages:ct(fW),modelPreferences:uW.optional(),systemPrompt:K().optional(),includeContext:Ar(["none","this\
+mW=Mu.extend({messages:ct(fW),modelPreferences:uW.optional(),systemPrompt:K().optional(),includeContext:Nr(["none","this\
 Server","allServers"]).optional(),temperature:yt().optional(),maxTokens:yt().int(),stopSequences:ct(K()).optional(),metadata:cr.
 optional(),tools:ct(YT).optional(),toolChoice:dW.optional()});gW=hr.extend({method:Ie("sampling/createMessage"),params:mW});
-_W=fr.extend({model:K(),stopReason:It(Ar(["endTurn","stopSequence","maxTokens"]).or(K())),role:Do,content:hW});yW=fr.extend(
-{model:K(),stopReason:It(Ar(["endTurn","stopSequence","maxTokens","toolUse"]).or(K())),role:Do,content:$t([eu,ct(eu)])});
+_W=fr.extend({model:K(),stopReason:It(Nr(["endTurn","stopSequence","maxTokens"]).or(K())),role:Do,content:hW});yW=fr.extend(
+{model:K(),stopReason:It(Nr(["endTurn","stopSequence","maxTokens","toolUse"]).or(K())),role:Do,content:$t([eu,ct(eu)])});
 vW=Ee({type:Ie("boolean"),title:K().optional(),description:K().optional(),default:lr().optional()});bW=Ee({type:Ie("stri\
-ng"),title:K().optional(),description:K().optional(),minLength:yt().optional(),maxLength:yt().optional(),format:Ar(["ema\
-il","uri","date","date-time"]).optional(),default:K().optional()});wW=Ee({type:Ar(["number","integer"]),title:K().optional(),
+ng"),title:K().optional(),description:K().optional(),minLength:yt().optional(),maxLength:yt().optional(),format:Nr(["ema\
+il","uri","date","date-time"]).optional(),default:K().optional()});wW=Ee({type:Nr(["number","integer"]),title:K().optional(),
 description:K().optional(),minimum:yt().optional(),maximum:yt().optional(),default:yt().optional()});kW=Ee({type:Ie("str\
 ing"),title:K().optional(),description:K().optional(),enum:ct(K()),default:K().optional()});SW=Ee({type:Ie("string"),title:K().
 optional(),description:K().optional(),oneOf:ct(Ee({const:K(),title:K()})),default:K().optional()});EW=Ee({type:Ie("strin\
@@ -6110,20 +6110,20 @@ g"),title:K().optional(),description:K().optional(),enum:ct(K()),enumNames:ct(K(
 $t([kW,SW]);$W=Ee({type:Ie("array"),title:K().optional(),description:K().optional(),minItems:yt().optional(),maxItems:yt().
 optional(),items:Ee({type:Ie("string"),enum:ct(K())}),default:ct(K()).optional()});xW=Ee({type:Ie("array"),title:K().optional(),
 description:K().optional(),minItems:yt().optional(),maxItems:yt().optional(),items:Ee({anyOf:ct(Ee({const:K(),title:K()}))}),
-default:ct(K()).optional()});CW=$t([$W,xW]);OW=$t([EW,TW,CW]);RW=$t([OW,vW,bW,wW]);AW=Mu.extend({mode:Ie("form").optional(),
-message:K(),requestedSchema:Ee({type:Ie("object"),properties:Tt(K(),RW),required:ct(K()).optional()})});NW=Mu.extend({mode:Ie(
-"url"),message:K(),elicitationId:K(),url:K().url()});IW=$t([AW,NW]);PW=hr.extend({method:Ie("elicitation/create"),params:IW});
+default:ct(K()).optional()});CW=$t([$W,xW]);OW=$t([EW,TW,CW]);RW=$t([OW,vW,bW,wW]);NW=Mu.extend({mode:Ie("form").optional(),
+message:K(),requestedSchema:Ee({type:Ie("object"),properties:Tt(K(),RW),required:ct(K()).optional()})});AW=Mu.extend({mode:Ie(
+"url"),message:K(),elicitationId:K(),url:K().url()});IW=$t([NW,AW]);PW=hr.extend({method:Ie("elicitation/create"),params:IW});
 LW=Jr.extend({elicitationId:K()});DW=Xr.extend({method:Ie("notifications/elicitation/complete"),params:LW});UW=fr.extend(
-{action:Ar(["accept","decline","cancel"]),content:Pm(t=>t===null?void 0:t,Tt(K(),$t([K(),yt(),lr(),ct(K())])).optional())});
+{action:Nr(["accept","decline","cancel"]),content:Pm(t=>t===null?void 0:t,Tt(K(),$t([K(),yt(),lr(),ct(K())])).optional())});
 MW=Ee({type:Ie("ref/resource"),uri:K()});jW=Ee({type:Ie("ref/prompt"),name:K()});FW=jr.extend({ref:$t([jW,MW]),argument:Ee(
 {name:K(),value:K()}),context:Ee({arguments:Tt(K(),K()).optional()}).optional()});qW=hr.extend({method:Ie("completion/co\
 mplete"),params:FW});zW=fr.extend({completion:wr({values:ct(K()).max(100),total:It(yt().int()),hasMore:It(lr())})});BW=Ee(
 {uri:K().startsWith("file://"),name:K().optional(),_meta:Tt(K(),Ft()).optional()});HW=hr.extend({method:Ie("roots/list"),
 params:jr.optional()});WW=fr.extend({roots:ct(BW)});VW=Xr.extend({method:Ie("notifications/roots/list_changed"),params:Jr.
-optional()});S8=$t([MT,gH,qW,aW,WH,zH,$H,CH,AH,LH,UH,iW,eW,zT,HT,WT,GT]);E8=$t([DT,jT,vH,VW,qT]);T8=$t([LT,_W,yW,UW,WW,BT,
-VT,FT]);$8=$t([MT,gW,PW,HW,zT,HT,WT,GT]);x8=$t([DT,jT,lW,jH,IH,nW,XH,qT,DW]);C8=$t([LT,yH,zW,JH,BH,xH,OH,NH,QT,tW,BT,VT,
-FT]);O8=new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");R8=Ih(gw(),1);A8=Ih(SP(),1);(function(t){
-t.Completable="McpCompletable"})(Nb||(Nb={}));N8=te(()=>m.object({session_id:m.string(),ws_url:m.string(),work_dir:m.string().
+optional()});S8=$t([MT,gH,qW,aW,WH,zH,$H,CH,NH,LH,UH,iW,eW,zT,HT,WT,GT]);E8=$t([DT,jT,vH,VW,qT]);T8=$t([LT,_W,yW,UW,WW,BT,
+VT,FT]);$8=$t([MT,gW,PW,HW,zT,HT,WT,GT]);x8=$t([DT,jT,lW,jH,IH,nW,XH,qT,DW]);C8=$t([LT,yH,zW,JH,BH,xH,OH,AH,QT,tW,BT,VT,
+FT]);O8=new Set("ABCDEFGHIJKLMNOPQRSTUVXYZabcdefghijklmnopqrstuvxyz0123456789");R8=Ih(gw(),1);N8=Ih(SP(),1);(function(t){
+t.Completable="McpCompletable"})(Ab||(Ab={}));A8=te(()=>m.object({session_id:m.string(),ws_url:m.string(),work_dir:m.string().
 optional(),session_key:m.string().optional()}));I8=Promise.resolve();(function(t){t[t.lineFeed=10]="lineFeed",t[t.carriageReturn=
 13]="carriageReturn",t[t.space=32]="space",t[t._0=48]="_0",t[t._1=49]="_1",t[t._2=50]="_2",t[t._3=51]="_3",t[t._4=52]="_\
 4",t[t._5=53]="_5",t[t._6=54]="_6",t[t._7=55]="_7",t[t._8=56]="_8",t[t._9=57]="_9",t[t.a=97]="a",t[t.b=98]="b",t[t.c=99]=
@@ -6179,12 +6179,12 @@ Number.MAX_SAFE_INTEGER?ys:null,"AL");ys=class extends Array{static{a(this,"Tu")
 $h=class t{static{a(this,"Ys")}heap;length;static#i=false;static create(e){let r=s$(e);if(!r)return[];t.#i=true;let n=new t(
 e,r);return t.#i=false,n}constructor(e,r){if(!t.#i)throw TypeError("instantiate Stack using Stack.create(n)");this.heap=
 new r(e),this.length=0}push(e){this.heap[this.length++]=e}pop(){return this.heap[--this.length]}};xh=class t{static{a(this,
-"Hg")}#i;#d;#m;#g;#R;#A;ttl;ttlResolution;ttlAutopurge;updateAgeOnGet;updateAgeOnHas;allowStale;noDisposeOnSet;noUpdateTTL;maxEntrySize;sizeCalculation;noDeleteOnFetchRejection;noDeleteOnStaleGet;allowStaleOnFetchAbort;allowStaleOnFetchRejection;ignoreFetchAbort;#s;#_;#n;#r;#e;#c;#p;#l;#a;#y;#o;#v;#b;#h;#w;#$;#u;static unsafeExposeInternals(e){
+"Hg")}#i;#d;#m;#g;#R;#N;ttl;ttlResolution;ttlAutopurge;updateAgeOnGet;updateAgeOnHas;allowStale;noDisposeOnSet;noUpdateTTL;maxEntrySize;sizeCalculation;noDeleteOnFetchRejection;noDeleteOnStaleGet;allowStaleOnFetchAbort;allowStaleOnFetchRejection;ignoreFetchAbort;#s;#_;#n;#r;#e;#c;#p;#l;#a;#y;#o;#v;#b;#h;#w;#$;#u;static unsafeExposeInternals(e){
 return{starts:e.#b,ttls:e.#h,sizes:e.#v,keyMap:e.#n,keyList:e.#r,valList:e.#e,next:e.#c,prev:e.#p,get head(){return e.#l},
 get tail(){return e.#a},free:e.#y,isBackgroundFetch:a(r=>e.#t(r),"isBackgroundFetch"),backgroundFetch:a((r,n,i,s)=>e.#P(
 r,n,i,s),"backgroundFetch"),moveToTail:a(r=>e.#O(r),"moveToTail"),indexes:a(r=>e.#k(r),"indexes"),rindexes:a(r=>e.#S(r),
 "rindexes"),isStale:a(r=>e.#f(r),"isStale")}}get max(){return this.#i}get maxSize(){return this.#d}get calculatedSize(){
-return this.#_}get size(){return this.#s}get fetchMethod(){return this.#R}get memoMethod(){return this.#A}get dispose(){
+return this.#_}get size(){return this.#s}get fetchMethod(){return this.#R}get memoMethod(){return this.#N}get dispose(){
 return this.#m}get disposeAfter(){return this.#g}constructor(e){let{max:r=0,ttl:n,ttlResolution:i=1,ttlAutopurge:s,updateAgeOnGet:o,
 updateAgeOnHas:l,allowStale:c,dispose:u,disposeAfter:d,noDisposeOnSet:h,noUpdateTTL:p,maxSize:f=0,maxEntrySize:_=0,sizeCalculation:y,
 fetchMethod:b,memoMethod:g,noDeleteOnFetchRejection:v,noDeleteOnStaleGet:S,allowStaleOnFetchRejection:E,allowStaleOnFetchAbort:T,
@@ -6192,7 +6192,7 @@ ignoreFetchAbort:x}=e;if(r!==0&&!Hi(r))throw TypeError("max option must be a non
 throw Error("invalid max value: "+r);if(this.#i=r,this.#d=f,this.maxEntrySize=_||this.#d,this.sizeCalculation=y,this.sizeCalculation){
 if(!this.#d&&!this.maxEntrySize)throw TypeError("cannot set sizeCalculation without setting maxSize or maxEntrySize");if(typeof this.
 sizeCalculation!=="function")throw TypeError("sizeCalculation set to non-function")}if(g!==void 0&&typeof g!=="function")
-throw TypeError("memoMethod must be a function if defined");if(this.#A=g,b!==void 0&&typeof b!=="function")throw TypeError(
+throw TypeError("memoMethod must be a function if defined");if(this.#N=g,b!==void 0&&typeof b!=="function")throw TypeError(
 "fetchMethod must be a function if specified");if(this.#R=b,this.#$=!!b,this.#n=new Map,this.#r=Array(r).fill(void 0),this.#e=
 Array(r).fill(void 0),this.#c=new k(r),this.#p=new k(r),this.#l=0,this.#a=0,this.#y=$h.create(r),this.#s=0,this.#_=0,typeof u===
 "function")this.#m=u;if(typeof d==="function")this.#g=d,this.#o=[];else this.#g=void 0,this.#o=void 0;if(this.#w=!!this.#m,
@@ -6215,8 +6215,8 @@ return 1/0;let u=(n||i())-c;return l-u},this.#f=s=>{let o=r[s],l=e[s];return!!l&
 e[r],e[r]=0},this.#U=(r,n,i,s)=>{if(this.#t(n))return 0;if(!Hi(i))if(s){if(typeof s!=="function")throw TypeError("sizeCa\
 lculation must be a function");if(i=s(n,r),!Hi(i))throw TypeError("sizeCalculation return invalid (expect positive integ\
 er)")}else throw TypeError("invalid size value (must be positive integer). When maxSize or maxEntrySize is used, sizeCal\
-culation or size must be set.");return i},this.#N=(r,n,i)=>{if(e[r]=n,this.#d){let s=this.#d-e[r];while(this.#_>s)this.#I(
-true)}if(this.#_+=e[r],i)i.entrySize=n,i.totalCalculatedSize=this.#_}}#C=a(e=>{},"#I");#N=a((e,r,n)=>{},"#C");#U=a((e,r,n,i)=>{
+culation or size must be set.");return i},this.#A=(r,n,i)=>{if(e[r]=n,this.#d){let s=this.#d-e[r];while(this.#_>s)this.#I(
+true)}if(this.#_+=e[r],i)i.entrySize=n,i.totalCalculatedSize=this.#_}}#C=a(e=>{},"#I");#A=a((e,r,n)=>{},"#C");#U=a((e,r,n,i)=>{
 if(n||i)throw TypeError("cannot set size without setting maxSize or maxEntrySize on cache");return 0},"#U");*#k({allowStale:e=this.
 allowStale}={}){if(this.#s)for(let r=this.#a;;){if(!this.#M(r))break;if(e||!this.#f(r))yield r;if(r===this.#l)break;else
 r=this.#p[r]}}*#S({allowStale:e=this.allowStale}={}){if(this.#s)for(let r=this.#l;;){if(!this.#M(r))break;if(e||!this.#f(
@@ -6241,10 +6241,10 @@ return this.delete(e),this;let{ttl:i=this.ttl,start:s,noDisposeOnSet:o=this.noDi
 status:c}=n,{noUpdateTTL:u=this.noUpdateTTL}=n,d=this.#U(e,r,n.size||0,l);if(this.maxEntrySize&&d>this.maxEntrySize){if(c)
 c.set="miss",c.maxEntrySizeExceeded=true;return this.#E(e,"set"),this}let h=this.#s===0?void 0:this.#n.get(e);if(h===void 0){
 if(h=this.#s===0?this.#a:this.#y.length!==0?this.#y.pop():this.#s===this.#i?this.#I(false):this.#s,this.#r[h]=e,this.#e[h]=
-r,this.#n.set(e,h),this.#c[this.#a]=h,this.#p[h]=this.#a,this.#a=h,this.#s++,this.#N(h,d,c),c)c.set="add";u=false}else{this.#O(
+r,this.#n.set(e,h),this.#c[this.#a]=h,this.#p[h]=this.#a,this.#a=h,this.#s++,this.#A(h,d,c),c)c.set="add";u=false}else{this.#O(
 h);let p=this.#e[h];if(r!==p){if(this.#$&&this.#t(p)){p.__abortController.abort(Error("replaced"));let{__staleWhileFetching:f}=p;
 if(f!==void 0&&!o){if(this.#w)this.#m?.(f,e,"set");if(this.#u)this.#o?.push([f,e,"set"])}}else if(!o){if(this.#w)this.#m?.(
-p,e,"set");if(this.#u)this.#o?.push([p,e,"set"])}if(this.#C(h),this.#N(h,d,c),this.#e[h]=r,c){c.set="replace";let f=p&&this.#t(
+p,e,"set");if(this.#u)this.#o?.push([p,e,"set"])}if(this.#C(h),this.#A(h,d,c),this.#e[h]=r,c){c.set="replace";let f=p&&this.#t(
 p)?p.__staleWhileFetching:p;if(f!==void 0)c.oldValue=f}}else if(c)c.set="update"}if(i!==0&&!this.#h)this.#L();if(this.#h){
 if(!u)this.#D(h,i,s);if(c)this.#T(c,h)}if(!o&&this.#u&&this.#o){let p=this.#o,f;while(f=p?.shift())this.#g?.(...f)}return this}pop(){
 try{while(this.#s){let e=this.#e[this.#l];if(this.#I(true),this.#t(e)){if(e.__staleWhileFetching)return e.__staleWhileFetching}else if(e!==
@@ -6277,11 +6277,11 @@ ignoreFetchAbort,allowStaleOnFetchAbort:_=this.allowStaleOnFetchAbort,context:y,
 if(!this.#$){if(g)g.fetch="get";return this.get(e,{allowStale:n,updateAgeOnGet:i,noDeleteOnStaleGet:s,status:g})}let S={
 allowStale:n,updateAgeOnGet:i,noDeleteOnStaleGet:s,ttl:o,noDisposeOnSet:l,size:c,sizeCalculation:u,noUpdateTTL:d,noDeleteOnFetchRejection:h,
 allowStaleOnFetchRejection:p,allowStaleOnFetchAbort:_,ignoreFetchAbort:f,status:g,signal:v},E=this.#n.get(e);if(E===void 0){
-if(g)g.fetch="miss";let T=this.#P(e,E,S,y);return T.__returned=T}else{let T=this.#e[E];if(this.#t(T)){let A=n&&T.__staleWhileFetching!==
-void 0;if(g){if(g.fetch="inflight",A)g.returnedStale=true}return A?T.__staleWhileFetching:T.__returned=T}let x=this.#f(E);
+if(g)g.fetch="miss";let T=this.#P(e,E,S,y);return T.__returned=T}else{let T=this.#e[E];if(this.#t(T)){let N=n&&T.__staleWhileFetching!==
+void 0;if(g){if(g.fetch="inflight",N)g.returnedStale=true}return N?T.__staleWhileFetching:T.__returned=T}let x=this.#f(E);
 if(!b&&!x){if(g)g.fetch="hit";if(this.#O(E),i)this.#x(E);if(g)this.#T(g,E);return T}let k=this.#P(e,E,S,y),C=k.__staleWhileFetching!==
 void 0&&n;if(g){if(g.fetch=x?"stale":"refresh",C&&x)g.returnedStale=true}return C?k.__staleWhileFetching:k.__returned=k}}async forceFetch(e,r={}){
-let n=await this.fetch(e,r);if(n===void 0)throw Error("fetch() returned undefined");return n}memo(e,r={}){let n=this.#A;
+let n=await this.fetch(e,r);if(n===void 0)throw Error("fetch() returned undefined");return n}memo(e,r={}){let n=this.#N;
 if(!n)throw Error("no memoMethod provided to constructor");let{context:i,forceRefresh:s,...o}=r,l=this.get(e,o);if(!s&&l!==
 void 0)return l;let c=n(e,l,{options:o,context:i});return this.set(e,c,o),c}get(e,r={}){let{allowStale:n=this.allowStale,
 updateAgeOnGet:i=this.updateAgeOnGet,noDeleteOnStaleGet:s=this.noDeleteOnStaleGet,status:o}=r,l=this.#n.get(e);if(l!==void 0){
@@ -6313,8 +6313,8 @@ if(!t||!t[1])return;return parseInt(t[1],10)-9});l6=Vt(function(){switch(u$()){c
 upport/ClaudeCode";case"windows":return"C:\\Program Files\\ClaudeCode";default:return"/etc/claude-code"}});K8=Vt(function(){
 return a6(l6(),"managed-settings.d")});a(c6,"ioe");Ch=c6;a(u6,"soe");d6=u6;p6=d6();h6=p6;a(f6,"loe");m6=f6;g6="[object O\
 bject]";_6=Function.prototype;y6=Object.prototype;d$=_6.toString;v6=y6.hasOwnProperty;b6=d$.call(Object);a(w6,"moe");k6=
-w6;a(S6,"goe");Oh=S6;a(E6,"hoe");T6=E6;a($6,"yoe");x6=$6;a(p$,"HL");C6=p$;a(O6,"_oe");R6=O6;qb=Math.max;a(A6,"boe");h$=A6;
-a(N6,"Soe");I6=N6;P6=!Zc?fT:function(t,e){return Zc(t,"toString",{configurable:true,enumerable:false,value:I6(e),writable:true})};
+w6;a(S6,"goe");Oh=S6;a(E6,"hoe");T6=E6;a($6,"yoe");x6=$6;a(p$,"HL");C6=p$;a(O6,"_oe");R6=O6;qb=Math.max;a(N6,"boe");h$=N6;
+a(A6,"Soe");I6=A6;P6=!Zc?fT:function(t,e){return Zc(t,"toString",{configurable:true,enumerable:false,value:I6(e),writable:true})};
 L6=P6;D6=800;U6=16;M6=Date.now;a(j6,"Eoe");F6=j6;q6=F6(L6);f$=q6;a(z6,"Poe");B6=z6;a(H6,"Ioe");W6=H6;a(V6,"Aoe");G6=V6;J8=
 G6(function(t,e,r,n){C6(t,e,r,n)});a(Z6,"Ooe");K6=Z6;a(J6,"Coe");X6=J6;a(Y6,"$oe");Q6=Y6;zb=yi?yi.isConcatSpreadable:void 0;
 a(eV,"Moe");tV=eV;a(m$,"rj");rV=m$;a(iV,"Doe");nV=iV;a(sV,"Noe");aV=sV;X8=aV(function(t,e){return t==null?{}:Q6(t,e)});g$=
@@ -6427,10 +6427,10 @@ optional(),timeout:Qi().optional(),alwaysLoad:m.boolean().optional(),role:Zs()})
 {clientId:m.string().optional(),callbackPort:m.number().int().positive().optional(),authServerMetadataUrl:m.string().url().
 startsWith("https://",{message:"authServerMetadataUrl must use https://"}).optional(),scopes:m.string().min(1).optional(),
 xaa:RV().optional()}));k$=te(()=>m.object({name:m.string(),permission_policy:m.enum(["always_allow","always_ask","always\
-_deny"]).optional()}));AV=te(()=>m.object({type:m.literal("sse"),url:m.string(),headers:m.record(m.string(),m.string()).
+_deny"]).optional()}));NV=te(()=>m.object({type:m.literal("sse"),url:m.string(),headers:m.record(m.string(),m.string()).
 optional(),headersHelper:m.string().optional(),oauth:w$().optional(),timeout:Qi().optional(),request_timeout_ms:v$(),tools:m.
 array(k$()).optional(),alwaysLoad:m.boolean().optional(),role:Zs(),toolPermissions:m.record(m.string(),ug()).optional()}).
-transform(b$));NV=te(()=>m.object({type:m.literal("sse-ide"),url:m.string(),ideName:m.string(),ideRunningInWindows:m.boolean().
+transform(b$));AV=te(()=>m.object({type:m.literal("sse-ide"),url:m.string(),ideName:m.string(),ideRunningInWindows:m.boolean().
 optional(),timeout:Qi().optional(),alwaysLoad:m.boolean().optional(),role:Zs()}));IV=te(()=>m.object({type:m.literal("ws\
 -ide"),url:m.string(),ideName:m.string(),authToken:m.string().optional(),ideRunningInWindows:m.boolean().optional(),timeout:Qi().
 optional(),alwaysLoad:m.boolean().optional(),role:Zs()}));PV=te(()=>m.object({type:m.enum(["http","streamable-http"]).transform(
@@ -6442,7 +6442,7 @@ alwaysLoad:m.boolean().optional(),role:Zs()}));DV=te(()=>m.object({type:m.litera
 alwaysLoad:m.boolean().optional()}));ug=te(()=>m.enum(["allow","ask","blocked"]));UV=te(()=>m.object({type:m.literal("cl\
 audeai-proxy"),url:m.string(),id:m.string(),displayName:m.string().optional(),iconUrl:m.string().optional(),timeout:Qi().
 optional(),alwaysLoad:m.boolean().optional(),toolPermissions:m.record(m.string(),ug()).optional(),stateless:m.boolean().
-optional(),cachedInitResponse:m.record(m.string(),m.unknown()).nullish()}));Rh=te(()=>m.union([OV(),AV(),NV(),IV(),PV(),
+optional(),cachedInitResponse:m.record(m.string(),m.unknown()).nullish()}));Rh=te(()=>m.union([OV(),NV(),AV(),IV(),PV(),
 LV(),DV(),UV()]));a7=te(()=>m.object({mcpServers:m.record(m.string(),Rh())}));MV=new Set(["claude-community","claude-plu\
 gins-community","healthcare"]);jV=new Set(["claude-code-marketplace","claude-code-plugins","claude-plugins-official","an\
 thropic-marketplace","anthropic-plugins","agent-skills","anthropic-agent-skills","life-sciences","knowledge-work-plugins",
@@ -6451,8 +6451,8 @@ thropic-marketplace","anthropic-plugins","agent-skills","anthropic-agent-skills"
 qV=/[^\u0020-\u007E]/;a(zV,"wie");ci=te(()=>m.string().startsWith("./"));Pn=te(()=>ci().endsWith(".json"));Hb=te(()=>m.union(
 [ci().refine(t=>t.endsWith(".mcpb")||t.endsWith(".dxt"),{message:"MCPB file path must end with .mcpb or .dxt"}).describe(
 "Path to MCPB file relative to plugin root"),m.string().url().refine(t=>t.endsWith(".mcpb")||t.endsWith(".dxt"),{message:"\
-MCPB URL must end with .mcpb or .dxt"}).describe("URL to MCPB file")]));Ah=te(()=>ci().endsWith(".md"));Nh=te(()=>m.union(
-[Ah(),ci()]));E$=te(()=>m.string().min(1,"Marketplace must have a name").refine(t=>!t.includes(" "),{message:'Marketplac\
+MCPB URL must end with .mcpb or .dxt"}).describe("URL to MCPB file")]));Nh=te(()=>ci().endsWith(".md"));Ah=te(()=>m.union(
+[Nh(),ci()]));E$=te(()=>m.string().min(1,"Marketplace must have a name").refine(t=>!t.includes(" "),{message:'Marketplac\
 e name cannot contain spaces. Use kebab-case (e.g., "my-marketplace")'}).refine(t=>!t.includes("/")&&!t.includes("\\")&&
 !t.includes("..")&&t!==".",{message:'Marketplace name cannot contain path separators (/ or \\), ".." sequences, or be "."'}).
 refine(t=>!zV(t),{message:"Marketplace name impersonates an official Anthropic/Claude marketplace"}).refine(t=>t.toLowerCase()!==
@@ -6482,20 +6482,20 @@ describe("Path to file with additional hooks (in addition to those in hooks/hook
 lugin root"),m.lazy(()=>ru()).describe("Additional hooks (in addition to those in hooks/hooks.json, if it exists)"),m.array(
 m.union([Pn().describe("Path to file with additional hooks (in addition to those in hooks/hooks.json, if it exists), rel\
 ative to the plugin root"),m.lazy(()=>ru()).describe("Additional hooks (in addition to those in hooks/hooks.json, if it \
-exists)")]))])}));WV=te(()=>m.object({source:Nh().optional().describe("Path to command markdown file, relative to plugin\
+exists)")]))])}));WV=te(()=>m.object({source:Ah().optional().describe("Path to command markdown file, relative to plugin\
  root"),content:m.string().optional().describe("Inline markdown content for the command"),description:m.string().optional().
 describe("Command description override"),argumentHint:m.string().optional().describe('Hint for command arguments (e.g., \
 "[file]")'),model:m.string().optional().describe("Default model for this command"),allowedTools:m.array(m.string()).optional().
 describe("Tools allowed when command runs")}).refine(t=>t.source&&!t.content||!t.source&&t.content,{message:'Command mus\
 t have either "source" (file path) or "content" (inline markdown), but not both'}));VV=te(()=>m.object({commands:m.union(
-[Nh().describe("Path to a command file or skill directory, relative to the plugin root. When set, the commands/ director\
-y is not auto-loaded — list its files here if you want both."),m.array(Nh().describe("Path to a command file or skill \
+[Ah().describe("Path to a command file or skill directory, relative to the plugin root. When set, the commands/ director\
+y is not auto-loaded — list its files here if you want both."),m.array(Ah().describe("Path to a command file or skill \
 directory, relative to the plugin root. When set, the commands/ directory is not auto-loaded — list its files here if yo\
 u want both.")).describe("List of command file or skill directory paths. When set, the commands/ directory is not auto-l\
 oaded."),m.record(m.string(),WV()).describe('Object mapping of command names to their metadata and source files. Command\
- name becomes the slash command name (e.g., "about" → "/plugin:about")')])}));GV=te(()=>m.object({agents:m.union([Ah().
+ name becomes the slash command name (e.g., "about" → "/plugin:about")')])}));GV=te(()=>m.object({agents:m.union([Nh().
 describe("Path to an agent file, relative to the plugin root. When set, the agents/ directory is not auto-loaded — list \
-its files here if you want both."),m.array(Ah().describe("Path to an agent file, relative to the plugin root. When set, \
+its files here if you want both."),m.array(Nh().describe("Path to an agent file, relative to the plugin root. When set, \
 the agents/ directory is not auto-loaded — list its files here if you want both.")).describe("List of agent file paths\
 . When set, the agents/ directory is not auto-loaded.")])}));ZV=te(()=>m.object({skills:m.union([ci().describe("Path to \
 a skill directory, relative to the plugin root. Loaded in addition to the skills/ directory (except: for a marketplace e\
@@ -6625,7 +6625,7 @@ arketplace name. Must match the extraKnownMarketplaces key (enforced); the synth
 sk write, too late to clean up."),plugins:m.array(gG()).describe("Plugin entries declared inline in settings.json"),owner:dg().
 optional()}).describe("Inline marketplace manifest defined directly in settings.json. The reconciler writes a synthetic \
 marketplace.json to the cache; diffMarketplaces detects edits via isEqual on the stored source (the plugins array is ins\
-ide this object, so edits surface as sourceChanged).")]));Ap=te(()=>m.string().length(40).regex(/^[a-f0-9]{40}$/,"Must b\
+ide this object, so edits surface as sourceChanged).")]));Np=te(()=>m.string().length(40).regex(/^[a-f0-9]{40}$/,"Must b\
 e a full 40-character lowercase git commit SHA"));R$=te(()=>m.union([m.preprocess(t=>t==="."?"./":t,ci()).describe("Path\
  to the plugin root, relative to the marketplace root (the directory containing .claude-plugin/, not .claude-plugin/ its\
 elf)"),m.object({source:m.literal("npm"),package:O$().or(m.string().refine(t=>/^(?:file|https?|git(?:\+https?|\+ssh)?|ssh|github|gitlab|bitbucket):/i.
@@ -6634,14 +6634,14 @@ cal path, or anything else that can be passed to `npm` as a package)"),version:m
 version or version range (e.g., ^1.0.0, ~2.1.0)"),registry:m.string().url().optional().describe("Custom NPM registry URL\
  (defaults to using system default, likely npmjs.org)")}).describe("NPM package as plugin source"),m.object({source:m.literal(
 "url"),url:m.string().describe("Full git repository URL (https:// or git@)"),ref:m.string().optional().describe('Git bra\
-nch or tag to use (e.g., "main", "v1.0.0"). Defaults to repository default branch.'),sha:Ap().optional().describe("Speci\
+nch or tag to use (e.g., "main", "v1.0.0"). Defaults to repository default branch.'),sha:Np().optional().describe("Speci\
 fic commit SHA to use")}),m.object({source:m.literal("github"),repo:m.string().describe("GitHub repository in owner/repo\
  format"),ref:m.string().optional().describe('Git branch or tag to use (e.g., "main", "v1.0.0"). Defaults to repository \
-default branch.'),sha:Ap().optional().describe("Specific commit SHA to use")}),m.object({source:m.literal("git-subdir"),
+default branch.'),sha:Np().optional().describe("Specific commit SHA to use")}),m.object({source:m.literal("git-subdir"),
 url:m.string().describe("Git repository: GitHub owner/repo shorthand, https://, or git@ URL"),path:m.string().min(1).describe(
 'Subdirectory within the repo containing the plugin (e.g., "tools/claude-plugin"). Cloned sparsely using partial clone (\
 --filter=tree:0) to minimize bandwidth for monorepos.'),ref:m.string().optional().describe('Git branch or tag to use (e.\
-g., "main", "v1.0.0"). Defaults to repository default branch.'),sha:Ap().optional().describe("Specific commit SHA to use")}).
+g., "main", "v1.0.0"). Defaults to repository default branch.'),sha:Np().optional().describe("Specific commit SHA to use")}).
 describe("Plugin located in a subdirectory of a larger repository (monorepo). Only the specified subdirectory is materia\
 lized; the rest of the repo is not downloaded."),m.object({source:m.literal("unsupported")}).describe('Placeholder for s\
 ource types this Claude Code version does not recognize. Never authored by hand — PluginMarketplaceSchema rewrites unpar\
@@ -6692,7 +6692,7 @@ onal marketplace metadata"),allowCrossMarketplaceDependenciesOn:m.array(m.string
 es whose plugins may be auto-installed as dependencies. Only the root marketplace's allowlist applies — no transitive tr\
 ust."),renames:m.record(m.string(),m.string().nullable()).optional().catch(void 0).describe("Append-only map of old plug\
 in name → current name (or null when removed). The loader follows this on plugin-not-found and migrates user settings to\
- the new name.")}));A$=te(()=>m.string().regex(/^[A-Za-z0-9][-A-Za-z0-9._]*@[A-Za-z0-9][-A-Za-z0-9._]*$/,"Plugin ID must\
+ the new name.")}));N$=te(()=>m.string().regex(/^[A-Za-z0-9][-A-Za-z0-9._]*@[A-Za-z0-9][-A-Za-z0-9._]*$/,"Plugin ID must\
  be in format: plugin@marketplace"));kG=/^[A-Za-z0-9][-A-Za-z0-9._]*(@[A-Za-z0-9][-A-Za-z0-9._]*)?(@\^[^@]*)?$/;SG=te(()=>m.
 union([m.string().regex(kG,"Dependency must be a plugin name, optionally qualified with @marketplace").transform(t=>t.replace(
 /@\^[^@]*$/,"")),m.object({name:m.string().min(1).regex(/^[A-Za-z0-9][-A-Za-z0-9._]*$/),marketplace:m.string().min(1).regex(
@@ -6705,7 +6705,7 @@ er this install resolved to (when fetched via a version constraint). Used by ver
 ersion, since the upstream may have forgotten to bump plugin.json."),auto:m.boolean().optional().describe("True when thi\
 s plugin was pulled in as a dependency rather than installed explicitly. Auto-installed plugins are eligible for removal\
  by the orphan sweep when nothing depends on them. Absent = manual (preserves pre-flag installs).")}));TG=te(()=>m.object(
-{version:m.literal(1).describe("Schema version 1"),plugins:m.record(A$(),EG()).describe("Map of plugin IDs to their inst\
+{version:m.literal(1).describe("Schema version 1"),plugins:m.record(N$(),EG()).describe("Map of plugin IDs to their inst\
 allation metadata")}));$G=te(()=>m.enum(["managed","user","project","local"]));xG=te(()=>m.object({scope:$G().describe("\
 Installation scope"),projectPath:m.string().optional().describe("Project path (required for project/local scopes)"),installPath:m.
 string().describe("Absolute path to the versioned plugin directory"),version:m.string().optional().describe("Currently i\
@@ -6713,7 +6713,7 @@ nstalled version"),installedAt:m.string().optional().describe("ISO 8601 timestam
 optional().describe("ISO 8601 timestamp of last update"),gitCommitSha:m.string().optional().describe("Git commit SHA for\
  git-based plugins"),resolvedVersion:m.string().optional().describe("Tag-derived semver this install resolved to"),auto:m.
 boolean().optional().describe("True when pulled in as a dependency. Eligible for orphan sweep.")}));CG=te(()=>m.object({
-version:m.literal(2).describe("Schema version 2"),plugins:m.record(A$(),m.array(xG())).describe("Map of plugin IDs to ar\
+version:m.literal(2).describe("Schema version 2"),plugins:m.record(N$(),m.array(xG())).describe("Map of plugin IDs to ar\
 rays of installation entries")}));c7=te(()=>m.union([TG(),CG()]));OG=te(()=>m.object({source:iu().describe("Where to fet\
 ch the marketplace from"),installLocation:m.string().describe("Local cache path where marketplace manifest is stored"),lastUpdated:m.
 string().describe("ISO 8601 timestamp of last marketplace refresh"),autoUpdate:m.boolean().optional().describe("Whether \
@@ -6724,7 +6724,7 @@ RG=["autoMode","deepLink","voice","briefView","screenReader"];Kl={};Fu={autoMode
 cli:// protocol handler registration with the OS")}),"shape")},voice:{buildGate:a(()=>false,"buildGate"),shape:a(()=>Kl,
 "shape")},briefView:{buildGate:a(()=>true,"buildGate"),shape:a(()=>({defaultView:m.enum(["chat","transcript"]).optional().
 describe("Default transcript view: chat (SendUserMessage checkpoints only) or transcript (full)")}),"shape")},screenReader:{
-buildGate:a(()=>false,"buildGate"),shape:a(()=>Kl,"shape")}};a(N$,"jw");a(AG,"Fj");a(NG,"Hj");a(IG,"Bj");a(I$,"zw");Gb={
+buildGate:a(()=>false,"buildGate"),shape:a(()=>Kl,"shape")}};a(A$,"jw");a(NG,"Fj");a(AG,"Hj");a(IG,"Bj");a(I$,"zw");Gb={
 Task:"Agent",KillShell:"TaskStop",KillBash:"TaskStop",AgentOutputTool:"TaskOutput",BashOutputTool:"TaskOutput",AgentOutput:"\
 TaskOutput",BashOutput:"TaskOutput",ListPeers:"ListAgents",Brief:"SendUserMessage",ListMcpResources:"ListMcpResourcesToo\
 l",ReadMcpResource:"ReadMcpResourceTool",ReadMcpResourceDir:"ReadMcpResourceDirTool"};a(us,"ra");P$="workspace";d7=`mcp_\
@@ -6736,9 +6736,9 @@ exact search terms without * or ?",examples:["WebSearch(claude ai)","WebSearch(t
 e domain format, not URLs",suggestion:'Use "domain:hostname" format',examples:["WebFetch(domain:example.com)","WebFetch(\
 domain:github.com)"]};if(!t.startsWith("domain:"))return{valid:false,error:'WebFetch permissions must use "domain:" pref\
 ix',suggestion:'Use "domain:hostname" format',examples:["WebFetch(domain:example.com)","WebFetch(domain:*.google.com)"]};
-return{valid:true}},"WebFetch")}};a(MG,"Kj");a(jG,"Zj");a(FG,"Gj");a(L$,"Xj");a(Np,"Hw");a(qG,"gse");a(Kb,"Jj");a(zG,"Bw");
+return{valid:true}},"WebFetch")}};a(MG,"Kj");a(jG,"Zj");a(FG,"Gj");a(L$,"Xj");a(Ap,"Hw");a(qG,"gse");a(Kb,"Jj");a(zG,"Bw");
 Jb=te(()=>D$());BG=te(()=>D$("allow"));a(D$,"Qj");HG=te(()=>m.record(m.string(),m.coerce.string()));a(U$,"oz");h7=te(()=>U$(
-N$()));WG=te(()=>m.object({source:iu().describe("Where to fetch the marketplace from"),installLocation:m.string().optional().
+A$()));WG=te(()=>m.object({source:iu().describe("Where to fetch the marketplace from"),installLocation:m.string().optional().
 describe("Local cache path where marketplace manifest is stored (auto-generated if not provided)"),autoUpdate:m.boolean().
 optional().describe("Whether to automatically update this marketplace and its installed plugins on startup")}));VG=te(()=>m.
 object({serverName:m.string().regex(/^[a-zA-Z0-9_-]+$/,"Server name can only contain letters, numbers, hyphens, and unde\
@@ -6765,7 +6765,7 @@ re URL-encoded; the origin must be literal in the template. The scheme must be h
 rkspace deep-link scheme: vscode, vscode-insiders, cursor, windsurf, zed, jetbrains, idea, slack, linear, notion, figma."),
 label:m.string().optional().describe("Badge text. {name} placeholders filled from named capture groups; defaults to the \
 full match.")}).passthrough(),m.object({type:m.string().describe("Config variant discriminator for entries this client d\
-oes not understand; the entry is preserved as-is and skipped at runtime.")}).passthrough()]));a(JG,"iz");XG=te(()=>JG(N$()));
+oes not understand; the entry is preserved as-is and skipped at runtime.")}).passthrough()]));a(JG,"iz");XG=te(()=>JG(A$()));
 f7=Object.freeze({serverName:"invalid-entry-stripped"});Ci="https://code.claude.com/docs/en";m7=[{matches:a(t=>t.path===
 "permissions.defaultMode"&&t.code==="invalid_value","matches"),tip:{suggestion:'Valid modes: "acceptEdits" (ask before f\
 ile changes), "plan" (analysis only), "bypassPermissions" (auto-accept all), or "default" (standard behavior)',docLink:`${Ci}\
@@ -6878,14 +6878,14 @@ getuid();const n=`chown -R node:node ${e}`;return{ok:false,created:false,worktre
 message:`worktrees root ${e} exists but is NOT writable by this process`+(r!==null?` (uid ${r})`:"")+`. This is the root\
 -owned-after-install case: the harness runs as 'node' and cannot mkdir under a root-owned dir, so a run would die with E\
 ACCES during planning at $0.00. Fix on the host, then restart is NOT required (the harness reads the fs live): docker ex\
-ec -u root <container> bash -lc '${n}'`}}var eA=Fi(()=>{"use strict";a(V3,"ensureWorktreesRootWritable")});var tA={};Yn(tA,{healOrphanedWorktrees:()=>G3,looksLikeAllocatorWorktree:()=>I_});import{basename as N_}from"node:path";
+ec -u root <container> bash -lc '${n}'`}}var eN=Fi(()=>{"use strict";a(V3,"ensureWorktreesRootWritable")});var tN={};Yn(tN,{healOrphanedWorktrees:()=>G3,looksLikeAllocatorWorktree:()=>I_});import{basename as A_}from"node:path";
 async function G3(t,e){const r={scanned:0,matched_terminal:0,matched_active:0,orphaned:0,removed:0,protected_running:0,protected_recent:0,
 protected_preserved:0,errors:[]};const n=[...e.protectedWorktreePaths??[],...e.protectedAutonomousWorktreePaths??[]];const i=new Set(
-n);const s=new Set(n.map(d=>N_(d)));const o=typeof e.graceMs==="number"?e.graceMs:12e4;let l;try{l=await e.listWorktreeDirs()}catch(d){
+n);const s=new Set(n.map(d=>A_(d)));const o=typeof e.graceMs==="number"?e.graceMs:12e4;let l;try{l=await e.listWorktreeDirs()}catch(d){
 e.logger.warn("[worktree-heal] failed to list worktree dirs",{err:String(d)});return r}r.scanned=l.length;const c=new Map;
 const u=new Map;try{const d=t.db.prepare(`SELECT id, status, repo, worktree_path, worktree_preserved FROM sessions`).all();
-for(const h of d){if(h.worktree_path)c.set(h.worktree_path,h);if(h.worktree_path)u.set(N_(h.worktree_path),h)}}catch(d){
-e.logger.warn("[worktree-heal] failed to load sessions",{err:String(d)});return r}for(const d of l){const h=N_(d);if(i.has(
+for(const h of d){if(h.worktree_path)c.set(h.worktree_path,h);if(h.worktree_path)u.set(A_(h.worktree_path),h)}}catch(d){
+e.logger.warn("[worktree-heal] failed to load sessions",{err:String(d)});return r}for(const d of l){const h=A_(d);if(i.has(
 d)||s.has(h)){r.protected_running+=1;e.logger.info("[worktree-heal] skipping live-loop worktree",{dir:d});continue}if(I_(
 h)&&typeof e.dirMtimeMs==="function"){const b=e.dirMtimeMs(d);if(b!=null&&Date.now()-b<o){r.protected_recent+=1;e.logger.
 info("[worktree-heal] skipping recently-modified allocator dir",{dir:d,ageMs:Date.now()-b,graceMs:o});continue}}const p=c.
@@ -6898,9 +6898,9 @@ path:d,reason:f?"session-terminal":"orphan",sessionId:p?.id??null})}else{r.error
 e.logger.warn("[worktree-heal] release reported not-ok",{path:d,error:b.error})}}catch(b){r.errors.push({path:d,error:String(
 b)});e.logger.warn("[worktree-heal] release threw",{path:d,err:String(b)})}}return r}function I_(t){if(/^pending-\d+(-[0-9a-f]{1,8})?$/i.
 test(t))return true;if(/^revert-\d+$/.test(t))return true;if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.
-test(t))return true;return false}var rA=Fi(()=>{"use strict";a(G3,"healOrphanedWorktrees");a(I_,"looksLikeAllocatorWorkt\
+test(t))return true;return false}var rN=Fi(()=>{"use strict";a(G3,"healOrphanedWorktrees");a(I_,"looksLikeAllocatorWorkt\
 ree")});import{createHash as P_}from"node:crypto";import{readFile as Z3,writeFile as K3,rm as J3}from"node:fs/promises";import{mkdirSync as X3,
-realpathSync as iA}from"node:fs";import{resolve as nA,dirname as L_}from"node:path";import{mkdir as Y3}from"node:fs/promises";var dA={control:{lease_ttl_ms:12e4,authority_ttl_seconds:7200,readiness_timeout_seconds:1800},slack:{channel:"",authorised_users:[]},
+realpathSync as iN}from"node:fs";import{resolve as nN,dirname as L_}from"node:path";import{mkdir as Y3}from"node:fs/promises";var dN={control:{lease_ttl_ms:12e4,authority_ttl_seconds:7200,readiness_timeout_seconds:1800},slack:{channel:"",authorised_users:[]},
 budgets:{monthly_per_user_usd:1e3,session_default_usd:50,session_hard_ceiling_usd:200,daily_warn_usd:100,daily_max_usd:200,
 monthly_warn_ratio:.8},repos:{allowed:[],can_create:false,create_org:"",create_visibility:"private",default_base_branch:"\
 main",draft_pr_on_nonpass:false},models:{lead:"claude-fable-5",worker:"claude-sonnet-5",adversary:"claude-fable-5",classifier:"\
@@ -6941,7 +6941,7 @@ repo_only_invariant:true,request_file_roots:[],request_file_max_bytes:262144,con
 high"},verify:{run_repo_check_scripts:false,generators:[],summarise_generated_for_review:false,append_generation_subtask:false,
 check_script_allowlist:["okf:check","lint","typecheck","test"],check_script_timeout_seconds:600,typecheck_gate:true,check_script_heap_retry_mb:8192},
 logging:{level:"info"},log:{interaction_log_enabled:true,dir:"",full_prompts:false,retention_days:14},credentials:{dir:"\
-harness-vault",key_env:"OAH_VAULT_KEY"}};function pA(t){const e=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;for(const r of["github","gi\
+harness-vault",key_env:"OAH_VAULT_KEY"}};function pN(t){const e=/^[^@\s]+@[^@\s]+\.[^@\s]+$/;for(const r of["github","gi\
 tlab"]){const n=t[r];if(!n)continue;for(const[i,s]of Object.entries(n)){if(!s||typeof s!=="object"){throw new Error(`har\
 ness.pat_routing.${r}.${i} must be an object of { person: {...} }`)}for(const[o,l]of Object.entries(s)){const c=`harness\
 .pat_routing.${r}.${i}.${o}`;if(!l||typeof l!=="object")throw new Error(`${c} must be an object`);if(!l.name||!l.name.trim())
@@ -6949,12 +6949,12 @@ throw new Error(`${c}.name is required`);if(!l.email||!e.test(l.email))throw new
 be a valid email`);const u=l.token;if(!u||typeof u!=="object")throw new Error(`${c}.token is required (one of value|env|\
 vault)`);const d=[u.value,u.env,u.vault].filter(h=>h!==void 0&&h!=="");if(d.length===0)throw new Error(`${c}.token must \
 set exactly one of value|env|vault (none set)`);if(d.length>1)throw new Error(`${c}.token must set exactly one of value|\
-env|vault (${d.length} set)`)}}}}a(pA,"validatePatHierarchy");function q_(t,e){if(e===null||e===void 0)return t;if(typeof t!==
+env|vault (${d.length} set)`)}}}}a(pN,"validatePatHierarchy");function q_(t,e){if(e===null||e===void 0)return t;if(typeof t!==
 "object"||Array.isArray(t))return e??t;if(typeof e!=="object"||Array.isArray(e))return t;const r={...t};for(const n of Object.
 keys(e)){const i=t[n];const s=e[n];if(i!==null&&typeof i==="object"&&!Array.isArray(i)&&s!==null&&typeof s==="object"&&!Array.
 isArray(s)){r[n]=q_(i,s)}else{r[n]=s??i}}return r}a(q_,"mergeDeep");var z_=["subtask_concurrency","parallel_independent_\
 subtasks"];function B_(t){const e=t?.loop;if(!e||typeof e!=="object")return[];return z_.filter(r=>Object.prototype.hasOwnProperty.
-call(e,r))}a(B_,"declaresRemovedParallelKeys");function H_(t){const e=q_(dA,t);for(const r of z_){delete e.loop[r]}if(e.
+call(e,r))}a(B_,"declaresRemovedParallelKeys");function H_(t){const e=q_(dN,t);for(const r of z_){delete e.loop[r]}if(e.
 slack.authorised_users.length===0){throw new Error("harness.slack.authorised_users must contain at least one Slack user \
 id")}if(e.budgets.session_default_usd>e.budgets.session_hard_ceiling_usd){throw new Error("harness.budgets.session_defau\
 lt_usd must be <= session_hard_ceiling_usd")}if(e.budgets.monthly_per_user_usd<=0){throw new Error("harness.budgets.mont\
@@ -6985,7 +6985,7 @@ wait_timeout_seconds=Math.max(30,Math.min(7200,e.ci.wait_timeout_seconds))}if(ty
 e.ci.none_grace_seconds=Math.max(0,Math.min(300,e.ci.none_grace_seconds))}if(typeof e.ci?.poll_interval_seconds==="numbe\
 r"){e.ci.poll_interval_seconds=Math.max(5,Math.min(300,e.ci.poll_interval_seconds))}if(e.vercel.enabled){if(!e.vercel.credential_service)
 throw new Error("harness.vercel.credential_service required when vercel.enabled");if(!e.vercel.project_id)throw new Error(
-"harness.vercel.project_id required when vercel.enabled")}pA(e.pat_routing);return e}a(H_,"parseHarnessConfig");function W_(t){
+"harness.vercel.project_id required when vercel.enabled")}pN(e.pat_routing);return e}a(H_,"parseHarnessConfig");function W_(t){
 const e=[];const{session_default_usd:r,session_hard_ceiling_usd:n,daily_max_usd:i,daily_warn_usd:s,monthly_per_user_usd:o}=t;
 if(i>o){e.push(`daily_max_usd ($${i}) exceeds monthly_per_user_usd ($${o}) -- a user could never actually reach the dail\
 y cap before the monthly cap stops them; the daily limit is effectively dead.`)}if(n>i){e.push(`session_hard_ceiling_usd\
@@ -6994,8 +6994,8 @@ run.`)}if(n>o){e.push(`session_hard_ceiling_usd ($${n}) exceeds monthly_per_user
 a user's entire monthly budget.`)}if(s>i){e.push(`daily_warn_usd ($${s}) exceeds daily_max_usd ($${i}) -- the daily warn\
 ing would never fire before the hard stop.`)}if(r<=0)e.push(`session_default_usd ($${r}) should be > 0.`);if(n<=0)e.push(
 `session_hard_ceiling_usd ($${n}) should be > 0.`);if(i<=0)e.push(`daily_max_usd ($${i}) should be > 0 to act as a real \
-hard stop.`);return e}a(W_,"assessBudgetCoherence");import{existsSync as mA,mkdirSync as gA,readFileSync as _A}from"node:fs";import{dirname as G_,resolve as ha}from"node:path";
-import{DatabaseSync as yA}from"node:sqlite";import{fileURLToPath as vA}from"node:url";var hA=Object.freeze([Object.freeze({id:"20260924_001_control_foundation",sql:`
+hard stop.`);return e}a(W_,"assessBudgetCoherence");import{existsSync as mN,mkdirSync as gN,readFileSync as _N}from"node:fs";import{dirname as G_,resolve as ha}from"node:path";
+import{DatabaseSync as yN}from"node:sqlite";import{fileURLToPath as vN}from"node:url";var hN=Object.freeze([Object.freeze({id:"20260924_001_control_foundation",sql:`
 CREATE TABLE control_runs (
   id TEXT PRIMARY KEY,
   state TEXT NOT NULL CHECK (state IN ('draft','awaiting_confirmation','autonomous_run','pr_ready','awaiting_merge','don\
@@ -7326,6 +7326,48 @@ CREATE TABLE control_authority_activations (
 );
 CREATE INDEX idx_control_authority_activation_expiry
   ON control_authority_activations(execution_expires_at);
+CREATE TRIGGER control_authority_activation_no_update
+BEFORE UPDATE ON control_authority_activations
+BEGIN SELECT RAISE(ABORT,'control authority activation is immutable'); END;
+CREATE TRIGGER control_authority_activation_no_delete
+BEFORE DELETE ON control_authority_activations
+BEGIN SELECT RAISE(ABORT,'control authority activation is immutable'); END;
+CREATE TRIGGER control_run_requires_activation
+BEFORE UPDATE OF state ON control_runs
+WHEN NEW.state='autonomous_run' AND OLD.state<>'autonomous_run'
+  AND NOT EXISTS (
+    SELECT 1 FROM control_authority_activations a
+    WHERE a.run_id=NEW.id AND a.run_version=OLD.version+1
+      AND a.activated_at=NEW.updated_at
+  )
+BEGIN SELECT RAISE(ABORT,'execution activation required'); END;
+CREATE TRIGGER control_ready_requires_live_activation
+BEFORE UPDATE OF state ON control_runs
+WHEN NEW.state='pr_ready' AND OLD.state='autonomous_run'
+  AND NOT EXISTS (
+    SELECT 1 FROM control_authority_activations a
+    WHERE a.run_id=NEW.id AND a.run_version=OLD.version
+      AND a.execution_expires_at>=NEW.updated_at
+  )
+BEGIN SELECT RAISE(ABORT,'authority_expired'); END;
+CREATE TRIGGER control_dispatch_lease_deadline_insert
+AFTER INSERT ON control_dispatch_intents
+WHEN NEW.lease_expires_at IS NOT NULL
+  AND NEW.lease_expires_at > (SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+BEGIN
+  UPDATE control_dispatch_intents
+    SET lease_expires_at=(SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+    WHERE run_id=NEW.run_id;
+END;
+CREATE TRIGGER control_dispatch_lease_deadline_update
+AFTER UPDATE OF lease_expires_at ON control_dispatch_intents
+WHEN NEW.lease_expires_at IS NOT NULL
+  AND NEW.lease_expires_at > (SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+BEGIN
+  UPDATE control_dispatch_intents
+    SET lease_expires_at=(SELECT execution_expires_at FROM control_authority_activations WHERE run_id=NEW.run_id)
+    WHERE run_id=NEW.run_id;
+END;
 UPDATE control_metadata SET value='8',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_sch\
 ema_version';
 `}),Object.freeze({id:"20260929_009_interactive_control_approvals",sql:`
@@ -7353,7 +7395,7 @@ CREATE INDEX idx_control_interactive_challenge_lookup
   ON control_interactive_challenges(run_id,operation_kind,expires_at,claimed_at);
 UPDATE control_metadata SET value='9',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_sch\
 ema_version';
-`})]);function fA(t){const e=t.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_chan\
+`})]);function fN(t){const e=t.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_chan\
 ges'").get();if(!e)return;const r=t.prepare("SELECT * FROM control_changes").all();for(const n of r){const i=String(n.change_id);
 const s=(()=>{try{return JSON.parse(String(n.scope_json))}catch{return["**/*"]}})();const o=Number(n.budget_usd??0);const l=Number(
 n.time_limit_seconds??0)*1e3;const c=Number(n.created_at??Date.now());const u=String(n.state)==="merged"?"done":"failed";
@@ -7378,18 +7420,18 @@ n.pr_url),n.published_sha==null?null:String(n.published_sha),n.readiness_digest=
 spend_usd===null?null:Number(n.spend_usd),String(n.terminal_summary??"Legacy control record terminalised during migratio\
 n."),"legacy-rc13/terminal-only","2.0.0-rc.13",c,Number(n.updated_at??c))}t.exec("DROP TABLE IF EXISTS control_merge_int\
 ents; DROP TABLE IF EXISTS control_execution_intents; DROP TABLE IF EXISTS control_attestations; DROP TABLE IF EXISTS co\
-ntrol_changes;")}a(fA,"terminaliseLegacyControlChanges");function V_(t,e=hA){t.exec(`CREATE TABLE IF NOT EXISTS migratio\
+ntrol_changes;")}a(fN,"terminaliseLegacyControlChanges");function V_(t,e=hN){t.exec(`CREATE TABLE IF NOT EXISTS migratio\
 n_ledger (
     id TEXT PRIMARY KEY,
     applied_at INTEGER NOT NULL
   )`);for(const r of e){t.exec("BEGIN IMMEDIATE");try{const n=t.prepare("SELECT 1 AS present FROM migration_ledger WHERE\
- id = ?").get(r.id);if(!n){t.exec(r.sql);if(r.id==="20260924_003_canonical_control_plane")fA(t);t.prepare("INSERT INTO m\
+ id = ?").get(r.id);if(!n){t.exec(r.sql);if(r.id==="20260924_003_canonical_control_plane")fN(t);t.prepare("INSERT INTO m\
 igration_ledger (id, applied_at) VALUES (?, ?)").run(r.id,Date.now())}t.exec("COMMIT")}catch(n){try{t.exec("ROLLBACK")}catch{}
-throw n}}}a(V_,"applyStateMigrations");function bA(){const t=G_(vA(import.meta.url));const e=[ha(t,"schema.sql"),ha(t,"../dist/state/schema.sql"),ha(t,"../../s\
-rc/state/schema.sql"),ha(t,"../state/schema.sql")];for(const r of e){if(mA(r))return r}throw new Error(`schema.sql not f\
-ound near ${t}`)}a(bA,"locateSchema");function Z_(t){const e=ha(t.replace(/^~/,process.env.HOME??""));gA(G_(e),{recursive:true});
-const r=new yA(e);r.exec("PRAGMA journal_mode = WAL");r.exec("PRAGMA foreign_keys = ON");r.exec("PRAGMA busy_timeout = 5\
-000");const n=_A(bA(),"utf8");r.exec(n);V_(r);const i=[{table:"sessions",column:"pr_merged",type:"INTEGER"},{table:"sess\
+throw n}}}a(V_,"applyStateMigrations");function bN(){const t=G_(vN(import.meta.url));const e=[ha(t,"schema.sql"),ha(t,"../dist/state/schema.sql"),ha(t,"../../s\
+rc/state/schema.sql"),ha(t,"../state/schema.sql")];for(const r of e){if(mN(r))return r}throw new Error(`schema.sql not f\
+ound near ${t}`)}a(bN,"locateSchema");function Z_(t){const e=ha(t.replace(/^~/,process.env.HOME??""));gN(G_(e),{recursive:true});
+const r=new yN(e);r.exec("PRAGMA journal_mode = WAL");r.exec("PRAGMA foreign_keys = ON");r.exec("PRAGMA busy_timeout = 5\
+000");const n=_N(bN(),"utf8");r.exec(n);V_(r);const i=[{table:"sessions",column:"pr_merged",type:"INTEGER"},{table:"sess\
 ions",column:"pr_closed_at",type:"INTEGER"},{table:"sessions",column:"pr_merged_at",type:"INTEGER"},{table:"sessions",column:"\
 pr_number",type:"INTEGER"},{table:"sessions",column:"merge_recommendation",type:"TEXT"},{table:"sessions",column:"merge_\
 recommendation_reason",type:"TEXT"},{table:"sessions",column:"deploy_status",type:"TEXT"},{table:"sessions",column:"depl\
@@ -7425,26 +7467,26 @@ let o=true;return{db:r,isOpen:a(()=>o,"isOpen"),close:a(()=>{if(!o)return;o=fals
 if(!o)return;try{s.run(u??null,l,JSON.stringify(c??{}),Date.now())}catch{}},"audit")}}a(Z_,"openStateStoreSync");function K_(t){const{nowMs:e,deadlineMs:r,sample:n,prevProgressMs:i,stuckThresholdMs:s}=t;if(n.running.length===0)return{
 kind:"drain-complete"};if(e<r)return{kind:"keep-waiting",reason:"loops-still-running"};const o=n.lastProgressMs>i;const l=n.
 lastProgressMs>0?e-n.lastProgressMs:Number.POSITIVE_INFINITY;const c=l<s;if(o||c){return{kind:"keep-waiting",reason:"loo\
-p-still-progressing"}}return{kind:"force-teardown",reason:"loops-wedged-stale"}}a(K_,"decideDrainAction");ga();var zA=/^[A-Za-z0-9._-]+$/;function ul(t){if(!zA.test(t)||t==="."||t==="..")return null;return t.toLowerCase()}a(ul,"can\
-onicalComponent");function BA(t){if(typeof t!=="string"||t!==t.trim())return null;const e=t.split("/");if(e.length!==2)return null;
-const r=ul(e[0]);const n=ul(e[1]);if(!r||!n||n==="*")return null;return{owner:r,repository:n}}a(BA,"canonicalRepositoryI\
-dentity");function HA(t){if(typeof t!=="string"||t!==t.trim())return null;const e=t.split("/");if(e.length!==2)return null;
+p-still-progressing"}}return{kind:"force-teardown",reason:"loops-wedged-stale"}}a(K_,"decideDrainAction");ga();var zN=/^[A-Za-z0-9._-]+$/;function ul(t){if(!zN.test(t)||t==="."||t==="..")return null;return t.toLowerCase()}a(ul,"can\
+onicalComponent");function BN(t){if(typeof t!=="string"||t!==t.trim())return null;const e=t.split("/");if(e.length!==2)return null;
+const r=ul(e[0]);const n=ul(e[1]);if(!r||!n||n==="*")return null;return{owner:r,repository:n}}a(BN,"canonicalRepositoryI\
+dentity");function HN(t){if(typeof t!=="string"||t!==t.trim())return null;const e=t.split("/");if(e.length!==2)return null;
 const r=ul(e[0]);if(!r)return null;if(e[1]==="*")return{owner:r,repository:"*"};const n=ul(e[1]);if(!n||n==="*")return null;
-return{owner:r,repository:n}}a(HA,"canonicalAllowEntry");function dl(t,e){const r=BA(t);if(!r||!Array.isArray(e))return false;
-return e.some(n=>{const i=HA(n);if(!i||i.owner!==r.owner)return false;if(i.repository==="*")return true;return i.repository===
-r.repository})}a(dl,"isRepositoryAllowed");function WA(t){return t.includes("/")&&!t.includes("*")}a(WA,"isConcrete");function Gd(t){return t.slice(t.lastIndexOf("\
-/")+1)}a(Gd,"basenameOf");function sy(t){return t.toLowerCase().replace(/[^a-z0-9]/g,"")}a(sy,"fold");function VA(t){const e=t.
+return{owner:r,repository:n}}a(HN,"canonicalAllowEntry");function dl(t,e){const r=BN(t);if(!r||!Array.isArray(e))return false;
+return e.some(n=>{const i=HN(n);if(!i||i.owner!==r.owner)return false;if(i.repository==="*")return true;return i.repository===
+r.repository})}a(dl,"isRepositoryAllowed");function WN(t){return t.includes("/")&&!t.includes("*")}a(WN,"isConcrete");function Gd(t){return t.slice(t.lastIndexOf("\
+/")+1)}a(Gd,"basenameOf");function sy(t){return t.toLowerCase().replace(/[^a-z0-9]/g,"")}a(sy,"fold");function VN(t){const e=t.
 replace(/[`'"<>]/g,"").trim();const r=/^(?:https?:\/\/|git@)[^/:]+[/:]+([^/]+\/[^/]+?)(?:\.git)?\/?$/i.exec(e);if(r)return{
 hint:r[1],wasLocator:true};const n=e.replace(/\.git$/i,"").replace(/[/\\]+$/,"");if(/^(?:~|\/|[A-Za-z]:\\|\.\.?\/)/.test(
 n)){const i=n.split(/[/\\]/).filter(s=>s&&s!=="."&&s!=="..");if(i.length>=2)return{hint:`${i[i.length-2]}/${i[i.length-1]}`,
-wasLocator:true};return{hint:i[i.length-1]??"",wasLocator:true}}return{hint:n,wasLocator:false}}a(VA,"normaliseHint");function GA(t,e){
-return dl(t,e)}a(GA,"allowedBy");function pl(t,e){const r=(t??"").trim();if(!r)return{kind:"unresolved"};const n=(e??[]).
-map(u=>(u??"").trim()).filter(Boolean);const i=n.filter(WA);const{hint:s,wasLocator:o}=VA(r);if(!s)return{kind:"unresolv\
-ed"};if(s.includes("/")){if(!o)return{kind:"resolved",repo:s,via:"explicit"};if(GA(s,n))return{kind:"resolved",repo:s,via:"\
+wasLocator:true};return{hint:i[i.length-1]??"",wasLocator:true}}return{hint:n,wasLocator:false}}a(VN,"normaliseHint");function GN(t,e){
+return dl(t,e)}a(GN,"allowedBy");function pl(t,e){const r=(t??"").trim();if(!r)return{kind:"unresolved"};const n=(e??[]).
+map(u=>(u??"").trim()).filter(Boolean);const i=n.filter(WN);const{hint:s,wasLocator:o}=VN(r);if(!s)return{kind:"unresolv\
+ed"};if(s.includes("/")){if(!o)return{kind:"resolved",repo:s,via:"explicit"};if(GN(s,n))return{kind:"resolved",repo:s,via:"\
 explicit"}}if(i.length===0)return{kind:"unresolved"};const l=s.slice(s.lastIndexOf("/")+1);const c=[u=>Gd(u)===l,u=>Gd(u).
 toLowerCase()===l.toLowerCase(),u=>sy(Gd(u))===sy(l)];for(const u of c){const d=i.filter(u);if(d.length===1)return{kind:"\
 resolved",repo:d[0],via:"alias"};if(d.length>1)return{kind:"ambiguous",hint:l,candidates:d}}return{kind:"unresolved"}}a(
-pl,"resolveRepoAlias");var ay=["Read","Glob","Grep"];var oy=["Task","Bash","Edit","Write","NotebookEdit","WebFetch","WebSearch"];var hl=32e3;var ZA=.25;
+pl,"resolveRepoAlias");var ay=["Read","Glob","Grep"];var oy=["Task","Bash","Edit","Write","NotebookEdit","WebFetch","WebSearch"];var hl=32e3;var ZN=.25;
 var Zd=60;function Kd(){return["You are the lead planner's SCOUT. You are about to plan a change to this repository, and\
  this turn is your ONE chance to look at it.","","You have READ-ONLY tools: Read, Glob, Grep. You cannot write, edit, or\
  run commands. Do not try.","","## Why this turn exists","In the next turn you must produce an implementation plan namin\
@@ -7479,7 +7521,7 @@ reat them as UNVERIFIED and check each one -- confirm it, or find the real locat
 s=>`  - ${s}`))}const i=(t.outOfScope??[]).filter(Boolean);if(i.length>0){e.push(``,`Explicitly out of scope:`,...i.map(
 s=>`  - ${s}`))}return e.join("\n")}a(Jd,"buildScoutUserMessage");function ly(t,e=hl){const r=(t??"").trim();const n=r.length;
 if(!r)return{text:"",truncated:false,originalChars:0,omittedChars:0};if(e<=0||n<=e){return{text:r,truncated:false,originalChars:n,
-omittedChars:0}}const i=Math.floor(e*ZA);const s=e-i;const o=n-e;const l=`
+omittedChars:0}}const i=Math.floor(e*ZN);const s=e-i;const o=n-e;const l=`
 
 ... (repo report truncated in the middle, ${o} chars omitted; the closing section follows)
 
@@ -7490,25 +7532,25 @@ is is the ONLY source of repo facts available to you.","Every path you name in `
 ery excerpt you put in `workerContext.codeExcerpts`, MUST come from this report. Do NOT invent a path that does not appe\
 ar here, and do NOT reconstruct code from memory of similar projects.","Where the report says a location could not be de\
 termined, plan a short observe sub-task to establish it rather than guessing.","",e].join("\n")}a(cy,"renderScoutForProm\
-pt");function KA(t,e){const r=(e??[]).map(s=>(s??"").trim()).filter(Boolean);const n=pl(t,r);if(n.kind==="resolved")return n.
+pt");function KN(t,e){const r=(e??[]).map(s=>(s??"").trim()).filter(Boolean);const n=pl(t,r);if(n.kind==="resolved")return n.
 repo;if(n.kind==="ambiguous")return void 0;if(r.length!==1)return void 0;const i=r[0];return i.includes("/")&&!i.includes(
-"*")?i:void 0}a(KA,"resolveScoutRepo");function JA(t,e){const r=(e??"").replace(/[^a-zA-Z0-9]/g,"").slice(0,8).toLowerCase();
-if(!r)return t;const n=(t??"").trim().replace(/\/+$/,"");if(n.endsWith(`-${r}`))return n;return`${n}-${r}`}a(JA,"session\
-ScopedBranch");function XA(t,e){if(!Array.isArray(e)||e.length===0)return[];const r=[];for(const n of e){if(!n||typeof n.
+"*")?i:void 0}a(KN,"resolveScoutRepo");function JN(t,e){const r=(e??"").replace(/[^a-zA-Z0-9]/g,"").slice(0,8).toLowerCase();
+if(!r)return t;const n=(t??"").trim().replace(/\/+$/,"");if(n.endsWith(`-${r}`))return n;return`${n}-${r}`}a(JN,"session\
+ScopedBranch");function XN(t,e){if(!Array.isArray(e)||e.length===0)return[];const r=[];for(const n of e){if(!n||typeof n.
 seq!=="number"||!n.workerContext)continue;const i=t.subTasks.find(s=>s.seq===n.seq);if(!i)continue;if(Xd(i.workerContext))
-continue;if(!Xd(n.workerContext))continue;i.workerContext=n.workerContext;r.push(n.seq)}return r}a(XA,"mergeWorkerContex\
+continue;if(!Xd(n.workerContext))continue;i.workerContext=n.workerContext;r.push(n.seq)}return r}a(XN,"mergeWorkerContex\
 ts");var ii=class extends Error{static{a(this,"LeadPlanValidationError")}constructor(e){super(e);this.name="LeadPlanVali\
-dationError"}};var YA=40;var QA=/\S+\.(ts|tsx|js|jsx|py|go|rs|md|json|ya?ml)\b|\S+\/\S+/;function Xd(t){if(!t)return false;
+dationError"}};var YN=40;var QN=/\S+\.(ts|tsx|js|jsx|py|go|rs|md|json|ya?ml)\b|\S+\/\S+/;function Xd(t){if(!t)return false;
 const e=typeof t.rationale==="string"&&t.rationale.trim().length>0;if(!e)return false;const r=typeof t.changeSpec==="str\
-ing"&&t.changeSpec.trim().length>=YA&&QA.test(t.changeSpec);const n=Array.isArray(t.codeExcerpts)&&t.codeExcerpts.some(i=>!!i&&
+ing"&&t.changeSpec.trim().length>=YN&&QN.test(t.changeSpec);const n=Array.isArray(t.codeExcerpts)&&t.codeExcerpts.some(i=>!!i&&
 typeof i.snippet==="string"&&i.snippet.trim().length>0&&typeof i.path==="string"&&i.path.trim().length>0);return r||n}a(
-Xd,"hasSubstantiveWorkerContext");var eN=new Set(["mutate","mixed"]);function fl(t){return t.subTasks.filter(e=>eN.has(e.
-taskMode??"")&&!Xd(e.workerContext)).map(e=>e.seq)}a(fl,"subTasksMissingWorkerContext");var tN=new Set(["file_written","\
-file_committed","commit_made","branch_pushed","file_pushed","pr_opened"]);var rN=/scope|boundar|final.{0,15}verif|nothing.{0,10}(outside|touched)/i;
-function iN(t){if(t.taskMode!=="observe")return false;const e=Array.isArray(t.verify)&&t.verify.some(n=>tN.has(n.kind));
-if(e)return false;const r=`${t.title??""} ${t.intent??""} ${(t.successCriteria??[]).join(" ")}`;return rN.test(r)}a(iN,"\
+Xd,"hasSubstantiveWorkerContext");var eA=new Set(["mutate","mixed"]);function fl(t){return t.subTasks.filter(e=>eA.has(e.
+taskMode??"")&&!Xd(e.workerContext)).map(e=>e.seq)}a(fl,"subTasksMissingWorkerContext");var tA=new Set(["file_written","\
+file_committed","commit_made","branch_pushed","file_pushed","pr_opened"]);var rA=/scope|boundar|final.{0,15}verif|nothing.{0,10}(outside|touched)/i;
+function iA(t){if(t.taskMode!=="observe")return false;const e=Array.isArray(t.verify)&&t.verify.some(n=>tA.has(n.kind));
+if(e)return false;const r=`${t.title??""} ${t.intent??""} ${(t.successCriteria??[]).join(" ")}`;return rA.test(r)}a(iA,"\
 isElidableFinalScopeSubTask");function uy(t){const e=t.subTasks;if(!Array.isArray(e)||e.length<=1)return void 0;const r=e[e.
-length-1];if(!iN(r))return void 0;const n=e.some(i=>(i.dependsOn??[]).includes(r.seq));if(n)return void 0;t.subTasks=e.slice(
+length-1];if(!iA(r))return void 0;const n=e.some(i=>(i.dependsOn??[]).includes(r.seq));if(n)return void 0;t.subTasks=e.slice(
 0,-1);return{seq:r.seq,title:r.title}}a(uy,"elideFinalScopeSubTask");async function dy(t,e){const r=e.config.loop?.enforce_worker_context!==
 false;const n=r?2:1;let i;let s;if(!t.pinnedBranch&&t.branchHint&&e.remoteBranchExists){try{const v=t.repoHint&&t.repoHint.
 includes("/")?t.repoHint:void 0;if(v&&await e.remoteBranchExists(v,t.branchHint)){t.pinnedBranch=t.branchHint;e.logger.info(
@@ -7516,7 +7558,7 @@ includes("/")?t.repoHint:void 0;if(v&&await e.remoteBranchExists(v,t.branchHint)
 e.logger.warn?.("[lead] branchHint existence check failed (non-fatal; treating as new branch)",{err:String(v)})}}let o={
 ran:false,reportChars:0,skippedReason:"disabled"};let l=true;const c=e.config.loop?.lead_repo_scout_enabled!==false;const u=e.
 config.brief?.ingest_repo_conventions!==false&&!t.repoConventions?.length;const d=u&&e.requireConventionsBeforePlanning===
-true;if((c||u)&&e.scoutRepo){const v=e.config.repos?.allowed??[];const S=KA(t.repoHint,v);if(!S){o={ran:false,reportChars:0,
+true;if((c||u)&&e.scoutRepo){const v=e.config.repos?.allowed??[];const S=KN(t.repoHint,v);if(!S){o={ran:false,reportChars:0,
 skippedReason:v.length>0?"no_repo_hint_and_no_sole_allowed_repo":"no_repo_hint"};if(d){throw new Error("repository conve\
 ntions must be loaded before planning; specify one allowed repository")}}else if(v.length>0&&!ml(S,v)){o={ran:false,reportChars:0,
 skippedReason:"repo_not_allowed"};if(d){throw new Error(`repository conventions cannot be loaded from disallowed reposit\
@@ -7540,7 +7582,7 @@ s);if(i.usageMeasured===false)l=false;f+=i.costUsd??0;if(t.pinnedBranch){i.branc
 includes("/"))i.repo=t.repoHint;e.logger.info("[lead] revise: branch pinned",{branch:i.branch,repo:i.repo,reviseOf:t.reviseOfSessionId})}else if(e.
 pinnedSessionBranch){if(i.branch!==e.pinnedSessionBranch){e.logger.info("[lead] re-plan: keeping the session's existing \
 branch",{leadProposed:i.branch,using:e.pinnedSessionBranch})}i.branch=e.pinnedSessionBranch}else if(e.sessionId){i.branch=
-JA(i.branch,e.sessionId)}cN(i,e.logger);Yd(i,e.config);sN(i,t.repoConventions)}catch(E){if(v<n&&E instanceof ii&&(E.message.
+JN(i.branch,e.sessionId)}cA(i,e.logger);Yd(i,e.config);sA(i,t.repoConventions)}catch(E){if(v<n&&E instanceof ii&&(E.message.
 includes("no mutate or mixed sub-task")||E.message.includes("mandatory repository conventions"))){s=E.message.includes("\
 mandatory repository conventions")?`INVALID CONVENTION COVERAGE: ${E.message}. Return a complete replacement plan that l\
 ists every mandatory convention source in acknowledgedConventions and incorporates each applicable requirement into file\
@@ -7552,7 +7594,7 @@ subTasks?.length??0});continue}if(v>1&&h){e.logger.warn?.("[lead] workerContext 
 ous VALID plan rather than failing the run (beta.99)",{err:String(E).slice(0,300),missingSeqs:p,reviseOf:t.reviseOfSessionId});
 i=h;break}const T=E;T.costUsd=Number((f+(o?.costUsd??0)+(T.costUsd??0)).toFixed(6));throw E}if(!r)break;const S=fl(i);if(S.
 length===0)break;h=i;p=S;if(v<n){if(e.callWorkerContextModel){try{const T=await e.callWorkerContextModel(t,i,S);if(T.usageMeasured===
-false)l=false;f+=T.costUsd??0;const x=XA(i,T.contexts);const k=fl(i);e.logger.info("[lead] bounded workerContext top-up \
+false)l=false;f+=T.costUsd??0;const x=XN(i,T.contexts);const k=fl(i);e.logger.info("[lead] bounded workerContext top-up \
 applied (beta.99)",{requestedSeqs:S,mergedSeqs:x,stillMissing:k,costUsd:T.costUsd??0});if(k.length===0)break;p=k}catch(T){
 e.logger.warn?.("[lead] bounded workerContext top-up failed; falling back to whole-plan re-ask",{err:String(T).slice(0,300),
 missingSeqs:S})}}const E=fl(i);s=`WORKER CONTEXT REQUIRED: sub-tasks [${E.join(", ")}] are taskMode mutate/mixed but the\
@@ -7576,10 +7618,10 @@ nsufficient (enforcement disabled; not retrying)",{missingSeqs:v,reviseOf:t.revi
 i.repo,i.branch,e.onBranchDecision);const y=e.estimateCost(i);const b=Number((f+(o?.costUsd??0)).toFixed(6));const g={...i,
 worktreePath:_,approxCostUsd:y,actualCostUsd:b,usageMeasured:l,scout:o};e.logger.info("[lead] plan",{subTaskCount:g.subTasks.
 length,risk:g.riskLevel,approxCostUsd:y,actualCostUsd:b});return g}a(dy,"runLeadPlanner");function ml(t,e){return dl(t,e)}
-a(ml,"isRepoAllowed");function nN(t){return(t??[]).filter(e=>/\balwaysApply\s*:\s*true\b/i.test(e.text)).map(e=>e.source)}
-a(nN,"mandatoryConventionSources");function sN(t,e){const r=nN(e);if(r.length===0)return;const n=new Set(t.acknowledgedConventions??
+a(ml,"isRepoAllowed");function nA(t){return(t??[]).filter(e=>/\balwaysApply\s*:\s*true\b/i.test(e.text)).map(e=>e.source)}
+a(nA,"mandatoryConventionSources");function sA(t,e){const r=nA(e);if(r.length===0)return;const n=new Set(t.acknowledgedConventions??
 []);const i=r.filter(s=>!n.has(s));if(i.length>0){throw new ii(`lead plan did not acknowledge mandatory repository conve\
-ntions: ${i.join(", ")}`)}}a(sN,"validateMandatoryConventionAcknowledgement");function Yd(t,e){if(!t.repo||!t.repo.includes(
+ntions: ${i.join(", ")}`)}}a(sA,"validateMandatoryConventionAcknowledgement");function Yd(t,e){if(!t.repo||!t.repo.includes(
 "/")){throw new Error(`lead plan repo "${t.repo}" is not owner/repo`)}if(!ml(t.repo,e.repos.allowed)){throw new Error(`l\
 ead plan repo "${t.repo}" is not in the allow-list ${JSON.stringify(e.repos.allowed)}`)}if(!t.branch.startsWith("harness\
 /")){throw new Error(`lead plan branch "${t.branch}" must start with "harness/"`)}if(t.subTasks.length===0){throw new Error(
@@ -7594,32 +7636,32 @@ map(o=>o.name?.trim()).filter(Boolean);if(s.length!==i.observeContract.bindings.
 `observe sub-task ${i.seq} has blank or duplicate binding names`)}for(const o of i.observeContract.bindings){for(const l of o.
 applyTo??[]){if(!r.has(l.consumerSeq)||l.consumerSeq===i.seq){throw new ii(`observe binding ${o.name} targets invalid co\
 nsumer ${l.consumerSeq}`)}}}}for(const s of i.requiredBehaviorChecks??[]){if(!s.id?.trim()||!s.ciCheck?.trim()){throw new ii(
-`sub-task ${i.seq} has an invalid requiredBehaviorCheck`)}}}}a(Yd,"validatePlan");var aN=new Set(["branch_pushed","remot\
-e_branch_exists","file_pushed","pr_opened","pr_state","file_in_pr","commit_sha_matches"]);var oN=/\b(push(ing|es)?\b|open(ing|s)?\s+(a\s+)?(pull request|pr|merge request|mr)|create\s+(a\s+)?(pull request|pr|merge request|mr))\b/i;
-var lN=/\b(write|edit|modify|add|remove|delete|update|commit|refactor|rename|create\s+file|implement|fix|change)\b/i;function cN(t,e){
+`sub-task ${i.seq} has an invalid requiredBehaviorCheck`)}}}}a(Yd,"validatePlan");var aA=new Set(["branch_pushed","remot\
+e_branch_exists","file_pushed","pr_opened","pr_state","file_in_pr","commit_sha_matches"]);var oA=/\b(push(ing|es)?\b|open(ing|s)?\s+(a\s+)?(pull request|pr|merge request|mr)|create\s+(a\s+)?(pull request|pr|merge request|mr))\b/i;
+var lA=/\b(write|edit|modify|add|remove|delete|update|commit|refactor|rename|create\s+file|implement|fix|change)\b/i;function cA(t,e){
 let r=0;let n=0;for(const c of t.subTasks){if(c.contractScope!=="local"){c.contractScope="local";n++}if(Array.isArray(c.
-verify)&&c.verify.length>0){const u=c.verify.length;c.verify=c.verify.filter(d=>!aN.has(d.kind));r+=u-c.verify.length}}const i=new Set;
+verify)&&c.verify.length>0){const u=c.verify.length;c.verify=c.verify.filter(d=>!aA.has(d.kind));r+=u-c.verify.length}}const i=new Set;
 for(const c of t.subTasks)for(const u of c.dependsOn??[])i.add(u);const s=t.subTasks.filter(c=>{const u=`${c.title} ${c.
-intent} ${(c.successCriteria??[]).join(" ")}`;const d=oN.test(u)&&!lN.test(u);const h=!c.verify||c.verify.length===0;return d&&
+intent} ${(c.successCriteria??[]).join(" ")}`;const d=oA.test(u)&&!lA.test(u);const h=!c.verify||c.verify.length===0;return d&&
 h&&!i.has(c.seq)});if(s.length>0&&s.length<t.subTasks.length){const c=new Set(s.map(u=>u.seq));t.subTasks=t.subTasks.filter(
 u=>!c.has(u.seq));e.info("[lead] beta.33: dropped push/PR-only sub-task(s) (harness pushes after review)",{dropped:[...c]})}
 if(r>0||n>0){e.info("[lead] beta.33: neutralised remote verify on sub-tasks",{strippedRemoteKinds:r,coercedToLocal:n})}const o=t.
 subTasks.filter(c=>!Array.isArray(c.verify)).map(c=>c.seq);const l=t.subTasks.filter(c=>!c.taskMode).map(c=>c.seq);if(o.
 length>0||l.length>0){e.info("[lead] beta.57: plan omitted explicit verify/taskMode on sub-task(s); falling back to infe\
-rence",{missingVerify:o,missingTaskMode:l})}}a(cN,"sanitizeRemoteSubTasks");fn();var uN=new Set(["path_denylisted","network_denied"]);var py=[{category:"inline_code",match:/inline code via|write a script file instead/i,
+rence",{missingVerify:o,missingTaskMode:l})}}a(cA,"sanitizeRemoteSubTasks");fn();var uA=new Set(["path_denylisted","network_denied"]);var py=[{category:"inline_code",match:/inline code via|write a script file instead/i,
 remedy:`Write the code to a file under \`${mi}/\` with the file-writing tool and run that file with a normal interpreter \
 invocation. Leave it there when you are done -- that directory is excluded from git and the harness deletes it for you. \
 Do not try to \`rm\` it; deletion is denied, and you do not need it.`},{category:"git_push",match:/git push is not permitted/i,
 remedy:"Do not push. Commit your work to the current branch and stop there -- the harness pushes the branch and opens th\
-e pull request for you."}];var dN=/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/;var pN=[/^(?:ok(?:ay)?|right|good|great|perfect)?[,\s]*(?:now|next|then|first(?:ly)?|second(?:ly)?|finally|also)?[,\s]*let(?:'s| us| me)\b/i,
+e pull request for you."}];var dA=/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/;var pA=[/^(?:ok(?:ay)?|right|good|great|perfect)?[,\s]*(?:now|next|then|first(?:ly)?|second(?:ly)?|finally|also)?[,\s]*let(?:'s| us| me)\b/i,
 /^(?:ok(?:ay)?|right)?[,\s]*(?:now|next|then|first(?:ly)?|finally)?[,\s]*i(?:'m| am) (?:now )?going to\s+(?!not\b)/i,/^(?:ok(?:ay)?|right)?[,\s]*(?:now|next|then|first(?:ly)?|finally)[,\s]+i(?:'ll| will)\s+(?!not\b)/i,
 /^i(?:'ll| will)\s+now\s+(?!not\b)/i,/^i(?:'ll| will)\s+(?!not\b)/i,/^(?:now|next|then|first(?:ly)?|finally)\b[^.!?]*\bi(?:'ll| will|'m going to| am going to)\s+(?!not\b)/i,
-/^(?:time to|moving on to|proceeding to|continuing with|starting with)\b/i];var hN=[/\bi\s+(?:will|would|shall)\s+not\s+(?:implement|complete|continue|proceed|perform|do|make)\b/i,
+/^(?:time to|moving on to|proceeding to|continuing with|starting with)\b/i];var hA=[/\bi\s+(?:will|would|shall)\s+not\s+(?:implement|complete|continue|proceed|perform|do|make)\b/i,
 /\bi\s+won't\s+(?:implement|complete|continue|proceed|perform|do|make)\b/i,/\bi\s+(?:will|would|shall)\s+not\b[^.!?]{0,120}\bthis\s+way\b/i,
 /\bi\s+refuse\b/i,/\brefus(?:e|es|ed|ing)\s+to\b/i,/\bi(?:'m| am)\s+not\s+(?:going\s+to|willing\s+to|able\s+to\s+justify)\b/i,
 /\bi\s+decline\b/i,/\bdeclin(?:e|ing)\s+to\s+(?:make|do|implement|proceed)/i,/\bthis\s+(?:would\s+)?violat(?:e|es)\b/i,/\bagainst\s+(?:policy|my\s+guidelines|the\s+guidelines)\b/i,
 /\bshould\s+not\s+be\s+(?:done|implemented|made)\b/i,/\b(?:premise\s+(?:is\s+)?contradict|contradict\w*\s+(?:the\s+)?premise|premise\s+(?:is\s+)?(?:false|invalid|not\s+met|does\s+not\s+hold)|finding\s+(?:is\s+)?invalid|invalid\s*[:\-]?\s*premise|premise\s+not\s+satisfied|conditional\s+premise)/i];
-var fN=[{kind:"missing_credential",match:/\b(?:credential|api[\s-]?key|access[\s-]?token|auth[\s-]?token|secret|password|service[\s-]?account)\b[^.!?]*\b(?:missing|absent|not\s+(?:set|available|provided|configured|present)|required|need(?:ed)?|unavailable)\b|\b(?:missing|no|without)\b[^.!?]*\b(?:credential|api[\s-]?key|access[\s-]?token|secret)\b/i},
+var fA=[{kind:"missing_credential",match:/\b(?:credential|api[\s-]?key|access[\s-]?token|auth[\s-]?token|secret|password|service[\s-]?account)\b[^.!?]*\b(?:missing|absent|not\s+(?:set|available|provided|configured|present)|required|need(?:ed)?|unavailable)\b|\b(?:missing|no|without)\b[^.!?]*\b(?:credential|api[\s-]?key|access[\s-]?token|secret)\b/i},
 {kind:"needs_human_input",match:/\bi\s+need\s+(?:you|the\s+(?:user|operator|human)|someone)\s+to\b/i},{kind:"needs_human\
 _input",match:/\bplease\s+(?:provide|confirm|clarify|decide|specify)\b/i},{kind:"needs_approval",match:/\brequires?\s+(?:your\s+|human\s+|explicit\s+|operator\s+)?approval\b/i},
 {kind:"destructive_confirmation",match:/\b(?:destructive|irreversible|data[\s-]loss)\b[^.!?]*\bconfirm/i},{kind:"incompa\
@@ -7628,29 +7670,29 @@ tible_criteria",match:/\b(?:acceptance\s+criteria|requirements?)\b[^.!?]*\b(?:co
 {kind:"decision_requested",match:/\b(?:should\s+i|do\s+you\s+want|which\s+(?:one|of)|would\s+you\s+prefer)\b[^?]*\?/i}];
 function hy(t){return(t??"").split(/\r?\n/).flatMap(e=>e.split(/(?<=[.!?])\s+/)).map(e=>e.trim()).filter(Boolean)}a(hy,"\
 splitFragments");function fy(t){return(t??"").replace(/[\u2018\u2019\u02BC\u2032]/g,"'").replace(/[\u201C\u201D]/g,'"').
-replace(/[\u2010-\u2015]/g,"-")}a(fy,"normaliseTypography");function mN(t){const e=fy(t).replace(/^[-*+\u2022]\s*/,"").replace(
-/^\d+[.)]\s*/,"").trim();if(!e)return true;if(/:$/.test(e))return true;return pN.some(r=>r.test(e))}a(mN,"isProgressFrag\
-ment");function my(t){return hy(t).filter(e=>!mN(e)).join(" ").trim()}a(my,"stripProgressNarration");function gN(t){for(const e of t??
+replace(/[\u2010-\u2015]/g,"-")}a(fy,"normaliseTypography");function mA(t){const e=fy(t).replace(/^[-*+\u2022]\s*/,"").replace(
+/^\d+[.)]\s*/,"").trim();if(!e)return true;if(/:$/.test(e))return true;return pA.some(r=>r.test(e))}a(mA,"isProgressFrag\
+ment");function my(t){return hy(t).filter(e=>!mA(e)).join(" ").trim()}a(my,"stripProgressNarration");function gA(t){for(const e of t??
 []){const r=(e.reason??"").trim();const n=(e.title??"").trim();if(!r&&!n)continue;if(e.denial?.recovery?.retryable){return{
 category:e.denial.recovery.code,code:e.denial.recovery.code,reason:r||e.denial.message,title:n||void 0,remedy:e.denial.recovery.
 instruction}}const i=py.find(s=>s.match.test(r));if(i)return{category:i.category,reason:r,title:n||void 0,remedy:i.remedy};
-if(dN.test(n)||/heredoc|here[\s-]document/i.test(r)){return{category:"heredoc",reason:r,title:n||void 0,remedy:`Do not f\
+if(dA.test(n)||/heredoc|here[\s-]document/i.test(r)){return{category:"heredoc",reason:r,title:n||void 0,remedy:`Do not f\
 eed a heredoc into an interpreter. Write the script to \`${mi}/\` with the file-writing tool and run it from there. Leave\
  it behind -- that directory is excluded from git and the harness cleans it up.`}}if(/\binstead\b/i.test(r)){return{category:"\
-guided",reason:r,title:n||void 0,remedy:`Follow the denial's own instruction: ${r}`}}}return void 0}a(gN,"recoverableDen\
-ialFrom");function Qd(t){const e=(t??[]).filter(s=>s.denial&&uN.has(s.denial.code));if(e.length===0)return void 0;const r=e[0].
+guided",reason:r,title:n||void 0,remedy:`Follow the denial's own instruction: ${r}`}}}return void 0}a(gA,"recoverableDen\
+ialFrom");function Qd(t){const e=(t??[]).filter(s=>s.denial&&uA.has(s.denial.code));if(e.length===0)return void 0;const r=e[0].
 denial;const n=a(s=>`${s.code}|${s.rule??""}|${(s.paths??[]).join(",")}`,"key");const i=n(r);return{code:r.code,rule:r.rule,
 paths:[...r.paths??[]],tool:r.kind,message:r.message,attempts:e.filter(s=>n(s.denial)===i).length}}a(Qd,"policyDenialFro\
-m");function _N(t){for(const e of py){const r=e.match.exec(t);if(!r)continue;const n=hy(t).find(i=>e.match.test(i))??r[0];
-return{category:e.category,reason:n.slice(0,500),remedy:e.remedy}}return void 0}a(_N,"denialQuotedInMessage");function gl(t){
+m");function _A(t){for(const e of py){const r=e.match.exec(t);if(!r)continue;const n=hy(t).find(i=>e.match.test(i))??r[0];
+return{category:e.category,reason:n.slice(0,500),remedy:e.remedy}}return void 0}a(_A,"denialQuotedInMessage");function gl(t){
 const e=(t.finalMessage??"").trim();const r=my(e);const n=r.length>0?r:void 0;const i=fy(r);const s=(t.taskContext?.filesLikelyTouched??
 []).some(c=>c.trim().length>0&&i.includes(c)&&/\bi\s+(?:will|would|shall)\s+not\s+(?:read|create|modify|edit|touch|write)\b/i.
-test(i));if(r&&(hN.some(c=>c.test(i))||s)){return{kind:"refusal",explanation:n}}if(r){const c=fN.find(u=>u.match.test(i));
-if(c)return{kind:"genuine_blocker",blockerKind:c.kind,explanation:n}}const o=gN(t.deniedToolCalls)??_N(e);if(o)return{kind:"\
+test(i));if(r&&(hA.some(c=>c.test(i))||s)){return{kind:"refusal",explanation:n}}if(r){const c=fA.find(u=>u.match.test(i));
+if(c)return{kind:"genuine_blocker",blockerKind:c.kind,explanation:n}}const o=gA(t.deniedToolCalls)??_A(e);if(o)return{kind:"\
 recoverable_tool_denial",recoverable:o,explanation:n};const l=Qd(t.deniedToolCalls);if(l)return{kind:"policy_denial",policy:l,
 explanation:n};if(e.length>0&&!r)return{kind:"progress_only"};return{kind:"incomplete",explanation:n}}a(gl,"classifyWork\
-erOutcome");var yN=/\b(?:the\s+)?user\s+(?:rejected|denied|refused)\s+(?:the\s+)?permission[^.]*\.?/gi;function gy(t){return(t??
-"").replace(yN,"the harness safety guard denied the tool call (no human was asked).")}a(gy,"correctFalseUserRejection");
+erOutcome");var yA=/\b(?:the\s+)?user\s+(?:rejected|denied|refused)\s+(?:the\s+)?permission[^.]*\.?/gi;function gy(t){return(t??
+"").replace(yA,"the harness safety guard denied the tool call (no human was asked).")}a(gy,"correctFalseUserRejection");
 function ep(t){const{policy:e}=t;const r=e.paths.length>0?e.paths.map(s=>`\`${s}\``).join(", "):"the requested path";const n=[
 `Sub-task ${t.seq} ("${t.title}") was BLOCKED BY HARNESS SAFETY POLICY, not by the worker.`,"",`What was refused: ${e.tool??
 "a tool call"} on ${r}.`];const i=t.partialWork;if(i&&(i.committed.length>0||i.commitSha)){n.push("",`Work already done \
@@ -7722,9 +7764,9 @@ var by=/\b(cannot find|could not find|unable to (find|locate|run|execute)|no suc
 var wy=/\b(cannot find module|MODULE_NOT_FOUND|ERR_MODULE_NOT_FOUND|node_modules (is |are )?(missing|absent|not installed)|dependencies (are )?not installed|npm (ci|install) (failed|did not run|was never run))\b/i;
 var ky=/\b(browser (is |was )?(not available|unavailable)|no (browser|headless) (binary|runtime)|playwright browsers? (are |is )?not installed|screenshot could not be (taken|captured)|preview (deploy|environment) (is )?unavailable|runtime (evidence|verification) (is )?(unavailable|impossible))\b/i;
 var Sy=/\b(ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|getaddrinfo|network (is )?unreachable|registry\.npmjs\.org.*(unreachable|failed)|DNS (lookup )?fail)/i;
-var vN=/\b(could not|cannot|can't|unable to|failed to|was not able to|did not)\s+(be\s+)?(run|ran|execute|verify|be verified|check|compile|typecheck|lint|test|build|complete|start|install|capture|observe|establish|confirm)|(verification|typecheck|type check|lint|test suite|build|check)\s+(is |was |were )?(blocked|unavailable|not run|never ran|skipped|impossible|unverifiable)|\bexit(ed)? (with )?(code )?12[67]\b|\bunverified\b/i;
+var vA=/\b(could not|cannot|can't|unable to|failed to|was not able to|did not)\s+(be\s+)?(run|ran|execute|verify|be verified|check|compile|typecheck|lint|test|build|complete|start|install|capture|observe|establish|confirm)|(verification|typecheck|type check|lint|test suite|build|check)\s+(is |was |were )?(blocked|unavailable|not run|never ran|skipped|impossible|unverifiable)|\bexit(ed)? (with )?(code )?12[67]\b|\bunverified\b/i;
 var Ey=/\b(worktree (is )?(broken|corrupt|incomplete)|lock ?file (is )?(missing|corrupt)|package\.json (is )?(missing|unreadable)|the worktree has no (node_modules|dependencies))\b/i;
-function gn(t){if(t.source==="ci")return null;const e=t.title??"";const r=t.detail??"";const n=vN.test(e)||bN(e);if(!n)return null;
+function gn(t){if(t.source==="ci")return null;const e=t.title??"";const r=t.detail??"";const n=vA.test(e)||bA(e);if(!n)return null;
 const i=`${e} ${r}`;const s=ky.exec(i);if(s){return{kind:"runtime_evidence_unavailable",subject:_a(s[0]),humanAction:"Pr\
 ovide the runtime evidence the check needs -- a preview deployment, an uploaded log, or an installed browser runtime -- \
 and re-run the review. The diff cannot manufacture its own evidence."}}const o=Sy.exec(i);if(o){return{kind:"network_fai\
@@ -7736,9 +7778,9 @@ exec(i);if(c){const d=_a(c[0]);return{kind:"missing_binary",subject:d,humanActio
 le on the harness PATH (install it, or add it to the repo's devDependencies and install), then re-run the check. A worke\
 r cannot create a binary by editing the diff.`}}const u=Ey.exec(i);if(u){return{kind:"broken_worktree",subject:_a(u[0]),
 humanAction:"Repair or re-create the harness worktree (re-clone and re-install) and re-run. The branch's contents are no\
-t what is broken here."}}return null}a(gn,"detectVerificationBlocker");function bN(t){return ky.test(t)||Sy.test(t)||wy.
-test(t)||vy.test(t)||by.test(t)||Ey.test(t)}a(bN,"anyBlockerPattern");var wN=/\b(tsc|typescript|eslint|prettier|jest|vitest|playwright|cypress|pytest|tsx|ts-node|npm|pnpm|yarn|bun|cargo|python3?|docker|prisma|node_modules)\b/i;
-function _a(t){const e=wN.exec(t);return e?e[1].toLowerCase():null}a(_a,"namedSubject");function Ty(t,e){return[`Verific\
+t what is broken here."}}return null}a(gn,"detectVerificationBlocker");function bA(t){return ky.test(t)||Sy.test(t)||wy.
+test(t)||vy.test(t)||by.test(t)||Ey.test(t)}a(bA,"anyBlockerPattern");var wA=/\b(tsc|typescript|eslint|prettier|jest|vitest|playwright|cypress|pytest|tsx|ts-node|npm|pnpm|yarn|bun|cargo|python3?|docker|prisma|node_modules)\b/i;
+function _a(t){const e=wA.exec(t);return e?e[1].toLowerCase():null}a(_a,"namedSubject");function Ty(t,e){return[`Verific\
 ation blocked: ${t.title}`,`This is an environment fault, not a defect in the branch, so it was not assigned to a code w\
 orker and did not consume repair cycles.`,`The merge recommendation stays do_not_merge until it is cleared.`,`Action req\
 uired: ${e.humanAction}`].join("\n")}a(Ty,"describeVerificationBlocker");function ya(t){return(t??"").toLowerCase().replace(/[`'"]/g,"").replace(/\b\d+\b/g," ").replace(/[^a-z0-9/_.\- ]+/g," ").
@@ -7755,20 +7797,20 @@ Math.imul(i,16777619)>>>0}return`${n.toString(16).padStart(8,"0")}${i.toString(1
 print");function Ry(t,e){if((t.dimension??"")!==(e.dimension??""))return false;const r=_n(t.file);const n=_n(e.file);if(r!==
 n)return false;const i=xy(t.title);const s=xy(e.title);if(i.size===0||s.size===0)return ya(t.title)===ya(e.title);let o=0;
 for(const c of i)if(s.has(c))o+=1;const l=new Set([...i,...s]).size;return o>=2&&o/l>=.5}a(Ry,"findingsAreEquivalent");var Cy={
-info:0,low:1,medium:2,unknown:3,high:4,critical:5};function kN(t,e){return(Cy[e.severity]??3)>(Cy[t.severity]??3)?e:t}a(
-kN,"moreSevere");function yl(t){const e=[];const r=[];const n=[];for(const i of t??[]){if(!i||typeof i!=="object")continue;
+info:0,low:1,medium:2,unknown:3,high:4,critical:5};function kA(t,e){return(Cy[e.severity]??3)>(Cy[t.severity]??3)?e:t}a(
+kA,"moreSevere");function yl(t){const e=[];const r=[];const n=[];for(const i of t??[]){if(!i||typeof i!=="object")continue;
 const s=i;const o=Oy(s);let l=r.indexOf(o);let c="identical";if(l<0){l=e.findIndex(h=>Ry(h,s));c="equivalent"}if(l<0){e.
-push({...s,fingerprint:o});r.push(o);continue}const u=kN(e[l],s);const d=new Set([...e[l].relatedFiles??[],...s.relatedFiles??
+push({...s,fingerprint:o});r.push(o);continue}const u=kA(e[l],s);const d=new Set([...e[l].relatedFiles??[],...s.relatedFiles??
 []]);e[l]={...e[l],severity:u.severity,source:e[l].source??s.source,relatedFiles:d.size>0?[...d]:e[l].relatedFiles,fingerprint:r[l]};
 n.push({fingerprint:o,duplicateOfFingerprint:r[l],title:s.title,file:s.file??null,dimension:s.dimension,reason:c})}return{
-kept:e,duplicates:n}}a(yl,"dedupeFindings");var SN=new Set(["security"]);function EN(t,e){if(e)return"exposed by a fix m\
+kept:e,duplicates:n}}a(yl,"dedupeFindings");var SA=new Set(["security"]);function EA(t,e){if(e)return"exposed by a fix m\
 ade in a previous cycle";if(t.severity==="high"||t.severity==="critical")return`severity ${t.severity} is admitted regar\
-dless of when it was found`;if(SN.has(t.dimension))return"security-significant, admitted regardless of when it was found";
+dless of when it was found`;if(SA.has(t.dimension))return"security-significant, admitted regardless of when it was found";
 if(t.source==="ci"||t.source==="harness_env"||t.source==="deterministic_scope"){return`raised by the harness itself (${t.
-source}), not by an expanding review surface`}return null}a(EN,"lateDiscoveryReason");function Ay(t){const{cycle:e,current:r,
+source}), not by an expanding review surface`}return null}a(EA,"lateDiscoveryReason");function Ny(t){const{cycle:e,current:r,
 prior:n,changedThisCycle:i}=t;const s=new Set(i.map(_n).filter(Boolean));const o=new Map(n.map(p=>[p.fingerprint,p]));const l=new Set;
 const c=[];const u=[];const d=[];const h=[];for(const p of r){const f=p.fingerprint??Oy(p);const _=o.get(f)??n.find(k=>Ry(
-TN(k),p));const y=_n(p.file);const b=y.length>0&&s.has(y);const g=gn(p);if(g){const k=_?.fingerprint??f;const C=`${g.kind}\
+TA(k),p));const y=_n(p.file);const b=y.length>0&&s.has(y);const g=gn(p);if(g){const k=_?.fingerprint??f;const C=`${g.kind}\
 : ${g.humanAction}`;l.add(k);u.push({..._??np(p,k,e,"environment_blocked"),state:"environment_blocked",severity:p.severity,
 lastSeenCycle:e,lateDiscoveryReason:C});c.push({...p,fingerprint:k,lifecycleState:"environment_blocked"});if(!_||_.state!==
 "environment_blocked"){d.push({fingerprint:k,title:p.title,file:p.file??null,from:_?.state??"new",to:"environment_blocke\
@@ -7782,7 +7824,7 @@ const k=_.state==="stale"?"stale":_.state;u.push({..._,state:k,severity:p.severi
 fingerprint,lifecycleState:k,..._.lateDiscoveryReason?{lateDiscoveryReason:_.lateDiscoveryReason}:{}});continue}const v=e>
 1&&!b;if(!v){l.add(f);u.push(np(p,f,e,"open"));c.push({...p,fingerprint:f,lifecycleState:"open"});d.push({fingerprint:f,
 title:p.title,file:p.file??null,from:"new",to:"open",reason:e===1?"baseline review":"against code this cycle changed"});
-continue}const S=(p.relatedFiles??[]).some(k=>s.has(_n(k)));const E=EN(p,S);const T=E!==null;const x=T?"late_discovery":
+continue}const S=(p.relatedFiles??[]).some(k=>s.has(_n(k)));const E=EA(p,S);const T=E!==null;const x=T?"late_discovery":
 "stale";l.add(f);u.push({...np(p,f,e,x),lateDiscoveryReason:T?E:`first raised in cycle ${e} against unchanged code, belo\
 w the late-discovery bar (needs high/critical, security, or a previous fix that exposed it)`});c.push({...p,fingerprint:f,
 lifecycleState:x,lateDiscoveryReason:T?E:void 0});h.push({fingerprint:f,title:p.title,file:p.file??null,severity:p.severity,
@@ -7790,37 +7832,37 @@ admitted:T,reason:E??`${p.severity} ${p.dimension} finding first raised in cycle
 ged`});d.push({fingerprint:f,title:p.title,file:p.file??null,from:"new",to:x,reason:E??"below the late-discovery bar"})}
 for(const p of n){if(l.has(p.fingerprint))continue;if(p.state==="open"||p.state==="late_discovery"){u.push({...p,state:"\
 resolved",resolvedCycle:e});d.push({fingerprint:p.fingerprint,title:p.title,file:p.file??null,from:p.state,to:"resolved",
-reason:`not raised in cycle ${e}`});continue}u.push(p)}return{findings:c,records:u,transitions:d,lateDiscoveries:h}}a(Ay,
+reason:`not raised in cycle ${e}`});continue}u.push(p)}return{findings:c,records:u,transitions:d,lateDiscoveries:h}}a(Ny,
 "reconcileFindings");function np(t,e,r,n){return{fingerprint:e,state:n,severity:t.severity,dimension:t.dimension,source:t.
 source??null,file:t.file??null,relatedFiles:[...t.relatedFiles??[]],title:t.title,detail:t.detail??"",firstSeenCycle:r,lastSeenCycle:r,
-resolvedCycle:null,lateDiscoveryReason:null}}a(np,"newRecord");function TN(t){return{source:t.source??void 0,dimension:t.
+resolvedCycle:null,lateDiscoveryReason:null}}a(np,"newRecord");function TA(t){return{source:t.source??void 0,dimension:t.
 dimension,severity:t.severity,title:t.title,detail:t.detail,file:t.file??null,relatedFiles:t.relatedFiles,fingerprint:t.
-fingerprint,lifecycleState:t.state}}a(TN,"recordAsFinding");import{existsSync as vl,readFileSync as ap,readdirSync as $N,statSync as xN}from"node:fs";import{join as bl,relative as CN}from"node:path";
-import{spawnSync as ON}from"node:child_process";var RN=[".cursorrules","CONTRIBUTING.md","CONVENTIONS.md","AGENTS.md",".github/CONTRIBUTING.md"];var AN=/check|lint|verify|okf/i;
-function NN(t,e,r=200){const n=[];const i=[t];while(i.length>0&&n.length<r){const s=i.pop();let o;try{o=$N(s)}catch{continue}
-for(const l of o){const c=bl(s,l);let u;try{u=xN(c)}catch{continue}if(u.isDirectory()){i.push(c)}else if(e(l)){n.push(c)}}}
-return n}a(NN,"listFilesRecursive");function wl(t,e=1e4){if(!t||!vl(t))return[];const r=[];const n=new Set;const i=a((l,c)=>{
+fingerprint,lifecycleState:t.state}}a(TA,"recordAsFinding");import{existsSync as vl,readFileSync as ap,readdirSync as $A,statSync as xA}from"node:fs";import{join as bl,relative as CA}from"node:path";
+import{spawnSync as OA}from"node:child_process";var RA=[".cursorrules","CONTRIBUTING.md","CONVENTIONS.md","AGENTS.md",".github/CONTRIBUTING.md"];var NA=/check|lint|verify|okf/i;
+function AA(t,e,r=200){const n=[];const i=[t];while(i.length>0&&n.length<r){const s=i.pop();let o;try{o=$A(s)}catch{continue}
+for(const l of o){const c=bl(s,l);let u;try{u=xA(c)}catch{continue}if(u.isDirectory()){i.push(c)}else if(e(l)){n.push(c)}}}
+return n}a(AA,"listFilesRecursive");function wl(t,e=1e4){if(!t||!vl(t))return[];const r=[];const n=new Set;const i=a((l,c)=>{
 const u=(c??"").trim();if(!u)return;if(n.has(l))return;n.add(l);r.push({source:l,text:u})},"add");const s=bl(t,".cursor",
-"rules");if(vl(s)){for(const l of NN(s,c=>c.endsWith(".mdc")||c.endsWith(".md"))){try{i(CN(t,l),ap(l,"utf8"))}catch{}}}for(const l of RN){
+"rules");if(vl(s)){for(const l of AA(s,c=>c.endsWith(".mdc")||c.endsWith(".md"))){try{i(CA(t,l),ap(l,"utf8"))}catch{}}}for(const l of RA){
 const c=bl(t,l);if(vl(c)){try{i(l,ap(c,"utf8"))}catch{}}}const o=yn(t);if(o.length>0){i("package.json#scripts",`The repo\
  declares these check scripts (run them to self-verify conventions):
-`+o.map(l=>`- ${l.name}: ${l.command}`).join("\n"))}return IN(r,e)}a(wl,"ingestRepoConventions");function IN(t,e){if(!(e>
+`+o.map(l=>`- ${l.name}: ${l.command}`).join("\n"))}return IA(r,e)}a(wl,"ingestRepoConventions");function IA(t,e){if(!(e>
 0))return t;const r=a(()=>t.reduce((s,o)=>s+o.text.length,0),"total");if(r()<=e)return t;const n="\n\n[... truncated to fi\
 t the convention char budget ...]";let i=0;while(r()>e&&i<1e4){i++;let s=0;for(let d=1;d<t.length;d++){if(t[d].text.length>
 t[s].text.length)s=d}const o=t[s];const l=r()-e;const c=200;const u=Math.max(c,o.text.length-l-n.length);if(u>=o.text.length)
-break;o.text=o.text.slice(0,u)+n;o.truncated=true;if(t.every(d=>d.text.length<=c+n.length))break}return t}a(IN,"applyCha\
+break;o.text=o.text.slice(0,u)+n;o.truncated=true;if(t.every(d=>d.text.length<=c+n.length))break}return t}a(IA,"applyCha\
 rBudget");function yn(t){const e=bl(t,"package.json");if(!vl(e))return[];let r={};try{const i=JSON.parse(ap(e,"utf8"));r=
-i.scripts??{}}catch{return[]}const n=[];for(const[i,s]of Object.entries(r)){if(typeof s==="string"&&AN.test(i)){n.push({
-name:i,command:s})}}return n}a(yn,"discoverCheckScripts");var Ny=/\b(ineffective mark-?compacts near heap limit|javascript heap out of memory|fatal error:.*heap|allocation failed - javascript heap)\b/i;
+i.scripts??{}}catch{return[]}const n=[];for(const[i,s]of Object.entries(r)){if(typeof s==="string"&&NA.test(i)){n.push({
+name:i,command:s})}}return n}a(yn,"discoverCheckScripts");var Ay=/\b(ineffective mark-?compacts near heap limit|javascript heap out of memory|fatal error:.*heap|allocation failed - javascript heap)\b/i;
 var Iy=4e3;var Py=2e6;function sp(t){const e=t.length>Py;return{outputTail:t.length>Iy?t.slice(-Iy):t,output:e?t.slice(-Py):
 t,...e?{outputTruncated:true}:{}}}a(sp,"captureOutput");function kl(t){const e=new Set(t.allowlist);const r=[];const n=t.
-runScript??PN;const i=Math.max(10,t.timeoutSeconds)*1e3;const s=t.heapRetryMb??8192;for(const o of t.discovered){if(!e.has(
+runScript??PA;const i=Math.max(10,t.timeoutSeconds)*1e3;const s=t.heapRetryMb??8192;for(const o of t.discovered){if(!e.has(
 o.name)){r.push({script:o.name,ran:false,exitCode:null,outputTail:"",output:"",skippedReason:"not on verify.check_script\
 _allowlist"});continue}let l;try{l=n(o.name,t.repoRoot,i)}catch(h){r.push({script:o.name,ran:false,exitCode:null,outputTail:"",
 output:"",unrunnable:true,skippedReason:`spawn error: ${String(h)}`});continue}let c=`${l.stdout??""}${l.stderr??""}`;let u=false;
-if(l.status===134||Ny.test(c)){u=true;let h;try{h=n(o.name,t.repoRoot,i,s)}catch(p){r.push({script:o.name,ran:false,exitCode:l.
+if(l.status===134||Ay.test(c)){u=true;let h;try{h=n(o.name,t.repoRoot,i,s)}catch(p){r.push({script:o.name,ran:false,exitCode:l.
 status??134,...sp(c),oom:true,heapRetried:true,skippedReason:`heap-retry spawn error: ${String(p)}`});continue}l=h;c=`${l.
-stdout??""}${l.stderr??""}`;if(l.status===134||Ny.test(c)){r.push({script:o.name,ran:true,exitCode:l.status??134,...sp(c),
+stdout??""}${l.stderr??""}`;if(l.status===134||Ay.test(c)){r.push({script:o.name,ran:true,exitCode:l.status??134,...sp(c),
 oom:true,heapRetried:true});continue}}const d=sp(c);if(l.timedOut){r.push({script:o.name,ran:false,exitCode:null,...d,unrunnable:true,
 skippedReason:`timed out after ${t.timeoutSeconds}s`});continue}if(l.error){r.push({script:o.name,ran:false,exitCode:l.status??
 null,...d,unrunnable:true,skippedReason:`unrunnable: ${String(l.error)}`});continue}if(l.status===127||/\b(command not found|: not found|MODULE_NOT_FOUND|cannot find module)\b/i.
@@ -7828,11 +7870,11 @@ test(c)){r.push({script:o.name,ran:false,exitCode:l.status??127,...d,unrunnable:
 ck-script binary missing (exit 127 / command not found)`});continue}if(l.status===126||/\b(permission denied|cannot execute|exec format error|operation not permitted)\b/i.
 test(c)){r.push({script:o.name,ran:false,exitCode:l.status??126,...d,unrunnable:true,skippedReason:`env_unavailable: che\
 ck-script not executable (exit 126 / permission denied -- likely a noexec mount)`});continue}r.push({script:o.name,ran:true,
-exitCode:l.status??null,...d,heapRetried:u||void 0})}return r}a(kl,"runCheckScripts");function PN(t,e,r,n){const i={...process.
-env};if(n&&n>0){const l=i.NODE_OPTIONS?`${i.NODE_OPTIONS} `:"";i.NODE_OPTIONS=`${l}--max-old-space-size=${n}`}const s=ON(
+exitCode:l.status??null,...d,heapRetried:u||void 0})}return r}a(kl,"runCheckScripts");function PA(t,e,r,n){const i={...process.
+env};if(n&&n>0){const l=i.NODE_OPTIONS?`${i.NODE_OPTIONS} `:"";i.NODE_OPTIONS=`${l}--max-old-space-size=${n}`}const s=OA(
 "npm",["run","--silent",t],{cwd:e,timeout:r,encoding:"utf8",maxBuffer:8*1024*1024,env:i});const o=s.signal==="SIGTERM"&&
 !!s.error;return{status:s.status,stdout:s.stdout??"",stderr:s.stderr??"",error:s.error&&!o?s.error:void 0,timedOut:!!(s.
-error&&s.error.code==="ETIMEDOUT")||o}}a(PN,"defaultRunScript");function es(t,e){if(!t||t.length===0)return"";const r=e===
+error&&s.error.code==="ETIMEDOUT")||o}}a(PA,"defaultRunScript");function es(t,e){if(!t||t.length===0)return"";const r=e===
 "lead"?"Respect these repo conventions when planning file placement and sub-tasks. If a convention conflicts with the br\
 ief, surface it as a finding — do NOT silently violate it.":e==="worker"?"Respect these repo conventions for any file \
 you touch (placement, formatting, naming). Derived artifacts (bundles, codegen output) are regenerated ONLY when this su\
@@ -7848,10 +7890,10 @@ REPO CONVENTIONS (declared by the target repo):
 ${r}
 
 ${n}
-`}a(es,"renderConventionsForPrompt");var Ly=new Set(["OAH_GH_TOKEN","OAH_VAULT_KEY","OAH_VAULT_KEY_FILE"]);var LN=/(^|_)(TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)(_|$)/i;
-function Dy(t){if(t&&t.trim())Ly.add(t.trim())}a(Dy,"registerDeniedEnvVar");function DN(t){return Ly.has(t)||LN.test(t)}
-a(DN,"isDeniedEnvVar");function Sl(t){const e={};for(const[r,n]of Object.entries(process.env)){if(typeof n!=="string")continue;
-if(DN(r))continue;e[r]=n}for(const[r,n]of Object.entries(t??{})){if(typeof n==="string"&&n!=="")e[r]=n}return e}a(Sl,"bu\
+`}a(es,"renderConventionsForPrompt");var Ly=new Set(["OAH_GH_TOKEN","OAH_VAULT_KEY","OAH_VAULT_KEY_FILE"]);var LA=/(^|_)(TOKEN|SECRET|SECRETS|PASSWORD|PASSWD|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY|CREDENTIAL|CREDENTIALS)(_|$)/i;
+function Dy(t){if(t&&t.trim())Ly.add(t.trim())}a(Dy,"registerDeniedEnvVar");function DA(t){return Ly.has(t)||LA.test(t)}
+a(DA,"isDeniedEnvVar");function Sl(t){const e={};for(const[r,n]of Object.entries(process.env)){if(typeof n!=="string")continue;
+if(DA(r))continue;e[r]=n}for(const[r,n]of Object.entries(t??{})){if(typeof n==="string"&&n!=="")e[r]=n}return e}a(Sl,"bu\
 ildAgentEnv");function op(t,e=0){const r=t.slice(e).search(/[{[]/);if(r===-1)return null;const n=e+r;const i=t[n];const s=i==="{"?"}":
 "]";let o=0;let l=false;let c=false;for(let u=n;u<t.length;u++){const d=t[u];if(c){c=false;continue}if(d==="\\"){c=true;
 continue}if(d==='"'){l=!l;continue}if(l)continue;if(d===i)o++;else if(d===s){o--;if(o===0)return t.slice(n,u+1)}}return null}
@@ -7871,12 +7913,12 @@ exec(t))!==null){if(n[1])e.push(n[1].trim())}const i=op(t);if(i)e.push(i);const 
 0)return e[0];if(va(t)){throw new Error(`truncated JSON in output (the reply opened a JSON container and never closed it\
  — it was cut off, most likely at an output-token ceiling; this is NOT prose drift): ${t.length} chars, ending "...${t.
 slice(-120)}"`)}throw new Error(`no JSON in output (model returned prose, not the JSON contract — check that structured \
-calls run with tools: [] to disable built-in tools): ${t.slice(0,200)}`)}a(El,"extractJson");var UN=["undefined","NaN","\
-Infinity"];function MN(t){let e=false;let r=false;for(let n=0;n<t.length;n++){const i=t[n];if(r){r=false;continue}if(i===
-"\\"){if(e)r=true;continue}if(i==='"'){e=!e;continue}if(e)continue;for(const s of UN){if(i===s[0]&&t.startsWith(s,n))return{
-index:n,token:s}}}return void 0}a(MN,"findNonJsonLiteral");function ts(t){const e=t;if(!e)return void 0;const r=String(e.
+calls run with tools: [] to disable built-in tools): ${t.slice(0,200)}`)}a(El,"extractJson");var UA=["undefined","NaN","\
+Infinity"];function MA(t){let e=false;let r=false;for(let n=0;n<t.length;n++){const i=t[n];if(r){r=false;continue}if(i===
+"\\"){if(e)r=true;continue}if(i==='"'){e=!e;continue}if(e)continue;for(const s of UA){if(i===s[0]&&t.startsWith(s,n))return{
+index:n,token:s}}}return void 0}a(MA,"findNonJsonLiteral");function ts(t){const e=t;if(!e)return void 0;const r=String(e.
 message??"");if(!/JSON\.parse failed/i.test(r))return void 0;const n=/--- extracted ---\n([\s\S]*?)\n--- raw ---/.exec(r);
-const i=e.extractedText??n?.[1];if(!i)return void 0;const s=/at position (\d+)/.exec(r);const o=MN(i);const l=s?Number(s[1]):
+const i=e.extractedText??n?.[1];if(!i)return void 0;const s=/at position (\d+)/.exec(r);const o=MA(i);const l=s?Number(s[1]):
 o?.index;const c=/(SyntaxError: [^\n]*)/.exec(r)?.[1]??"the document is not valid JSON";const u=[`The JSON parser reject\
 ed it with: ${c}`];if(l!==void 0&&l>=0&&l<i.length){const d=Math.max(0,l-180);const h=Math.min(i.length,l+180);const p=`${i.
 slice(d,l)}>>>HERE>>>${i.slice(l,h)}`;u.push(`Here is the text around the fault, with >>>HERE>>> marking the position:`,
@@ -7905,12 +7947,12 @@ ${n.slice(0,2e3)}`)}const l=e.warnOnTrailingJson!==false;if(l&&e.logger){const c
 n.length);const d=u.search(/[{[]/);if(d!==-1&&u.slice(d,d+200).match(/^[{[][\s\S]{4,}/)){e.logger.warn(`[${r}] model out\
 put contained a second JSON object we ignored`,{tailPreview:u.slice(d,d+200),extractedLen:n.length,rawLen:t.length})}}}return i}
 a(rs,"extractAndValidateJson");function lp(t){const e=t.marker>t.lastMarker;const r=e?0:t.nowMs-t.lastActivityAtMs;const n=!e&&t.idleWarnMs>0&&r>=t.idleWarnMs;
-return{advanced:e,idleMs:r,fire:n,nowMs:t.nowMs}}a(lp,"evaluateStreamSlowTick");var My=18e4;var jN=18e4;var FN=200;function jy(t,e){if(!t.includes("diff --git "))return{diff:t,folded:[]};const r=t.split(
+return{advanced:e,idleMs:r,fire:n,nowMs:t.nowMs}}a(lp,"evaluateStreamSlowTick");var My=18e4;var jA=18e4;var FA=200;function jy(t,e){if(!t.includes("diff --git "))return{diff:t,folded:[]};const r=t.split(
 /(?=^diff --git )/m);const n=[];const i=[];for(const h of r){const p=/^diff --git a\/(.+?) b\/(.+)$/m.exec(h);const f=p?.[2];
 const _=f?e(f):null;if(!f||_===null){n.push(h);continue}let y=0;let b=0;for(const g of h.split("\n")){if(g.startsWith("+")&&
 !g.startsWith("+++"))y++;else if(g.startsWith("-")&&!g.startsWith("---"))b++}i.push({path:f,script:_,added:y,removed:b,bytes:h.
 length})}if(i.length===0)return{diff:t,folded:[]};const s=i.reduce((h,p)=>h+p.added,0);const o=i.reduce((h,p)=>h+p.removed,
-0);const l=i.reduce((h,p)=>h+p.bytes,0);const c=[...new Set(i.map(h=>h.script))];const u=i.slice(0,FN);const d=["=".repeat(
+0);const l=i.reduce((h,p)=>h+p.bytes,0);const c=[...new Set(i.map(h=>h.script))];const u=i.slice(0,FA);const d=["=".repeat(
 78),`GENERATED OUTPUT: ${i.length} file(s) SUMMARISED, NOT SHOWN VERBATIM`,"=".repeat(78),"",`These files are declared o\
 utput of ${c.map(h=>`\`npm run ${h}\``).join(", ")} in this`,"repository's verify.generators. Their contents are derived\
  from sources that ARE","shown in full below. They changed as follows:","",`  ${i.length} file(s), +${s} -${o} line(s), ${l}\
@@ -7920,7 +7962,7 @@ utput of ${c.map(h=>`\`npm run ${h}\``).join(", ")} in this`,"repository's verif
 ave a","specific reason to doubt one -- a source change that should have altered it","and a line count suggesting it did\
  not, output that looks hand-edited, a path","that does not belong to the generator -- file a finding saying so and nami\
 ng","the file. Do NOT report these files as missing or unreviewed in general; they","are listed above and their omission\
- is deliberate.","=".repeat(78),"",""].join("\n");return{diff:d+n.join(""),folded:i}}a(jy,"foldGeneratedFiles");function cp(t,e=jN){
+ is deliberate.","=".repeat(78),"",""].join("\n");return{diff:d+n.join(""),folded:i}}a(jy,"foldGeneratedFiles");function cp(t,e=jA){
 if(t.length<=e)return[t];const r=t.split(/(?=^diff --git )/m);const n=[];let i="";for(const s of r){if(s.length>e){if(i){
 n.push(i);i=""}n.push(s.slice(0,e)+`
 [TRUNCATED: file diff was ${s.length} bytes, capped at ${e}]
@@ -7985,10 +8027,10 @@ let _=false;const y=typeof r.firstTokenTimeoutSeconds==="number"&&r.firstTokenTi
 0;let g;const v=a(()=>{if(b<=0||g)return;g=setTimeout(()=>{if(!h){_=true;e.abort()}},b);if(typeof g.unref==="function"){
 g.unref()}},"armStreamOpenWatchdog");const S=a(()=>{if(g){clearTimeout(g);g=void 0}},"clearStreamOpenWatchdog");let E;const T=a(
 ()=>{if(y<=0||E)return;E=setTimeout(()=>{if(!f){_=true;e.abort()}},y);if(typeof E.unref==="function"){E.unref()}},"armFi\
-rstTokenWatchdog");const x=a(()=>{if(E){clearTimeout(E);E=void 0}},"clearFirstTokenWatchdog");let k="";const C=[];const A=typeof r.
+rstTokenWatchdog");const x=a(()=>{if(E){clearTimeout(E);E=void 0}},"clearFirstTokenWatchdog");let k="";const C=[];const N=typeof r.
 streamIdleWarnSeconds==="number"&&r.streamIdleWarnSeconds>0?r.streamIdleWarnSeconds*1e3:0;const P=r.streamSlowLabel??"wo\
-rker";let L=0;let F=0;let j=i;let Z=0;const me=A>0?setInterval(()=>{const ne=Math.max(u,L);const ae=lp({marker:ne,lastMarker:F,
-nowMs:n(),lastActivityAtMs:j,idleWarnMs:A});if(ae.advanced){F=ne;j=ae.nowMs}Z+=1;r.logger?.warn?.(`[${P}] stream tick +${Z*
+rker";let L=0;let F=0;let j=i;let Z=0;const me=N>0?setInterval(()=>{const ne=Math.max(u,L);const ae=lp({marker:ne,lastMarker:F,
+nowMs:n(),lastActivityAtMs:j,idleWarnMs:N});if(ae.advanced){F=ne;j=ae.nowMs}Z+=1;r.logger?.warn?.(`[${P}] stream tick +${Z*
 30}s`,{elapsedMs:ae.nowMs-i,tokensOut:u,streamActivity:L,idleMs:ae.idleMs});if(ae.fire){try{r.onStreamSlow?.({idleMs:ae.
 idleMs,elapsedMs:ae.nowMs-i,tokensOut:u,label:P})}catch{}}},3e4):void 0;if(me&&typeof me.unref==="function"){me.unref()}
 v();try{for await(const ne of t){L+=1;d.push(JSON.stringify(ne).slice(0,300));if(ne.type==="system"&&ne.subtype==="init"){
@@ -8547,7 +8589,7 @@ seq} has an invalid required finding id`)}if(new Set(s).size!==s.length){r.push(
 [n.title,n.intent,...n.successCriteria??[]].join("\n"));if(i&&!n.observeContract){r.push(`observe sub-task ${n.seq} is a\
  load-bearing prerequisite but has no observeContract`)}}return r}a(mx,"loadBearingObserveContractErrors");var T9=/\b(push(ed|es|ing)?|push to (origin|remote)|remote sha|ls-remote)\b/i;var $9=/\b(verify (remote|pushed)|verify remote sha|ls-remote|confirm push)\b/i;
 var x9=/\b(pull request|open (a )?pr|draft pr|merge request|\bpr\b|\bmr\b)\b/i;var C9=/\bdraft\b/i;var O9=/\b(commit(ted|s|ting)?)\b/i;
-var R9=/\b(stage|git add)\b/i;var A9=/\b(write|create|add|update|edit|modify)\b.*\b[\w./-]+\.[a-z0-9]{1,6}\b/i;var N9=/\b(end.to.end|e2e|verify (the )?(remote|observable) side.?effects?|final (check|verification))\b/i;
+var R9=/\b(stage|git add)\b/i;var N9=/\b(write|create|add|update|edit|modify)\b.*\b[\w./-]+\.[a-z0-9]{1,6}\b/i;var A9=/\b(end.to.end|e2e|verify (the )?(remote|observable) side.?effects?|final (check|verification))\b/i;
 var I9=/\b(verify remote sha|sha match(es)?|confirm sha|push.*sha|sha.*push)\b/i;var P9=/\b(do(es)? not|don't|doesn't|didn't|didn't|shouldn't|shall not|must not|no need to|without|never|avoid|skip|stop after|not to|instead of|rather than|no)\b/i;
 var L9=/\b(no (push|pr|pull request|merge request|mr|remote|remote tracking|remote-tracking|network mutation)|(did|does|was|is) not (push|exist|created|on origin|created|pushed)|(no remote branch|branch (is )?only local|not on origin|absent from origin)|(git branch -r|refs\/remotes\/) [^.\n]*(empty|no output|clean|no remote))\b/i;
 function D9(t){return L9.test(t)}a(D9,"assertsAbsence");function tn(t,e){const r=new RegExp(e.source,e.flags.includes("g")?
@@ -8565,7 +8607,7 @@ return j9.has(t)}a(F9,"isRemoteScopeKind");var q9=new Set(["file_written","commi
 "file_pushed","pr_opened"]);function yx(t){return q9.has(t)}a(yx,"isMutationScopeKind");function Vu(t,e){const r=e??t.taskMode;
 const n=e==="observe"&&t.taskMode!=="observe";if(t.verify&&t.verify.length>0){if(n)return t.verify.filter(v=>!yx(v.kind));
 return t.verify}const i=[t.title,t.intent,...t.successCriteria??[]].filter(Boolean).join(" \n ");const s=[];const o=tn(i,
-T9);const l=tn(i,N9);const c=tn(i,$9);const u=tn(i,I9);const d=tn(i,x9);const h=tn(i,O9);const p=tn(i,R9);const f=tn(i,A9);
+T9);const l=tn(i,A9);const c=tn(i,$9);const u=tn(i,I9);const d=tn(i,x9);const h=tn(i,O9);const p=tn(i,R9);const f=tn(i,N9);
 const _=D9(i);if((o||l)&&!_){s.push({kind:"branch_pushed"});s.push({kind:"remote_branch_exists"});s.push({kind:"commit_s\
 ha_matches"})}else if((c||u)&&!_){s.push({kind:"remote_branch_exists"});s.push({kind:"commit_sha_matches"})}if(d&&!_){const v=C9.
 test(i);s.push({kind:"pr_opened",draft:v});s.push({kind:"pr_state",state:v?"draft":"open"})}else if(l){s.push({kind:"pr_\
@@ -8675,16 +8717,16 @@ t[i+1];i+=2}else{i++}e.push(l);continue}r+=o;i++}if(n!==null)return{tokens:e,err
 a(Y9,"tokenise");var Cx=new Set(["|","||","&","&&",";"]);var Ox=new Set([">",">>","<","<<"]);function Q9(t){const e=[];const r=[];let n=[];
 for(let i=0;i<t.length;i++){const s=t[i];if(Cx.has(s)){if(n.length>0)e.push(n);n=[]}else if(Ox.has(s)){const o=n[n.length-
 1];if(o!==void 0&&/^[0-9]+$/.test(o))n.pop();const l=t[i+1];if(l!==void 0&&!Cx.has(l)&&!Ox.has(l)){r.push(l)}i++}else{n.
-push(s)}}if(n.length>0)e.push(n);return{segments:e,redirectTargets:r}}a(Q9,"splitSegments");function Ax(t){const e={whitelist:t.
+push(s)}}if(n.length>0)e.push(n);return{segments:e,redirectTargets:r}}a(Q9,"splitSegments");function Nx(t){const e={whitelist:t.
 bash_whitelist,denylistTokens:t.bash_denylist_tokens,allowGitPush:t.allow_git_push,allowNetworkCommands:t.allow_network_commands,
 pathDenylist:t.path_denylist};const r=a(i=>Ju(i,t.path_denylist),"pathBlocked");const n=a((i,s)=>{const o=i;if(!o)return"";
 for(const l of s){const c=o[l];if(typeof c==="string"&&c.length>0)return c}return""},"extractPath");return async(i,s)=>{
-if(i==="Bash"){const o=s?.command??"";const l=Nx(o,e);return{allow:l.allowed,reason:l.reason}}if(i==="Write"||i==="Edit"||
+if(i==="Bash"){const o=s?.command??"";const l=Ax(o,e);return{allow:l.allowed,reason:l.reason}}if(i==="Write"||i==="Edit"||
 i==="MultiEdit"||i==="NotebookEdit"){const o=n(s,["file_path","path","notebook_path"]);if(r(o)){return{allow:false,reason:`\
 write path '${o}' is denylisted`}}return{allow:true}}if(i==="Read"||i==="NotebookRead"){const o=n(s,["file_path","path",
 "notebook_path"]);if(r(o)){return{allow:false,reason:`read path '${o}' is denylisted`}}return{allow:true}}if(i==="Glob"||
 i==="Grep"){const o=n(s,["pattern","glob","path","file_pattern"]);if(o&&r(o)){return{allow:false,reason:`search pattern \
-'${o}' hits denylist`}}return{allow:true}}return{allow:true}}}a(Ax,"buildBashGuard");function eZ(t){const e=t.rawInput;if(!e||
+'${o}' hits denylist`}}return{allow:true}}return{allow:true}}}a(Nx,"buildBashGuard");function eZ(t){const e=t.rawInput;if(!e||
 typeof e!=="object")return null;const r=e["command"];return typeof r==="string"&&r.trim().length>0?r:null}a(eZ,"acpComma\
 ndFromToolCall");function tZ(t){const e=[];for(const r of["filepath","file_path","path","notebook_path","abs_path"]){const n=t[r];if(typeof n===
 "string"&&n.trim())e.push(n.trim())}return[...new Set(e)]}a(tZ,"rawPathFields");function Rx(t){const e=[...new Set((t.locations??
@@ -8733,7 +8775,7 @@ return{allow:false,reason:`${o} path '${h}' is denylisted`,denial:{code:"path_de
 ted, add its exact path to \`safety.path_denylist_exceptions\`; live secret files must stay blocked.`},targetEvidence:l}}
 return{allow:true,checkedPaths:[...new Set(d)],targetEvidence:l}},"denyIfBlockedPaths");return async s=>{const o=typeof s.
 kind==="string"?s.kind.toLowerCase():"";switch(o){case"execute":{const l=eZ(s);if(l===null){return{allow:false,reason:"e\
-xecute tool call carried no command string (failing closed)"}}const c=Nx(l,e);if(c.allowed)return{allow:true};return{allow:false,
+xecute tool call carried no command string (failing closed)"}}const c=Ax(l,e);if(c.allowed)return{allow:true};return{allow:false,
 reason:c.reason,denial:{code:"command_denied",kind:"execute",message:c.reason??"command denied by the bash guard"}}}case"\
 edit":case"delete":case"move":return i(s,o);case"read":{const l=Rx(s);if(l.conflict){return{allow:false,reason:`read tar\
 get metadata could not be reconciled: ${l.conflict}`,denial:{code:"target_metadata_conflict",kind:"read",paths:l.advisoryPaths,
@@ -8759,7 +8801,7 @@ join("/")).filter(Boolean);for(const i of e){if(i.endsWith("/")&&t.includes(i))r
 const n=t.slice(e+1);if(r==="xargs"){for(const i of n){if(i.startsWith("-"))continue;return i}return void 0}if(r==="env"){
 for(const i of n){if(i.startsWith("-"))continue;if(/^[A-Za-z_][A-Za-z0-9_]*=/.test(i))continue;return i}return void 0}if(r===
 "find"){const i=n.findIndex(s=>s==="-exec"||s==="-execdir"||s==="-ok"||s==="-okdir");if(i>=0)return n[i+1];return void 0}
-return void 0}a(lZ,"nestedCommandOf");function Nx(t,e=X9()){const r=Y9(t);if(r.error)return{allowed:false,reason:r.error};
+return void 0}a(lZ,"nestedCommandOf");function Ax(t,e=X9()){const r=Y9(t);if(r.error)return{allowed:false,reason:r.error};
 for(const o of r.tokens){if(o.startsWith("/dev/tcp")||o.startsWith("/dev/udp")){return{allowed:false,reason:`network red\
 irection target ${o}`}}}const{segments:n,redirectTargets:i}=Q9(r.tokens);if(n.length===0)return{allowed:false,reason:"em\
 pty command"};const s=e.pathDenylist??[];if(s.length>0){for(const o of i){if(Ju(o,s)){return{allowed:false,reason:`redir\
@@ -8774,7 +8816,7 @@ ipt file instead)`}}}const h=lZ(o,c);if(h!==void 0){if(!e.whitelist.includes(h))
 mand "${h}" (via ${u}) not in whitelist`}}if(!e.allowNetworkCommands&&xx.includes(h)){return{allowed:false,reason:`neste\
 d network command "${h}" (via ${u}) is not permitted`}}}if(s.length>0&&(sZ.has(u)||aZ.has(u))){for(const p of o.slice(c+
 1)){if(p.startsWith("-"))continue;if(Ju(p,s)){return{allowed:false,reason:`argument path '${p}' is denylisted`}}}}}return{
-allowed:true}}a(Nx,"guardCommand");function xg(t,e,r=[]){if(!t||t.length===0||e.length===0)return[];const n=[];const i=new Set;for(const s of t){for(const o of s.
+allowed:true}}a(Ax,"guardCommand");function xg(t,e,r=[]){if(!t||t.length===0||e.length===0)return[];const n=[];const i=new Set;for(const s of t){for(const o of s.
 filesLikelyTouched??[]){const l=typeof o==="string"?o.trim():"";if(!l)continue;const c=Fo(l,e);if(!c)continue;const u=Ku(
 Ui(l),r);if(u)continue;const d=`${s.seq}|${l}`;if(i.has(d))continue;i.add(d);n.push({seq:s.seq,title:s.title??`sub-task ${s.
 seq}`,path:l,rule:c,authorised:false})}}return n}a(xg,"findPlanPolicyConflicts");function Cg(t){if(t.length===0)return"";
@@ -8869,22 +8911,22 @@ es not exist yet, so you will be creating it:
 That is expected for new work, and the repo already has a directory of that name in the same place, so the path follows \
 an existing convention. Read that sibling before you write, and match how it is built. If you choose a different path an\
 yway, name the one you used in your final message.`)}return n.join("\n\n")}a(Bx,"describeSuspectPlanPaths");function Yu(t){return t.trim().replace(/^\.\//,"").replace(/\\/g,"/").replace(/\/+/g,"/").replace(/^\/+/,"").replace(/\/+$/,
-"")}a(Yu,"norm");function Ag(t,e){const r=(t??[]).filter(l=>typeof l==="string"&&l.trim());if(r.length===0||e.length===0){
+"")}a(Yu,"norm");function Ng(t,e){const r=(t??[]).filter(l=>typeof l==="string"&&l.trim());if(r.length===0||e.length===0){
 return{files:r,applied:[]}}const n=new Map;for(const l of e){const c=Yu(l?.from??"");const u=Yu(l?.to??"");if(!c||!u||c===
 u)continue;if(!n.has(c))n.set(c,{from:c,to:u})}if(n.size===0)return{files:r,applied:[]};const i=[];const s=new Set;const o=[];
 for(const l of r){const c=n.get(Yu(l));const u=c?c.to:l;if(c)i.push(c);const d=Yu(u);if(s.has(d))continue;s.add(d);o.push(
-u)}return{files:o,applied:i}}a(Ag,"applyPathCorrections");function Hx(t){return t.map(e=>`${e.from} -> ${e.to}`).join(",\
+u)}return{files:o,applied:i}}a(Ng,"applyPathCorrections");function Hx(t){return t.map(e=>`${e.from} -> ${e.to}`).join(",\
  ")}a(Hx,"describePathCorrections");function Mi(t){return(t??"").trim().replace(/^\.?\//,"").replace(/\/+$/,"")}a(Mi,"normalise");function Wx(t,e){return Mi(
 t)===Mi(e.from)}a(Wx,"rescueMatchesContractPath");function qo(t){const e=Mi(t).lastIndexOf("/");return e<0?"":Mi(t).slice(
-0,e)}a(qo,"dirnameOf");function Ng(t){const e=Mi(t);const r=e.lastIndexOf("/");return r<0?e:e.slice(r+1)}a(Ng,"basenameO\
+0,e)}a(qo,"dirnameOf");function Ag(t){const e=Mi(t);const r=e.lastIndexOf("/");return r<0?e:e.slice(r+1)}a(Ag,"basenameO\
 f");function Vx(t){const e=(t.expected??[]).map(Mi).filter(Boolean);const r=(t.actual??[]).map(Mi).filter(Boolean);if(e.
-length!==1||r.length!==1)return void 0;const n=e[0];const i=r[0];if(n===i)return void 0;const s=Ng(n);if(!s||s!==Ng(i))return void 0;
+length!==1||r.length!==1)return void 0;const n=e[0];const i=r[0];if(n===i)return void 0;const s=Ag(n);if(!s||s!==Ag(i))return void 0;
 const o=qo(n);const l=qo(i);if(o===l)return void 0;if(t.repoDirs.has(o))return void 0;if(!t.repoDirs.has(l))return void 0;
 return{kind:"basename",from:n,to:i,via:{from:o,to:l,basename:s},reason:`single-file mismatch on basename '${s}'; planned\
  directory '${o}' does not exist in the repo and committed directory '${l}' does`}}a(Vx,"proposeBasenameRescue");function Gx(t){
 const e=(t.expected??[]).map(Mi).filter(Boolean);const r=(t.actual??[]).map(Mi).filter(Boolean);if(e.length!==1)return void 0;
 const n=e[0];const i=r.filter(o=>o!==n&&o.startsWith(`${n}/`));if(i.length!==1)return void 0;const s=i[0];return{kind:"d\
-irectory",from:n,to:s,via:{from:n,to:qo(s),basename:Ng(s)},reason:`the contract named the directory '${n}' and exactly o\
+irectory",from:n,to:s,via:{from:n,to:qo(s),basename:Ag(s)},reason:`the contract named the directory '${n}' and exactly o\
 ne committed file sits inside it ('${s}'), so the contract path is the thing that was wrong`}}a(Gx,"proposeDirectoryResc\
 ue");function Zx(t){const e=new Set([""]);for(const r of t){let n=qo(r);while(n){e.add(n);n=qo(n)}}return e}a(Zx,"repoDi\
 rsFromFiles");function Kx(t){return`rescued contract path ${t.from} -> ${t.to} (${t.reason})`}a(Kx,"describeBasenameResc\
@@ -9066,17 +9108,17 @@ const _=(f.filesLikelyTouched??[]).filter(Boolean);if(_.length===0){u.add(f.seq)
 while(d){d=false;for(const f of[...u]){const _=c.get(f);for(const y of _?.dependsOn??[]){if(c.has(y)&&!u.has(y)){u.add(y);
 d=true}}}}const h=n.filter(f=>u.has(f));const p=n.filter(f=>!u.has(f));if(p.length===0){return{scoped:false,runSeqs:n,skipSeqs:[],
 reason:"all_relevant",findingFiles:i}}if(h.length===0){return{scoped:false,runSeqs:n,skipSeqs:[],reason:"no_subtask_owns\
-_the_findings",findingFiles:i}}return{scoped:true,runSeqs:h,skipSeqs:p,findingFiles:i}}a(cC,"computeReviseScope");var OZ=/(?:[\w.@()[\]-]+\/)+[\w.@()[\]-]+\.[a-zA-Z]\w{0,9}/g;var RZ=/\b[a-z][\w+.-]*:\/\/\S+/gi;function AZ(t){if(!t)return[];
+_the_findings",findingFiles:i}}return{scoped:true,runSeqs:h,skipSeqs:p,findingFiles:i}}a(cC,"computeReviseScope");var OZ=/(?:[\w.@()[\]-]+\/)+[\w.@()[\]-]+\.[a-zA-Z]\w{0,9}/g;var RZ=/\b[a-z][\w+.-]*:\/\/\S+/gi;function NZ(t){if(!t)return[];
 const e=String(t).replace(RZ," ");const r=[];for(const n of e.matchAll(OZ)){const i=n[0].replace(/^\.\//,"").replace(/[.,;:)]+$/,
-"");if(!r.includes(i))r.push(i)}return r}a(AZ,"extractRepoPaths");function Ys(t){const e=(t.file??"").trim();const r=(Array.
-isArray(t.relatedFiles)?t.relatedFiles:[]).map(s=>typeof s==="string"?s.trim().replace(/^\.\//,""):"").filter(Boolean);const n=AZ(
+"");if(!r.includes(i))r.push(i)}return r}a(NZ,"extractRepoPaths");function Ys(t){const e=(t.file??"").trim();const r=(Array.
+isArray(t.relatedFiles)?t.relatedFiles:[]).map(s=>typeof s==="string"?s.trim().replace(/^\.\//,""):"").filter(Boolean);const n=NZ(
 `${t.title??""}
 ${t.detail??""}`);const i=[];for(const s of[...r,...n]){if(!s||s===e)continue;if(!i.includes(s))i.push(s)}return i}a(Ys,
-"coFixFiles");var NZ=new Set(["a","an","the","and","or","but","is","are","was","were","be","been","to","of","in","on","a\
+"coFixFiles");var AZ=new Set(["a","an","the","and","or","but","is","are","was","were","be","been","to","of","in","on","a\
 t","by","for","with","from","that","this","it","its","as","not","no","any","all","so","then","than","still","again","pri\
 or","previously","remain","remains","remaining","unaddressed","addressed","repeat","repeated","twice","incomplete","find\
 ing","findings","issue","bug","new","now"]);function Dg(t){return String(t??"").toLowerCase().replace(/[^a-z0-9\s]/g," ").
-split(/\s+/).filter(e=>e.length>1&&!NZ.has(e))}a(Dg,"titleTokens");function Qs(t){return`${(t.dimension??"").toLowerCase().
+split(/\s+/).filter(e=>e.length>1&&!AZ.has(e))}a(Dg,"titleTokens");function Qs(t){return`${(t.dimension??"").toLowerCase().
 trim()}|${(t.file??"").trim()}|${Dg(t.title).join(" ")}`}a(Qs,"findingKey");var IZ=.5;var PZ=2;function uC(t,e){if((t.dimension??
 "").toLowerCase().trim()!==(e.dimension??"").toLowerCase().trim())return false;if((t.file??"").trim()!==(e.file??"").trim())
 return false;const r=new Set(Dg(t.title));const n=new Set(Dg(e.title));if(r.size===0||n.size===0)return false;let i=0;for(const s of r)
@@ -9117,13 +9159,13 @@ y.targeted.push(_.finding);if(!y.targetedFiles.includes(_.file))y.targetedFiles.
 const _=a(y=>{const b=new Set((y.coFixGrantedFiles??[]).map(g=>typeof g==="string"?g.trim():"").filter(Boolean));return[
 ...y.filesLikelyTouched??[],...y.contextPaths??[]].map(g=>typeof g==="string"?g.trim():"").filter(g=>g.length>0&&!b.has(
 g))},"ownedOf");for(const y of i){if(hC(y))continue;const b=sd(y);const g=Ys(y);if(g.length===0)continue;const v=[];const S=[];
-const E=t.filter(A=>o.get(A.seq)?.targeted.includes(y)).map(A=>A.seq);const T=[];for(const A of t){const P=_(A);if(P.length===
-0)continue;const L=g.filter(j=>!!r(P,j));if(L.length===0)continue;const F=o.get(A.seq);if(!F)continue;if(F.targeted.includes(
+const E=t.filter(N=>o.get(N.seq)?.targeted.includes(y)).map(N=>N.seq);const T=[];for(const N of t){const P=_(N);if(P.length===
+0)continue;const L=g.filter(j=>!!r(P,j));if(L.length===0)continue;const F=o.get(N.seq);if(!F)continue;if(F.targeted.includes(
 y)&&!n.stuckKeys?.has(Qs(y)))continue;for(const j of L){if(!F.targetedFiles.includes(j))F.targetedFiles.push(j);if(!S.includes(
-j))S.push(j)}if(!v.includes(A.seq))v.push(A.seq);if(!T.includes(A.seq))T.push(A.seq)}const x=g.filter(A=>!S.includes(A));
-if(x.length>0&&E.length>0){const A=Math.min(...E);const P=o.get(A);if(P){for(const L of x){if(!P.targetedFiles.includes(
-L))P.targetedFiles.push(L);if(!S.includes(L))S.push(L)}if(!v.includes(A))v.push(A)}}if(v.length===0)continue;const k=E.length>
-0?Math.min(...E):Math.min(...T);for(const A of v){const P=o.get(A);if(!P)continue;if(A===k){if(!P.targeted.includes(y))P.
+j))S.push(j)}if(!v.includes(N.seq))v.push(N.seq);if(!T.includes(N.seq))T.push(N.seq)}const x=g.filter(N=>!S.includes(N));
+if(x.length>0&&E.length>0){const N=Math.min(...E);const P=o.get(N);if(P){for(const L of x){if(!P.targetedFiles.includes(
+L))P.targetedFiles.push(L);if(!S.includes(L))S.push(L)}if(!v.includes(N))v.push(N)}}if(v.length===0)continue;const k=E.length>
+0?Math.min(...E):Math.min(...T);for(const N of v){const P=o.get(N);if(!P)continue;if(N===k){if(!P.targeted.includes(y))P.
 targeted.push(y)}else{P.assisting=P.assisting??[];if(!P.assisting.includes(y))P.assisting.push(y)}}const C=o.get(k);if(C&&
 !C.targeted.includes(y))C.targeted.push(y);u=true;p.push({finding:y,file:b,matchedFiles:S,seqs:v,primarySeq:k})}}const f=[
 ...l,...c];for(const _ of s)_.broadcast=f;return{assignments:s,mappingMisses:c,metaBroadcast:l,anyTargeted:u,orphanAdoptions:h,
@@ -9217,20 +9259,20 @@ ub's web editor, which can commit workflow changes without that scope; or`,`  3.
 hard_timeout":return"the session hit its wall-clock ceiling (`loop.session_hard_timeout_seconds`)";case"ship_time_reserv\
 ed":return"the session was approaching its wall-clock ceiling and stopped revising in order to ship what it had";case"bu\
 dget_exhausted":return"the session reached its budget ceiling";case"daily_max_exhausted":return"the requester's daily sp\
-end cap was reached";default:return`the session aborted (${t})`}}a(JZ,"abortCauseSentence");function AC(t,e,r){const n=[];
+end cap was reached";default:return`the session aborted (${t})`}}a(JZ,"abortCauseSentence");function NC(t,e,r){const n=[];
 n.push(`NOT machine-approved -- this PR exists so the work is not lost. After ${e} review cycle${e===1?"":"s"}, ${JZ(t)}\
 , so the run stopped before reaching a clean verdict.`);if(r){const i=r.findings?.length??0;n.push(`The last adversary p\
 ass returned "${r.verdict}" with ${i} open finding${i===1?"":"s"}; they are listed on this PR and are NOT fixed.`)}else{
 n.push("No adversary verdict was reached at all, so nothing here has been reviewed.")}n.push("Read the diff before mergi\
 ng. To continue automatically instead, run a new confirmed change against this PR -- it resumes from this branch rather \
-than starting again.");return n.join(" ")}a(AC,"describeAbortSalvage");var XZ=.25;var YZ=.5;function Bg(t){if(!t.hasWork)
+than starting again.");return n.join(" ")}a(NC,"describeAbortSalvage");var XZ=.25;var YZ=.5;function Bg(t){if(!t.hasWork)
 return false;if(!Number.isFinite(t.hardDeadlineMs)||t.hardDeadlineMs<=0)return false;let e=Math.max(0,t.reserveSeconds)*
 1e3;const r=Math.max(0,t.totalBudgetSeconds??0)*1e3;if(r>0)e=Math.min(e,r*XZ);if(e<=0)return false;const n=t.hardDeadlineMs-
 t.now;if(n<=0)return false;let i=Number.isFinite(t.observedCycleMs)?Math.max(0,t.observedCycleMs??0):0;if(r>0)i=Math.min(
-i,r*YZ);return n<e+i}a(Bg,"shouldReserveTimeToShip");var QZ=.3;var eK=.5;function NC(t){const e=typeof t.authorizedMaximumUsd==="number"&&Number.isFinite(t.authorizedMaximumUsd)&&
+i,r*YZ);return n<e+i}a(Bg,"shouldReserveTimeToShip");var QZ=.3;var eK=.5;function AC(t){const e=typeof t.authorizedMaximumUsd==="number"&&Number.isFinite(t.authorizedMaximumUsd)&&
 t.authorizedMaximumUsd>0?t.authorizedMaximumUsd:0;const r=typeof t.repairReserveRatio==="number"&&Number.isFinite(t.repairReserveRatio)?
 t.repairReserveRatio:QZ;const n=Math.max(0,Math.min(eK,r));const i=Hg(e*n);return{authorizedMaximumUsd:e,implementationTargetUsd:Hg(
-e-i),repairReserveUsd:i}}a(NC,"resolveBudgetPolicy");function ad(t,e){if(!(e>=1)||!(t>0))return 0;return t/e*1.25}a(ad,"\
+e-i),repairReserveUsd:i}}a(AC,"resolveBudgetPolicy");function ad(t,e){if(!(e>=1)||!(t>0))return 0;return t/e*1.25}a(ad,"\
 projectCycleCostUsd");function IC(t){const{policy:e,repairSpentUsd:r,repairCyclesGranted:n,projectedRepairCostUsd:i}=t;if(!(e.
 repairReserveUsd>0))return{funded:false,basis:"no_reserve",shortfallUsd:0};if(n<1)return{funded:true,basis:"first_repair"};
 const s=Math.max(0,r)+Math.max(0,i);if(s<=e.repairReserveUsd)return{funded:true,basis:"reserve_covers_projection"};return{
@@ -9276,9 +9318,9 @@ parse(t);return Array.isArray(e)?e.filter(r=>typeof r==="string"):[]}catch{retur
 const e=/\/pull\/(\d+)/.exec(t)??/\/merge_requests\/(\d+)/.exec(t);return e?Number(e[1]):void 0}a(sn,"parsePrNumber");var Hn=new Set;var $K=/\b(monitor|observer|watcher|sentinel)\s+(event|will\s+notify|notif)|will\s+notify\s+me|await(ing)?\s+(the\s+)?[^.\n]{0,40}\bevent\b|waiting\s+for\s+(that|the|an?)\s+[^.\n]{0,20}\b(event|signal|install|build|completion)\b|poll(ing)?\s+for\s+[^.\n]{0,40}\b(event|signal|ready)\b/i;
 var xK=/\b(install(ing|ed)?|npm|npm\s+ci|yarn|pnpm|node_modules|tsc|typecheck|eslint|lint|build|compil)/i;function CK(t){
 const e=(t??"").replace(/\s+/g," ");return $K.test(e)&&xK.test(e)}a(CK,"matchesEnvWaitHallucination");var OK=/\b(monitor|observer|watcher|sentinel|daemon|background\s+(process|task|job|watcher|runner)|completion\s+(notification|signal|event|message)|async\s+(runner|process)|callback|webhook)\b/i;
-var RK=/\b(wait(ing|s)?\s+for|await(ing|s)?|poll(ing|s)?\s+for|listen(ing)?\s+for|expect(ing)?\s+(a|an|the)?)\b/i;var AK=/\b(event|signal|notification|notify|callback|completion|ready\s+message|message\s+from|to\s+(complete|finish|be\s+(ready|done|installed|built)))\b/i;
+var RK=/\b(wait(ing|s)?\s+for|await(ing|s)?|poll(ing|s)?\s+for|listen(ing)?\s+for|expect(ing)?\s+(a|an|the)?)\b/i;var NK=/\b(event|signal|notification|notify|callback|completion|ready\s+message|message\s+from|to\s+(complete|finish|be\s+(ready|done|installed|built)))\b/i;
 function YC(t){const e=(t??"").replace(/\s+/g," ");if(!e)return false;const r=OK.test(e);const n=RK.test(e);if(r&&n)return true;
-if(n&&AK.test(e))return true;return CK(e)}a(YC,"matchesAsyncCoordConfabulation");var NK=new Set(["commit_made","file_com\
+if(n&&NK.test(e))return true;return CK(e)}a(YC,"matchesAsyncCoordConfabulation");var AK=new Set(["commit_made","file_com\
 mitted","file_written"]);var IK=/\b(premise\s+(is\s+)?contradict|contradict\w*\s+(the\s+)?premise|premise\s+(is\s+)?(false|invalid|not\s+met|does\s+not\s+hold)|finding\s+(is\s+)?invalid|invalid\s*[:\-]?\s*premise|premise\s+not\s+satisfied|conditional\s+premise)/i;
 function PK(t){const e=(t??"").replace(/\s+/g," ");if(!e)return false;return IK.test(e)}a(PK,"matchesInvalidPremiseSkip");
 var LK=/\b(instead of|rather than|chose (not )?to|decided (not )?to|opted (not )?to|I (did not|didn't|left|kept|skipped|avoided)|deviat|as opposed to|in lieu of|preserv\w* (both|the existing)|took a different approach)\b/i;
@@ -9574,7 +9616,7 @@ null,s.file??null,JSON.stringify(s.relatedFiles??[]),s.title,s.detail??"",s.firs
 null,s.lateDiscoveryReason??null,n,n)}}reconcileCycleFindings(e,r,n,i){try{const{kept:s,duplicates:o}=yl(n.findings??[]);
 if(o.length>0){this.deps.state.audit("loop.finding_deduplicated",{sessionId:e,cycle:r,before:(n.findings??[]).length,after:s.
 length,duplicates:o.slice(0,50).map(u=>({fingerprint:u.fingerprint,duplicateOf:u.duplicateOfFingerprint,reason:u.reason,
-dimension:u.dimension,file:u.file}))},e)}const l=this.loadFindingRecords(e);const c=Ay({cycle:r,current:s,prior:l,changedThisCycle:i});
+dimension:u.dimension,file:u.file}))},e)}const l=this.loadFindingRecords(e);const c=Ny({cycle:r,current:s,prior:l,changedThisCycle:i});
 this.saveFindingRecords(e,c.records);if(c.transitions.length>0){this.deps.state.audit("loop.finding_lifecycle_reconciled",
 {sessionId:e,cycle:r,open:c.records.filter(u=>u.state==="open"||u.state==="late_discovery").length,resolved:c.records.filter(
 u=>u.state==="resolved").length,stale:c.records.filter(u=>u.state==="stale").length,transitions:c.transitions.slice(0,50)},
@@ -9708,7 +9750,7 @@ const W=h.filter(de=>de.seq===M);this.deps.state.audit("loop.plan_policy_conflic
 map(de=>({path:de.path,rule:de.rule})),dispatchedWorkers:0},e);return await this.finaliseAwaitingClarification(e,Cg(W),M,
 0,n.cost_usd+y,{title:I?.title??`sub-task ${M}`,intent:I?.intent??"",task:I?structuredClone(I):void 0,policyConflicts:W.
 map(de=>({path:de.path,rule:de.rule}))})}let g=0;let v=n.cost_usd+y;let S;const E=[];const T=[];let x=[];let k=0;let C=0;
-let A=0;const P=[];let L="";const F=[];let j=false;const Z=NC({authorizedMaximumUsd:n.budget_usd,repairReserveRatio:this.
+let N=0;const P=[];let L="";const F=[];let j=false;const Z=AC({authorizedMaximumUsd:n.budget_usd,repairReserveRatio:this.
 deps.config.loop.repair_reserve_ratio});let me=0;const ne=new Set;const ae=this.hydrateObserveReports(e,p);let pe;let xe=null;
 let ee=null;let q=0;let Y=[];let z=null;let R="";const U=p.subTasks.flatMap(M=>(M.requiredBehaviorChecks??[]).filter(I=>I.
 required!==false));let G=U.length===0;let ce=null;const be=Date.now();let He=be;e:for(;;){let M=false;while(g<this.deps.
@@ -9755,8 +9797,8 @@ stringify(p),Date.now(),e);this.deps.state.audit("loop.revision_scope_approved",
 ie.coFixRoutings.map(X=>Qs(X.finding)));x=he.filter(X=>!Zt.has(X.key)).map(X=>({key:X.key,title:X.finding.title??"(untit\
 led)",file:(X.finding.file??"").trim(),severity:X.finding.severity??"low",occurrences:X.occurrences,coFixFiles:Ys(X.finding)}));
 for(const X of x){this.deps.state.audit("loop.finding_unresolvable_across_cycles",{sessionId:e,cycle:g,...X},e)}}const Pe=qK(
-p.subTasks);const Ne=new Set;if(g>1&&this.deps.config.loop.revise_scoping_enabled!==false&&S?.findings){const $=cC(p.subTasks,
-S.findings,g);if($.scoped){for(const he of $.skipSeqs)Ne.add(he);this.deps.state.audit("loop.revise_scoped",{sessionId:e,
+p.subTasks);const Ae=new Set;if(g>1&&this.deps.config.loop.revise_scoping_enabled!==false&&S?.findings){const $=cC(p.subTasks,
+S.findings,g);if($.scoped){for(const he of $.skipSeqs)Ae.add(he);this.deps.state.audit("loop.revise_scoped",{sessionId:e,
 cycle:g,run:$.runSeqs.length,skipped:$.skipSeqs.length,skipSeqs:$.skipSeqs,findingFiles:$.findingFiles},e);this.deps.logger.
 info("[loop] revise-scoping: skipping sub-tasks not targeted by any finding (already correct from a prior cycle)",{sessionId:e,
 cycle:g,run:$.runSeqs.length,skipped:$.skipSeqs.length});this.deps.interactionLog?.log(e,{event:"revise_scoped",phase:"p\
@@ -9766,7 +9808,7 @@ length;this.deps.state.audit("loop.revise_scope_skipped",{sessionId:e,cycle:g,re
 const Le=a(($,he)=>{if(H.seq!==$||H.err===null)return;const Te=H.err;H.seq=-1;H.err=null;this.deps.state.audit("loop.sub\
 task_failure_retracted",{sessionId:e,seq:$,cycle:g,why:he,retracted:String(Te).slice(0,300)},e);this.deps.logger.info("[\
 loop] sub-task failure retracted by a recovery path; the run continues",{sessionId:e,seq:$,why:he})},"retractFailure");const se={
-question:null,seq:-1,subtask:null};const Ye=a(async($,he)=>{if(Ne.has($.seq)){this.deps.state.db.prepare(`UPDATE sub_tas\
+question:null,seq:-1,subtask:null};const Ye=a(async($,he)=>{if(Ae.has($.seq)){this.deps.state.db.prepare(`UPDATE sub_tas\
 ks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE session_id = ? AND cycle = ? AND seq = ?`).run(
 "revise-scoped: not targeted by any review finding (unchanged from prior cycle)",Date.now(),e,g,$.seq);this.deps.state.audit(
 "loop.subtask_revise_scoped_skip",{sessionId:e,cycle:g,seq:$.seq},e);this.deps.interactionLog?.log(e,{event:"subtask_rev\
@@ -9806,12 +9848,12 @@ rule})),dispatched:false},e);this.deps.interactionLog?.log(e,{event:"plan_policy
 cycle:g,paths:un.map(ge=>ge.path)});this.deps.logger.warn("[loop] rc.10: refusing to dispatch a sub-task whose required \
 write the denylist blocks",{sessionId:e,seq:$.seq,conflicts:un.map(ge=>`${ge.path} (${ge.rule})`)});se.question=Cg(un);se.
 seq=$.seq;se.subtask={title:$.title,intent:$.intent,task:structuredClone($),policyConflicts:un.map(ge=>({path:ge.path,rule:ge.
-rule}))};H.err=`subtask_${$.seq}_blocked_by_policy: ${re}`;H.seq=$.seq;return}let J;const aA=Date.now();const oA=rn($,this.
+rule}))};H.err=`subtask_${$.seq}_blocked_by_policy: ${re}`;H.seq=$.seq;return}let J;const aN=Date.now();const oN=rn($,this.
 deps.config.models);this.deps.interactionLog?.logSdkRequest(e,{role:"worker",...this.routeLog("worker",this.deps.config.
-models.worker,oA),phase:"worker",seq:$.seq,cycle:g,prompt:`subtask ${$.seq}: ${$.title}
+models.worker,oN),phase:"worker",seq:$.seq,cycle:g,prompt:`subtask ${$.seq}: ${$.title}
 intent: ${$.intent??""}
 ${Zt??""}`});const qd=this.withObserveReports(e,$,g,ae);const nl=await this.runWorkerCallWithRetry({workerWorktree:he,sessionId:e,
-st:qd,cycle:g,brief:r,plan:p,requester:n.requester,dispatchHint:Zt,workerStart:aA,subTaskId:X});if(nl.outcome==="timeout"){
+st:qd,cycle:g,brief:r,plan:p,requester:n.requester,dispatchHint:Zt,workerStart:aN,subTaskId:X});if(nl.outcome==="timeout"){
 const re=$.taskMode==="observe";if(re){const ge=await this.tryScriptedVerifyFallback(e,p,$,g,Ze);if(ge==="pass"){this.deps.
 state.db.prepare(`UPDATE sub_tasks SET status = 'completed_no_change', summary = ?, updated_at = ? WHERE id = ?`).run(`s\
 cripted verifier fallback PASS (LLM verify sub-task timed out)`,Date.now(),X);we.add($.seq);return}if(ge!=="fail"){const je=await this.
@@ -9844,10 +9886,10 @@ if(typeof re==="string"&&re.trim())ne.add(re.trim())}const D_=XC(J);const U_=g>1
 ed_dirty",{sessionId:e,seq:$.seq,cycle:g,gate:"contract_selection",dirtyFiles:(J.commitReconciliation?.dirtyFiles??J.uncommittedFiles??
 []).slice(0,100)},e)}if(U_!==$.taskMode){this.deps.state.audit("loop.subtask_revise_no_change",{sessionId:e,seq:$.seq,cycle:g,
 taskMode:$.taskMode??"unspecified",effectiveTaskMode:"observe",trigger:"contract_selection"},e);this.deps.interactionLog?.
-log(e,{event:"subtask_revise_no_change",phase:"worker",seq:$.seq,cycle:g,effectiveTaskMode:"observe"})}const lA=Vu($,U_);
-const M_=this.deps.config.loop.contract_rederive_enabled!==false;const cA=M_&&this.deps.listRepoFiles?await this.deps.listRepoFiles(
-he).catch(()=>[]):[];const ca=[];const Ct=lA.map(re=>{if(!M_)return re;if(!("path"in re)||!re.path||re.kind==="file_in_p\
-r")return re;const ge=Ex(re.path,[...ne],{repoFiles:cA});if(ge.suggestion){this.deps.state.audit("loop.contract_path_cor\
+log(e,{event:"subtask_revise_no_change",phase:"worker",seq:$.seq,cycle:g,effectiveTaskMode:"observe"})}const lN=Vu($,U_);
+const M_=this.deps.config.loop.contract_rederive_enabled!==false;const cN=M_&&this.deps.listRepoFiles?await this.deps.listRepoFiles(
+he).catch(()=>[]):[];const ca=[];const Ct=lN.map(re=>{if(!M_)return re;if(!("path"in re)||!re.path||re.kind==="file_in_p\
+r")return re;const ge=Ex(re.path,[...ne],{repoFiles:cN});if(ge.suggestion){this.deps.state.audit("loop.contract_path_cor\
 rection_suggested",{sessionId:e,seq:$.seq,cycle:g,kind:re.kind,keeping:re.path,candidate:ge.suggestion.path,via:ge.suggestion.
 via,confidence:ge.suggestion.confidence,reason:ge.suggestion.reason},e);this.deps.logger.warn("[loop] rc.9: declined to \
 re-derive a contract path across artifact kinds; keeping the declared path",{sessionId:e,seq:$.seq,keeping:re.path,candidate:ge.
@@ -9862,7 +9904,7 @@ re)){const Ce=je.indexOf(it.from);if(Ce===-1)continue;const pt=ge[Ce];const ht=C
 t_test_path_reconciled",{sessionId:e,seq:$.seq,cycle:g,kind:ht.kind,from:it.from,to:it.to,subTaskTouched:re},e);this.deps.
 logger.info("[loop] reconciled a drifted TEST contract path onto the file this sub-task committed",{sessionId:e,seq:$.seq,
 cycle:g,from:it.from,to:it.to});this.deps.interactionLog?.log(e,{event:"contract_test_path_reconciled",phase:"worker",seq:$.
-seq,cycle:g,from:it.from,to:it.to})}}if(this.deps.config.loop.plan_path_writeback_enabled!==false&&ca.length>0){const re=Ag(
+seq,cycle:g,from:it.from,to:it.to})}}if(this.deps.config.loop.plan_path_writeback_enabled!==false&&ca.length>0){const re=Ng(
 $.filesLikelyTouched,ca);if(re.applied.length>0){const ge=[...$.filesLikelyTouched??[]];$.filesLikelyTouched=re.files;this.
 deps.state.audit("loop.plan_path_written_back",{sessionId:e,seq:$.seq,cycle:g,applied:re.applied,before:ge,after:re.files},
 e);this.deps.interactionLog?.log(e,{event:"plan_path_written_back",phase:"worker",seq:$.seq,cycle:g,applied:re.applied.map(
@@ -9899,7 +9941,7 @@ summary:je.summary});if(je.ok&&($.taskMode==="observe"||Ct.length===0&&$.taskMod
 e,$,J,Ct)}if(!je.ok){const it=this.deps.config.loop.worker_protocol_retry_enabled!==false;const Ce=Math.min(5,Math.max(1,
 this.deps.config.loop.worker_protocol_max_attempts??3));for(;;){const Se=je.results.filter(dt=>!dt.passed);const _t=YC(J.
 finalMessage??"");const Ue=gl({finalMessage:J.finalMessage,commitSha:J.commitSha,deniedToolCalls:J.deniedToolCalls,taskContext:$});
-const Ei=!J.commitSha&&Se.length>0&&Se.every(dt=>NK.has(dt.kind));const Jn=Ue.kind==="recoverable_tool_denial"||Ue.kind===
+const Ei=!J.commitSha&&Se.length>0&&Se.every(dt=>AK.has(dt.kind));const Jn=Ue.kind==="recoverable_tool_denial"||Ue.kind===
 "progress_only";const ir=Ue.kind==="refusal"||Ue.kind==="genuine_blocker"||Ue.kind==="policy_denial";const $r=Jn?Ce-1:1;
 if(Ue.kind==="recoverable_tool_denial"&&Ei){this.deps.state.audit("loop.worker_recoverable_tool_denial",{sessionId:e,seq:$.
 seq,subTaskId:X,cycle:g,category:Ue.recoverable.category,deniedCommand:(Ue.recoverable.title??"").slice(0,300),reason:Ue.
@@ -10022,8 +10064,8 @@ commitSha??null,committed:_t,unmet:Se}});se.seq=$.seq;se.subtask={title:$.title,
 if(rr&&this.deps.config.loop.clarification_escalation_enabled!==false){const Se=Xe.explanation??kt.split("\n").map(_t=>_t.
 trim()).find(Boolean)??kt.slice(0,200);se.question=`Sub-task ${$.seq} ("${$.title}") could not proceed. The worker's exp\
 lanation: ${gy(Se).slice(0,500)}. How should it proceed? (Answer with a decision, or say "skip" to drop this sub-task, o\
-r "abort".)`;se.seq=$.seq;se.subtask={title:$.title,intent:$.intent,task:structuredClone($)}}const uA=new Set(["file_com\
-mitted","file_written"]);const j_=!!J.commitSha&&ht.length>0&&ht.every(Se=>uA.has(Se.kind)&&!!Se.path);if(!se.question&&
+r "abort".)`;se.seq=$.seq;se.subtask={title:$.title,intent:$.intent,task:structuredClone($)}}const uN=new Set(["file_com\
+mitted","file_written"]);const j_=!!J.commitSha&&ht.length>0&&ht.every(Se=>uN.has(Se.kind)&&!!Se.path);if(!se.question&&
 j_&&this.deps.config.loop.basename_rescue_enabled!==false&&this.deps.listRepoFiles&&this.deps.buildVerifyProbes){try{const Se=this.
 generatorVerifyCtx(he).generators;const _t=a($r=>!!Se?.ownerOf($r),"isGenerated");const Ue=Xx(Se,[...new Set(ht.map($r=>$r.
 path).filter(Boolean))]);const Ei=(J.filesChanged??[]).filter($r=>typeof $r==="string"&&!!$r.trim());const Jn=await this.
@@ -10034,7 +10076,7 @@ priorAttemptCommits:hi,cycle:g,reviseTargetedPlanbaseWindow:this.deps.config.loo
 acceptRenameAsWrite:this.deps.config.loop.file_written_accepts_rename!==false,...this.generatorVerifyCtx(he,$r)},Xn);this.
 deps.state.audit("loop.contract_path_basename_rescued",{sessionId:e,seq:$.seq,cycle:g,kind:ir.kind??"basename",from:ir.from,
 to:ir.to,via:ir.via,reason:ir.reason,verified:gr.ok,summary:gr.summary},e);if(gr.ok){de=true;if(this.deps.config.loop.plan_path_writeback_enabled!==
-false){const dt=$.filesLikelyTouched??[];const qt=Ag(dt,[{from:ir.from,to:ir.to}]);if(qt.applied.length>0){$.filesLikelyTouched=
+false){const dt=$.filesLikelyTouched??[];const qt=Ng(dt,[{from:ir.from,to:ir.to}]);if(qt.applied.length>0){$.filesLikelyTouched=
 qt.files;this.deps.state.audit("loop.plan_path_written_back",{sessionId:e,seq:$.seq,cycle:g,applied:qt.applied,before:dt,
 after:qt.files,source:"basename_rescue"},e)}}this.deps.interactionLog?.log(e,{event:"contract_path_basename_rescued",phase:"\
 worker",seq:$.seq,cycle:g,from:ir.from,to:ir.to});this.deps.logger.info(`[loop] ${Kx(ir)}; re-verified clean, continuing\
@@ -10219,7 +10261,7 @@ _change_no_blocking_findings";break}const ot=S.verdict==="block"?"no_change_cycl
 cle_with_blocking_findings";this.deps.logger.error("[loop] revise cycle produced no commits while blocking findings rema\
 in; refusing to open a misleading PR",{sessionId:e,cycle:g,headSha:$,verdict:S.verdict,carriedBlocking:Te});this.deps.state.
 audit("loop.cycle_no_change_blocked",{sessionId:e,cycle:g,headSha:$,verdict:S.verdict,carriedBlocking:Te,reason:ot},e);return await this.
-finaliseFailedPreserveWorktree(e,ot,g,v)}}let qe;let ur;let Rt;let xt;const At=Date.now();this.deps.interactionLog?.logSdkRequest(
+finaliseFailedPreserveWorktree(e,ot,g,v)}}let qe;let ur;let Rt;let xt;const Nt=Date.now();this.deps.interactionLog?.logSdkRequest(
 e,{role:"adversary",...this.routeLog("adversary",this.deps.config.models.adversary),phase:"review",cycle:g,prompt:`adver\
 sary review cycle ${g} for ${r.title}; checklist: ${(p.reviewChecklist??[]).join("; ")}`});try{try{const $=this.deps.state.
 db.prepare(`SELECT plan_base_sha FROM sessions WHERE id = ?`).get(e);Rt=$?.plan_base_sha??void 0;if(Rt&&this.deps.worktreeHeadSha){
@@ -10243,16 +10285,16 @@ conds"),$=>({costUsd:$.costUsd,usageMeasured:$.usageMeasured,providerResultId:$.
 findings:$.findings.length}}));ur={...qe,findings:[...qe.findings??[]]};this.deps.state.audit("loop.review_raw",{sessionId:e,
 cycle:g,verdict:ur.verdict,findings:ur.findings,summary:ur.summary,sdkSessionId:ur.sdkSessionId??null},e);this.deps.interactionLog?.
 logSdkResponse(e,{role:"adversary",...this.routeLog("adversary",this.deps.config.models.adversary),phase:"review",cycle:g,
-finishReason:qe.verdict,costUsd:qe.costUsd,durationMs:Date.now()-At,outputChars:qe.summary?qe.summary.length:void 0,sdkSessionId:qe.
+finishReason:qe.verdict,costUsd:qe.costUsd,durationMs:Date.now()-Nt,outputChars:qe.summary?qe.summary.length:void 0,sdkSessionId:qe.
 sdkSessionId});v+=qe.costUsd;if(v>n.budget_usd&&!j){j=true;this.deps.state.audit("loop.session_budget_warn",{sessionId:e,
 phase:"review",cycle:g,totalCost:v,sessionBudget:n.budget_usd},e);this.warnSessionBudgetSoft(e,n.requester,v,n.budget_usd)}}catch($){
 const he=$ instanceof mr;const Te=he?$.cause:void 0;const ot=$ instanceof Si||Te instanceof Si;if(ot){this.deps.state.audit(
 "loop.adversary_timeout",{sessionId:e,cycle:g,adversary_timeout_seconds:this.deps.config.loop.adversary_timeout_seconds},
 e)}this.deps.interactionLog?.logSdkResponse(e,{role:"adversary",...this.routeLog("adversary",this.deps.config.models.adversary),
-phase:"review",cycle:g,finishReason:ot?"timeout":"error",durationMs:Date.now()-At});this.deps.interactionLog?.log(e,{event:"\
+phase:"review",cycle:g,finishReason:ot?"timeout":"error",durationMs:Date.now()-Nt});this.deps.interactionLog?.log(e,{event:"\
 review_failed",phase:"review",cycle:g,isTimeout:ot,error:String($?.message??$)});this.deps.state.audit("loop.review_fail\
 ed",{sessionId:e,cycle:g,isTimeout:ot,error:String($?.message??$)},e);this.deps.logger.error("[loop] adversary review cr\
-ashed",{sessionId:e,cycle:g,isTimeout:ot,err:String($)});this.emitPhaseTiming(e,"review",g,At,{verdict:null,isTimeout:ot,
+ashed",{sessionId:e,cycle:g,isTimeout:ot,err:String($)});this.emitPhaseTiming(e,"review",g,Nt,{verdict:null,isTimeout:ot,
 error:String($?.message??$).slice(0,200)});if(he){return{status:"failed",sessionId:e,reason:`accounting_incomplete: ${$.
 message}`,cycles:g,totalCostUsd:v}}return await this.finaliseReviewCrash(e,$,g,v,{plan:p,brief:r,lastReview:S,row:n})}if(ut.
 length>0){const $=ut.filter(he=>Uo(he,pi(he,this.classifyCtx)));qe={...qe,findings:[...qe.findings,...ut],verdict:qe.verdict===
@@ -10298,18 +10340,18 @@ e,Qe,g,v,{plan:p,brief:r,lastReview:S,row:n})}this.emitPhaseTiming(e,"preview",g
 worktreePath,W).catch(()=>[]):[];qe=this.reconcileCycleFindings(e,g,qe,tr);try{this.saveReview(e,g,qe)}catch($){this.deps.
 state.audit("loop.review_failed",{sessionId:e,cycle:g,isTimeout:false,stage:"persist_effective_review",error:String($)},
 e);this.deps.logger.error("[loop] effective review persistence failed",{sessionId:e,cycle:g,err:String($)});this.emitPhaseTiming(
-e,"review",g,At,{verdict:qe.verdict,error:String($?.message??$).slice(0,200)});return await this.finaliseReviewCrash(e,$,
+e,"review",g,Nt,{verdict:qe.verdict,error:String($?.message??$).slice(0,200)});return await this.finaliseReviewCrash(e,$,
 g,v,{plan:p,brief:r,lastReview:S,row:n})}S=qe;if(qe.verdict==="pass"&&ut.length===0&&(qe.findings?.length??0)>0){this.deps.
 state.audit("loop.converged_on_green",{sessionId:e,cycle:g,findings:qe.findings.length},e)}this.deps.state.audit("loop.r\
 eview",{sessionId:e,cycle:g,verdict:qe.verdict,findings:qe.findings.length,conventionFindings:ut.length},e);this.emitPhaseTiming(
-e,"review",g,At,{verdict:qe.verdict,findings:qe.findings.length,costUsd:qe.costUsd});E.push(qe.findings?.length??0);T.push(
-[...qe.findings??[]]);if(C>0)A=Math.max(A,Date.now()-C);const Tr=this.countBlockingFindings(qe.findings);P.push(Tr);this.
+e,"review",g,Nt,{verdict:qe.verdict,findings:qe.findings.length,costUsd:qe.costUsd});E.push(qe.findings?.length??0);T.push(
+[...qe.findings??[]]);if(C>0)N=Math.max(N,Date.now()-C);const Tr=this.countBlockingFindings(qe.findings);P.push(Tr);this.
 deps.state.audit("loop.blocking_findings",{sessionId:e,cycle:g,verdict:qe.verdict,findings:qe.findings?.length??0,blockingFindings:Tr},
 e);const ti={currentStatus:"reviewing",verdict:qe.verdict,blockingFindings:Tr,shipWhenNoBlockingFindings:this.deps.config.
 loop.ship_when_no_blocking_findings!==false,cyclesRan:g,maxCycles:this.deps.config.loop.max_cycles,findingCountsByCycle:E,
 blockingCountsByCycle:P,cycleExtensionsGranted:k,maxCycleExtensions:i?0:this.deps.config.loop.max_cycle_extensions??1,budgetHeadroomOk:this.
 hasBudgetHeadroomForAnotherCycle(n.requester,v,g,Z.implementationTargetUsd),shipTimeReserved:Bg({now:Date.now(),hardDeadlineMs:c,
-reserveSeconds:this.deps.config.loop.ship_time_reserve_seconds??600,totalBudgetSeconds:o,hasWork:g>=1,observedCycleMs:A}),
+reserveSeconds:this.deps.config.loop.ship_time_reserve_seconds??600,totalBudgetSeconds:o,hasWork:g>=1,observedCycleMs:N}),
 budgetExhausted:i?v>n.budget_usd:this.dailyMaxUsd()>0&&this.safeDailySpend(n.requester)>this.dailyMaxUsd(),hardTimeout:Date.
 now()>c};let vr=t.advance(ti);this.deps.state.audit("loop.transition",{sessionId:e,from:"reviewing",...vr},e);if(vr.nextStatus===
 "done"){L=vr.reason;break}if(vr.nextStatus==="failed"){return await this.finaliseFailed(e,vr.reason,g,v)}if(vr.nextStatus===
@@ -10344,7 +10386,7 @@ worktreeHeadSha(p.worktreePath).catch(()=>""):""}catch{I=""}if(I){this.deps.stat
 this.deps.ciSnapshot)){ce=null;R=I;this.setStatus(e,"reviewing");this.markProgress(e,"ci_wait","finalize",{cycle:g,sha:I});
 const W=await this.pollCiStatus({sessionId:e,repoFullName:p.repo,sha:I,requester:n.requester,workflowAuthoredThisSession:M});
 if(W.outcome==="success"){const de=U;const _e=W.checkNames??[];const ie=_e.map(Pe=>Pe.toLowerCase());const Re=de.filter(
-Pe=>{const Ne=Pe.ciCheck.toLowerCase();return!ie.some(we=>we===Ne||we.includes(Ne))});if(Re.length>0){G=false;ce=`requir\
+Pe=>{const Ae=Pe.ciCheck.toLowerCase();return!ie.some(we=>we===Ae||we.includes(Ae))});if(Re.length>0){G=false;ce=`requir\
 ed CI behavior checks missing on ${I}: ${Re.map(Pe=>Pe.ciCheck).join(", ")}`;xe={recommendation:"needs_human_review",reason:`${ce}\
 . Path/commit checks are not behavioral verification.`};this.deps.state.audit("loop.behavior_verification_failed",{sessionId:e,
 cycle:g,candidateSha:I,ciSha:I,required:de.map(Pe=>({id:Pe.id,ciCheck:Pe.ciCheck})),observed:_e,missing:Re.map(Pe=>Pe.ciCheck)},
@@ -10366,12 +10408,12 @@ this.deps.state.audit("loop.ci_green_via_workflow_runs",{sessionId:e,cycle:g,sha
 {const I=Math.max(0,this.deps.config.ci?.max_repair_cycles??1);const W=IC({policy:Z,repairSpentUsd:Math.max(0,v-me),repairCyclesGranted:q,
 projectedRepairCostUsd:q>0?ad(Math.max(0,v-me),q):0});const de=W.funded&&this.hardCapsAllow(n.requester,v,g,false);const _e=c-
 Date.now();let ie=_e>0&&!Bg({now:Date.now(),hardDeadlineMs:c,reserveSeconds:this.deps.config.loop.ship_time_reserve_seconds??
-600,totalBudgetSeconds:o,hasWork:true,observedCycleMs:A});const Re=xe!==null&&Y.length>0;const Pe=q<I;const Ne=Re&&Pe&&de&&
-ie;if(Re&&!Ne){this.deps.state.audit("loop.ci_repair_declined",{sessionId:e,cycle:g,granted:q,ceiling:I,budgetOk:de,ceilingOk:Pe,
+600,totalBudgetSeconds:o,hasWork:true,observedCycleMs:N});const Re=xe!==null&&Y.length>0;const Pe=q<I;const Ae=Re&&Pe&&de&&
+ie;if(Re&&!Ae){this.deps.state.audit("loop.ci_repair_declined",{sessionId:e,cycle:g,granted:q,ceiling:I,budgetOk:de,ceilingOk:Pe,
 clockOk:ie,spentUsd:Number(v.toFixed(4)),repairFunding:W.basis,repairReserveUsd:Z.repairReserveUsd,repairSpentUsd:Number(
-Math.max(0,v-me).toFixed(4)),extensionAvailable:false,remainingMs:Math.max(0,c-Date.now()),observedCycleMs:A,timeExtensionAvailable:false,
+Math.max(0,v-me).toFixed(4)),extensionAvailable:false,remainingMs:Math.max(0,c-Date.now()),observedCycleMs:N,timeExtensionAvailable:false,
 reason:I===0?"disabled":!Pe?"ceiling":!de?"budget":!ie?"wall_clock":"unknown",blockers:[!Pe?"ceiling":"",!de?"budget":"",
-!ie?"wall_clock":""].filter(Boolean),findings:rd(Y)},e)}if(Ne){if(q===0)me=v;q+=1;S={...S,verdict:"revise",findings:[...S.
+!ie?"wall_clock":""].filter(Boolean),findings:rd(Y)},e)}if(Ae){if(q===0)me=v;q+=1;S={...S,verdict:"revise",findings:[...S.
 findings??[],...Y]};this.deps.state.audit("loop.ci_repair_cycle_granted",{sessionId:e,cycle:g,granted:q,ceiling:I,spentUsd:Number(
 v.toFixed(4)),findings:rd(Y),files:Y.map(we=>we.file).filter(Boolean)},e);this.deps.interactionLog?.log(e,{event:"ci_rep\
 air_cycle_granted",phase:"finalize",cycle:g,findings:Y.length});this.addCiRepairSubTask(e,g,p,Y);this.deps.logger.info("\
@@ -10381,28 +10423,28 @@ cycle:g});Y=[];continue e}break e}}if(!G){return await this.finaliseFailedPreser
 ed: ${ce??"required CI checks never produced a green verdict on the candidate SHA"}`,g,v)}const We=S.verdict==="pass";const nt=this.
 mergeBlockingFindings(S.findings);const w=ox({review:{verdict:S.verdict,findings:S.findings??[]},blockingFindings:this.countBlockingFindings(
 S.findings),mergeBlockingFindings:nt.length,mergeBlockingTitles:nt.map(M=>M.title||M.dimension||"(untitled)"),reachedCleanPass:We,
-ciStatus:void 0});const O=xe?.recommendation??w.recommendation;let N=xe?`${xe.reason}
+ciStatus:void 0});const O=xe?.recommendation??w.recommendation;let A=xe?`${xe.reason}
 
-(review verdict: ${S.verdict}; ${w.reason})`:w.reason;if(ee)N=`${N}
+(review verdict: ${S.verdict}; ${w.reason})`:w.reason;if(ee)A=`${A}
 
-${ee}`;if(x.length>0){N=`${N}
+${ee}`;if(x.length>0){A=`${A}
 
-${pC(x)}`}{const M=(S.findings??[]).map(I=>({f:I,b:gn(I)})).filter(I=>I.b!==null);if(M.length>0){N=`${N}
+${pC(x)}`}{const M=(S.findings??[]).map(I=>({f:I,b:gn(I)})).filter(I=>I.b!==null);if(M.length>0){A=`${A}
 
 ${M.map(({f:I,b:W})=>Ty(I,W)).join("\n\n")}`}}if(L==="shipped_max_cycles_revise_converging"){const M=E.join(" → ");const I=this.
 deps.config.loop.max_cycles+k;const W=k>0?` (${this.deps.config.loop.max_cycles} configured, +${k} granted for convergin\
-g findings)`:"";N=`${N}
+g findings)`:"";A=`${A}
 
 CONVERGING: adversary findings were trending down across cycles (${M}) but the run hit the ${I}-cycle ceiling${W} before\
  a clean pass. This looks worth extending: re-run \`a new confirmed change\` on this PR to continue from the current findi\
 ngs — a clean sign-off was plausibly one or two cycles away.`;this.deps.state.audit("loop.max_cycles_extend_suggested",
 {sessionId:e,findingCountsByCycle:E,maxCycles:this.deps.config.loop.max_cycles,cycleExtensionsGranted:k,effectiveCeiling:I},
-e)}N=`${N}
+e)}A=`${A}
 
 ${xC({published:!!z,verdict:S.verdict,sha:z?.sha})}`;const D=sn(pe);this.deps.state.db.prepare(`UPDATE sessions SET fina\
 l_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? \
-WHERE id = ?`).run(pe,D??null,O,N,Date.now(),e);this.recordPublicationEvidence(e,z);this.deps.state.audit("loop.shipped",
-{sessionId:e,prUrl:pe,prNumber:D,mergeRecommendation:O,reason:N,ciOverride:!!xe,publishedSha:z?.sha??null,publicationVerified:!!z,
+WHERE id = ?`).run(pe,D??null,O,A,Date.now(),e);this.recordPublicationEvidence(e,z);this.deps.state.audit("loop.shipped",
+{sessionId:e,prUrl:pe,prNumber:D,mergeRecommendation:O,reason:A,ciOverride:!!xe,publishedSha:z?.sha??null,publicationVerified:!!z,
 ciSha:R||null},e);this.emitPhaseTiming(e,"ship",g,He,{prNumber:D,mergeRecommendation:O,sinceFirstShipAttemptMs:Math.max(
 0,Date.now()-be)});await this.tryReleaseWorktree(e,p.repo,p.worktreePath,"shipped");return{status:"shipped",sessionId:e,
 prUrl:pe,cycles:g,totalCostUsd:v}}priorObserveCompleted(e,r,n){try{const i=this.deps.state.db.prepare(`SELECT cycle, sta\
@@ -10497,8 +10539,8 @@ log(r,{event:"worker_timeout_retry",phase:"worker",seq:n.seq,cycle:i,attempt:T,p
 _timeout"});this.deps.logger.warn("[loop] worker timed out; retrying once on a FRESH SDK session",{sessionId:r,seq:n.seq,
 attempt:T,priorKind:_?"first_token_timeout":"worker_timeout"})}const x=Date.now();let k=null;let C=false;if(T>1){this.deps.
 state.audit("loop.worker_retry_reinvoked",{sessionId:r,seq:n.seq,attempt:T,worker_timeout_seconds:this.deps.config.loop.
-worker_timeout_seconds},r)}let A;const P=new Promise((F,j)=>{A=j});P.catch(()=>{});try{const F=this.makeStreamSlowCallback(
-r,n.seq,i,{plan:o,baseSha:f,onIdleAbort:a(()=>A?.(new Si(this.deps.config.loop.worker_timeout_seconds)),"onIdleAbort")});
+worker_timeout_seconds},r)}let N;const P=new Promise((F,j)=>{N=j});P.catch(()=>{});try{const F=this.makeStreamSlowCallback(
+r,n.seq,i,{plan:o,baseSha:f,onIdleAbort:a(()=>N?.(new Si(this.deps.config.loop.worker_timeout_seconds)),"onIdleAbort")});
 k=await Bn(Promise.race([this.runAccountedWorker({sessionId:r,subTaskId:e.subTaskId,cycle:i,seq:n.seq,model:d,requester:l,
 baseSha:f,paths:n.filesLikelyTouched??[]},()=>this.deps.runWorker({brief:s,subTask:n,plan:o,requester:l,dispatchHint:c,worktreePath:u,
 modelOverride:d,onStreamSlow:F,onActivity:this.makeWorkerActivityCallback(r,n.seq,i),firstTokenTimeoutSecondsOverride:E(
@@ -10584,14 +10626,14 @@ none_grace_seconds:45};const l=Math.max(30,o.wait_timeout_seconds??900)*1e3;cons
 sleep??(x=>new Promise(k=>setTimeout(k,x)));const f=e.now??(()=>Date.now());const _=f();this.deps.state.audit("loop.ci_p\
 oll_started",{sessionId:r,sha:i,waitTimeoutSeconds:o.wait_timeout_seconds,pollIntervalSeconds:o.poll_interval_seconds},r);
 this.deps.interactionLog?.log(r,{event:"ci_poll_started",phase:"finalize",sha:i});let y=0;let b=0;let g="";let v=0;let S="";
-let E=false;let T=[];for(;;){let x;let k;try{if(this.deps.ciSnapshot){const A=await this.deps.ciSnapshot({repoFullName:n,
-sha:i,requester:s});x=A.state;k=A.checkTotal;T=[...A.checkNames??[]];if(A.state==="unknown")g=A.reason;if(A.permanentDenial){
-v+=1;S=A.permanentDenial}else{v=0}if(A.checksSource==="workflow_runs"&&!E){E=true;this.deps.state.audit("loop.ci_read_vi\
-a_workflow_runs",{sessionId:r,sha:i,polls:y,checkTotal:A.checkTotal,reason:A.reason},r)}}else{x=await this.deps.ciCombinedStatus(
-{repoFullName:n,sha:i,requester:s})}}catch(A){this.deps.logger.warn("[loop] CI status fetch failed (treating as pending)",
-{sessionId:r,sha:i,err:String(A)});x="pending"}y++;if(typeof k==="number"){if(k>b)b=k;else if(k<b&&(x==="success"||x==="\
+let E=false;let T=[];for(;;){let x;let k;try{if(this.deps.ciSnapshot){const N=await this.deps.ciSnapshot({repoFullName:n,
+sha:i,requester:s});x=N.state;k=N.checkTotal;T=[...N.checkNames??[]];if(N.state==="unknown")g=N.reason;if(N.permanentDenial){
+v+=1;S=N.permanentDenial}else{v=0}if(N.checksSource==="workflow_runs"&&!E){E=true;this.deps.state.audit("loop.ci_read_vi\
+a_workflow_runs",{sessionId:r,sha:i,polls:y,checkTotal:N.checkTotal,reason:N.reason},r)}}else{x=await this.deps.ciCombinedStatus(
+{repoFullName:n,sha:i,requester:s})}}catch(N){this.deps.logger.warn("[loop] CI status fetch failed (treating as pending)",
+{sessionId:r,sha:i,err:String(N)});x="pending"}y++;if(typeof k==="number"){if(k>b)b=k;else if(k<b&&(x==="success"||x==="\
 none")){this.deps.state.audit("loop.ci_check_count_regressed",{sessionId:r,sha:i,polls:y,checkTotal:k,maxChecksSeen:b,rejectedStatus:x},
-r);x="pending"}}if(x==="unknown"){const A=Math.max(1,o.permanent_denial_polls??2);if(v>=A){const F=Math.round((f()-_)/1e3);
+r);x="pending"}}if(x==="unknown"){const N=Math.max(1,o.permanent_denial_polls??2);if(v>=N){const F=Math.round((f()-_)/1e3);
 this.deps.state.audit("loop.ci_permanently_denied",{sessionId:r,sha:i,polls:y,waitedSeconds:F,denial:S,reason:g},r);this.
 deps.interactionLog?.log(r,{event:"ci_permanently_denied",phase:"finalize",sha:i});this.deps.logger.warn("[loop] beta.12\
 4: CI is unreadable for a reason waiting cannot fix -- abandoning the poll",{sessionId:r,sha:i,polls:y,denial:S});return{
@@ -10604,18 +10646,18 @@ viaWorkflowRuns:E},r);this.deps.interactionLog?.log(r,{event:"ci_success",phase:
 success",...T.length>0?{checkNames:T}:{},...E?{degradedSource:`CI passed, but read via the Actions workflow-runs API: th\
 is token cannot call the Checks API (a fine-grained PAT never can). Every GitHub Actions run on ${i.slice(0,8)} and ever\
 y legacy commit status passed. A check run posted by a third-party GitHub App would not have been seen.`}:{}}}if(x==="fa\
-ilure"){let A="";try{A=this.deps.ciFailingLogs?await this.deps.ciFailingLogs({repoFullName:n,sha:i,requester:s}):""}catch(P){
+ilure"){let N="";try{N=this.deps.ciFailingLogs?await this.deps.ciFailingLogs({repoFullName:n,sha:i,requester:s}):""}catch(P){
 this.deps.logger.warn("[loop] CI failing-log fetch failed (non-fatal)",{sessionId:r,sha:i,err:String(P)})}this.deps.state.
-audit("loop.ci_failure",{sessionId:r,sha:i,polls:y,logsExcerpt:(A??"").slice(0,800)},r);this.deps.interactionLog?.log(r,
-{event:"ci_failure",phase:"finalize",sha:i,polls:y});return{outcome:"failure",logs:A??""}}if(x==="none"){const A=f()-_;if(d&&
-A<u&&A+c<=l){this.deps.state.audit("loop.ci_none_grace_wait",{sessionId:r,sha:i,polls:y,elapsedMs:A,graceMs:u},r);await p(
-c);continue}this.deps.state.audit("loop.ci_none",{sessionId:r,sha:i,polls:y,graceActive:d,authoredWorkflowGrace:h,elapsedMs:A},
+audit("loop.ci_failure",{sessionId:r,sha:i,polls:y,logsExcerpt:(N??"").slice(0,800)},r);this.deps.interactionLog?.log(r,
+{event:"ci_failure",phase:"finalize",sha:i,polls:y});return{outcome:"failure",logs:N??""}}if(x==="none"){const N=f()-_;if(d&&
+N<u&&N+c<=l){this.deps.state.audit("loop.ci_none_grace_wait",{sessionId:r,sha:i,polls:y,elapsedMs:N,graceMs:u},r);await p(
+c);continue}this.deps.state.audit("loop.ci_none",{sessionId:r,sha:i,polls:y,graceActive:d,authoredWorkflowGrace:h,elapsedMs:N},
 r);this.deps.interactionLog?.log(r,{event:"ci_none",phase:"finalize",sha:i});if(h){return{outcome:"authored_workflow_nev\
-er_registered",sha:i,waitedSeconds:Math.round(A/1e3)}}return{outcome:"none"}}const C=f()-_;if(C+c>l){const A=Math.round(
-C/1e3);this.deps.state.audit("loop.ci_wait_timeout",{sessionId:r,sha:i,polls:y,waitedSeconds:A,waitTimeoutSeconds:o.wait_timeout_seconds},
-r);this.deps.interactionLog?.log(r,{event:"ci_wait_timeout",phase:"finalize",sha:i,waitedSeconds:A});this.deps.logger.warn(
+er_registered",sha:i,waitedSeconds:Math.round(N/1e3)}}return{outcome:"none"}}const C=f()-_;if(C+c>l){const N=Math.round(
+C/1e3);this.deps.state.audit("loop.ci_wait_timeout",{sessionId:r,sha:i,polls:y,waitedSeconds:N,waitTimeoutSeconds:o.wait_timeout_seconds},
+r);this.deps.interactionLog?.log(r,{event:"ci_wait_timeout",phase:"finalize",sha:i,waitedSeconds:N});this.deps.logger.warn(
 "[loop] CI still running after the wait timeout; surfacing a resumable checkpoint (NOT a hard fail)",{sessionId:r,sha:i,
-waitedSeconds:A});return{outcome:"timeout",sha:i,waitedSeconds:A}}await p(c)}}get classifyCtx(){return{repoHasTestScript:true,
+waitedSeconds:N});return{outcome:"timeout",sha:i,waitedSeconds:N}}await p(c)}}get classifyCtx(){return{repoHasTestScript:true,
 hasDeclaredGenerators:!Qr(this.deps.config.verify?.generators).empty}}runGeneratorConfigCheck(e,r,n){const i=Qr(this.deps.
 config.verify?.generators);if(i.empty&&i.errors.length===0)return[];const s=[];for(const l of i.errors){this.deps.state.
 audit("loop.generator_config_invalid",{sessionId:e,cycle:n,script:l.script,path:l.path,reason:l.reason},e);s.push({dimension:"\
@@ -10796,7 +10838,7 @@ riskLevel:"low"};const h=this.getLastReview(e);const p=h??{verdict:"revise",find
 {sessionId:e,plan:u,brief:d,reviewReport:p,requester:s.requester,cycle:n,stage:"abort_salvage",existing:null});if(!f.ok){
 if(f.kind==="push_failed")throw f.pushError;this.deps.state.audit("loop.abort_salvage_unpublished",{sessionId:e,abortReason:r,
 failureKind:f.kind,candidateSha:f.candidateSha||"(unresolved)",observedSha:f.observedSha??null,detail:f.message},e);throw new Error(
-`abort_salvage_unpublished (${f.kind}): ${f.message}`)}const _=f.prUrl;const y=AC(r,n,h);const b=sn(_);this.setStatus(e,
+`abort_salvage_unpublished (${f.kind}): ${f.message}`)}const _=f.prUrl;const y=NC(r,n,h);const b=sn(_);this.setStatus(e,
 "done");this.deps.state.db.prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge\
 _recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`).run(_,b??null,"needs_human_review",y,Date.now(),
 e);this.recordPublicationEvidence(e,f.evidence);this.deps.state.audit("loop.shipped",{sessionId:e,prUrl:_,prNumber:b,mergeRecommendation:"\
@@ -11129,20 +11171,22 @@ auditCode:"autonomous_in_envelope"})}return Object.freeze({outcome:"terminate",c
 reason:n.reason})}a(dO,"decideEngineAuthority");var Zo=class{static{a(this,"AutonomousControlEngine")}options;now;constructor(e){
 this.options=e;this.now=e.now??Date.now}acquire(e,r=this.options.leaseTtlMs){const n=this.requireRun(e);if(n.state!=="au\
 tonomous_run")throw new Error(`Run ${e} is not autonomous`);const i=aO(n);if(!i)throw new Error(`Run ${e} has no executi\
-on authority activation`);const s=this.options.repository.acquireLease(e,this.options.ownerId,Math.max(this.options.leaseTtlMs,
-r),this.now(),i);if(!s)throw new Error(`Run ${e} already has a live executor`);return s}decide(e,r,n){const i=this.requireFencedRun(
-e,r);const s=dO(i,n);this.options.repository.recordEngineDecision(e,r,s,this.now());if(s.outcome==="terminate"){this.options.
-repository.transitionFenced({runId:e,expectedVersion:i.version,to:"failed",actor:"autonomous_engine",reason:s.reason,terminalCode:s.
-code,lease:r,at:this.now()})}return s}evaluateReadiness(e,r,n){const i=this.requireFencedRun(e,r);const s=an(n,this.now());
-this.options.repository.recordReadiness(e,r,s,this.now());this.options.repository.transitionFenced({runId:e,expectedVersion:i.
-version,to:s.ready?"pr_ready":"failed",actor:"autonomous_engine",reason:s.ready?"strict_readiness_passed":s.failures.join(
-","),...s.ready?{}:{terminalCode:s.failures[0]??"readiness_failed"},lease:r,at:this.now()});return s}checkpoint(e,r,n,i){
-this.requireFencedRun(e,r);this.options.repository.writeVerifiedCheckpoint(e,r,n,i,this.now())}requireRun(e){const r=this.
-options.repository.getRun(e);if(!r)throw new Error(`Unknown control run ${e}`);return r}requireFencedRun(e,r){if(r.runId!==
-e||!this.options.repository.validateLease(r,this.now())){throw new Error(`Stale executor write rejected for ${e}`)}return this.
-requireRun(e)}};function i_(){return dd()}a(i_,"runningSessionIds");var Rte=Object.freeze({control_plane_contract_version:2,control_plane_schema_version:2,legacy_rc13:"terminal_only",migration:"\
+on authority activation`);const s=this.now();const o=n.executionActivation.executionExpiresAt-s;if(o<=0){this.options.repository.
+transition({runId:e,expectedVersion:n.version,to:"failed",actor:"autonomous_engine",reason:"expired",terminalCode:"autho\
+rity_expired",at:s});throw new Error(`authority_expired:${e}`)}const l=this.options.repository.acquireLease(e,this.options.
+ownerId,Math.min(Math.max(this.options.leaseTtlMs,r),o),s,i);if(!l)throw new Error(`Run ${e} already has a live executor`);
+return l}decide(e,r,n){const i=this.requireFencedRun(e,r);const s=dO(i,n);this.options.repository.recordEngineDecision(e,
+r,s,this.now());if(s.outcome==="terminate"){this.options.repository.transitionFenced({runId:e,expectedVersion:i.version,
+to:"failed",actor:"autonomous_engine",reason:s.reason,terminalCode:s.code,lease:r,at:this.now()})}return s}evaluateReadiness(e,r,n){
+const i=this.requireFencedRun(e,r);const s=an(n,this.now());this.options.repository.recordReadiness(e,r,s,this.now());this.
+options.repository.transitionFenced({runId:e,expectedVersion:i.version,to:s.ready?"pr_ready":"failed",actor:"autonomous_\
+engine",reason:s.ready?"strict_readiness_passed":s.failures.join(","),...s.ready?{}:{terminalCode:s.failures[0]??"readin\
+ess_failed"},lease:r,at:this.now()});return s}checkpoint(e,r,n,i){this.requireFencedRun(e,r);this.options.repository.writeVerifiedCheckpoint(
+e,r,n,i,this.now())}requireRun(e){const r=this.options.repository.getRun(e);if(!r)throw new Error(`Unknown control run ${e}`);
+return r}requireFencedRun(e,r){if(r.runId!==e||!this.options.repository.validateLease(r,this.now())){throw new Error(`St\
+ale executor write rejected for ${e}`)}return this.requireRun(e)}};function i_(){return dd()}a(i_,"runningSessionIds");var Rte=Object.freeze({control_plane_contract_version:2,control_plane_schema_version:2,legacy_rc13:"terminal_only",migration:"\
 idempotent",verified_checkpoint:true,lease_owner:true,lease_expires_at:true,lease_generation:true,merge_provider_idempotency:true});
-var Ate=Object.freeze(["budget_exceeded","time_exceeded","scope_escalation","path_violation","security_escalation","cred\
+var Nte=Object.freeze(["budget_exceeded","time_exceeded","scope_escalation","path_violation","security_escalation","cred\
 ential_escalation"]);import{stat as md}from"node:fs/promises";import{existsSync as ZK}from"node:fs";import{resolve as gd}from"node:path";function pO(t){const{git:e,pat:r,config:n,resolveGitToken:i}=t;return({plan:s,requester:o,worktreePath:l,baseSha:c})=>{const u=r.
 resolve({slackUserId:o??n.slack.authorised_users[0],gitHubUser:s.repo.split("/")[0],repoFullName:s.repo});return{remoteBranchExists:a(
 async d=>{const h=d||s.branch;try{const p=await i(u);const[f,_]=s.repo.split("/");let y;if(u.provider==="gitlab"){const g=encodeURIComponent(
@@ -11515,18 +11559,18 @@ Math.min(12,y),y);if(!Number.isFinite(b)||b<=0)throw new De("invalid_budget","Th
 deps.maximumTimeSeconds??14400;const v=Math.min(e.timeLimitSeconds??3600,g);if(!Number.isSafeInteger(v)||v<=0)throw new De(
 "invalid_time_limit","The time limit must be positive.");const S=this.now();const E=`chg_${mO(18).toString("base64url")}`;
 const T=h_(d);const x=h_(l.credentialRoute);const k=Math.max(1,Math.floor(this.deps.maximumCycles??3));const C=Math.max(
-0,Math.floor(this.deps.maximumRetries??10));const A=ra({version:1,requesterId:n,conversationId:i,repository:l.repositoryIdentity,
+0,Math.floor(this.deps.maximumRetries??10));const N=ra({version:1,requesterId:n,conversationId:i,repository:l.repositoryIdentity,
 baseRef:l.baseRef,briefDigest:T,policyDigest:l.policyDigest,scope:{paths:f},allowedActions:["implement","retry","repair",
 "test","commit","push_feature_branch","open_pull_request","update_pull_request","deploy"],limits:{budgetUsd:b,activeTimeMs:v*
 1e3,cycles:k,retries:C},issuedAt:S,expiresAt:S+this.ttl,nonce:mO(18).toString("base64url")});let P=this.deps.repository.
-createRun({id:E,authority:A,createdAt:S});P=this.deps.repository.transition({runId:E,expectedVersion:P.version,to:"await\
+createRun({id:E,authority:N,createdAt:S});P=this.deps.repository.transition({runId:E,expectedVersion:P.version,to:"await\
 ing_confirmation",actor:"control_service",reason:"prepared",at:S});this.deps.db.prepare(`INSERT INTO control_proposals (\
 run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_c\
 lass,assumptions_json,proposal_expires_at,policy_version,minimum_runtime_version,created_at,updated_at) VALUES (?,?,?,?,\
 ?,?,?,?,?,?,?,?,?,?,?)`).run(E,1,1,l.baseRevision,JSON.stringify(d),JSON.stringify(f),JSON.stringify(_),x,l.securityClass,
 JSON.stringify(u),S+this.ttl,p_,this.deps.minimumRuntimeVersion??"2.0.0-rc.14",S,S);return{ok:true,changeId:E,state:"pre\
 pared",confirmable:true,summary:d.title,brief:structuredClone(d),repository:l.repositoryIdentity,baseRef:l.baseRef,baseRevision:l.
-baseRevision,scope:f,excludedScope:_,allowedActions:[...A.allowedActions],budget:{currency:"USD",maximum:b.toFixed(2)},timeLimitSeconds:v,
+baseRevision,scope:f,excludedScope:_,allowedActions:[...N.allowedActions],budget:{currency:"USD",maximum:b.toFixed(2)},timeLimitSeconds:v,
 limits:{cycles:k,retries:C},risk:l.securityClass,assumptions:u,contract:{policyVersion:p_,minimumRuntimeVersion:this.deps.
 minimumRuntimeVersion??"2.0.0-rc.14"},confirmation:{expiresAt:new Date(S+this.ttl).toISOString(),reviewDigest:this.confirmBindingDigest(
 E)}}}async confirm(e,r){const{actor:n,conversation:i}=Sd(r);const s=this.deps.repository.getRun(e);const o=this.proposal(
@@ -11886,8 +11930,10 @@ d, owner_id, fence, acquired_at, expires_at, authority_hash)
           acquired_at=excluded.acquired_at, expires_at=excluded.expires_at,
           authority_hash=excluded.authority_hash`).run(e,r,l,i,c,s??o?.authority_hash??null);this.db.exec("COMMIT");return Object.
 freeze({runId:e,ownerId:r,fence:l,acquiredAt:i,expiresAt:c,...s?{authorityHash:s}:{}})}catch(o){try{this.db.exec("ROLLBA\
-CK")}catch{}throw o}}renewLease(e,r,n,i,s=Date.now()){const o=this.db.prepare(`UPDATE run_leases SET expires_at = ?
-      WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?`).run(s+i,e,r,n,s);return Number(o.changes)===1}releaseLease(e,r,n,i=Date.
+CK")}catch{}throw o}}renewLease(e,r,n,i,s=Date.now()){const o=this.db.prepare("SELECT execution_expires_at FROM control_\
+authority_activations WHERE run_id = ?").get(e);if(!o||o.execution_expires_at<=s)return false;const l=Math.min(s+i,o.execution_expires_at);
+const c=this.db.prepare(`UPDATE run_leases SET expires_at = ?
+      WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?`).run(l,e,r,n,s);return Number(c.changes)===1}releaseLease(e,r,n,i=Date.
 now()){const s=this.db.prepare(`UPDATE run_leases SET owner_id = NULL, expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND fence = ?`).run(i,e,r,n);return Number(s.changes)===1}validateLease(e,r=Date.
 now()){const n=this.db.prepare(`SELECT owner_id, fence, expires_at, authority_hash FROM run_leases WHERE run_id = ?`).get(
@@ -11961,7 +12007,7 @@ if(this.cache.has(e))return this.cache.get(e);const n=process.env.OAH_DEV_CRED_D
 {service:e});return s}}catch{}}const i=this.deps.vault.get(e,r);if(!i){throw new Error(`credential '${e}' not found in v\
 ault`)}this.cache.set(e,i);return i}purge(){this.cache.clear()}drop(e){this.cache.delete(e)}};import{createCipheriv as w5,createDecipheriv as k5,randomBytes as IO}from"node:crypto";import{DatabaseSync as S5}from"node:sqlite";
 import{chmodSync as v_,existsSync as xO,mkdirSync as PO,readFileSync as E5,renameSync as LO,statSync as T5,unlinkSync as $5,
-writeFileSync as x5}from"node:fs";import{dirname as C5,join as CO,resolve as OO}from"node:path";var Jo="OAH_VAULT_KEY";var O5="OAH_VAULT_KEY_FILE";var Ad=32;var R5=12;var __="openclaw-agent-harness/vault/v1";var oa="\
+writeFileSync as x5}from"node:fs";import{dirname as C5,join as CO,resolve as OO}from"node:path";var Jo="OAH_VAULT_KEY";var O5="OAH_VAULT_KEY_FILE";var Nd=32;var R5=12;var __="openclaw-agent-harness/vault/v1";var oa="\
 verifier";var ln=class extends Error{static{a(this,"VaultKeyError")}constructor(e){super(e);this.name="VaultKeyError"}};
 function Rd(t,e,r){const n=IO(R5);const i=w5("aes-256-gcm",t,n);i.setAAD(Buffer.from(r,"utf8"));const s=Buffer.concat([i.
 update(e,"utf8"),i.final()]);return{iv:n.toString("base64"),tag:i.getAuthTag().toString("base64"),ciphertext:s.toString(
@@ -11969,15 +12015,15 @@ update(e,"utf8"),i.final()]);return{iv:n.toString("base64"),tag:i.getAuthTag().t
 "utf8"));n.setAuthTag(Buffer.from(e.tag,"base64"));return Buffer.concat([n.update(Buffer.from(e.ciphertext,"base64")),n.
 final()]).toString("utf8")}a(y_,"unseal");function RO(t,e){const r=t.trim();if(!r)throw new ln(`vault key from ${e} is e\
 mpty`);let n;if(/^[0-9a-fA-F]{64}$/.test(r))n=Buffer.from(r,"hex");else{try{const i=Buffer.from(r,"base64");if(i.length===
-Ad)n=i}catch{}}if(!n||n.length!==Ad){throw new ln(`vault key from ${e} must be ${Ad} bytes as 64 hex chars or base64; go\
-t ${r.length} chars`)}return n}a(RO,"parseVaultKey");function AO(){return IO(Ad)}a(AO,"generateVaultKey");function NO(t,e){
+Nd)n=i}catch{}}if(!n||n.length!==Nd){throw new ln(`vault key from ${e} must be ${Nd} bytes as 64 hex chars or base64; go\
+t ${r.length} chars`)}return n}a(RO,"parseVaultKey");function NO(){return IO(Nd)}a(NO,"generateVaultKey");function AO(t,e){
 PO(C5(t),{recursive:true,mode:448});const r=`${t}.tmp-${process.pid}-${Date.now()}`;x5(r,`${e.toString("hex")}
-`,{mode:384});v_(r,384);LO(r,t)}a(NO,"writeKeyFile");var Nd=class t{static{a(this,"CredentialVault")}opts;db;key;keySource;keyFilePath;dbPath;constructor(e,r,n,i,s,o){
+`,{mode:384});v_(r,384);LO(r,t)}a(AO,"writeKeyFile");var Ad=class t{static{a(this,"CredentialVault")}opts;db;key;keySource;keyFilePath;dbPath;constructor(e,r,n,i,s,o){
 this.opts=o;this.db=e;this.key=r;this.keySource=n;this.keyFilePath=i;this.dbPath=s}static open(e){const r=OO(e.dir.replace(
 /^~/,process.env.HOME??""));PO(r,{recursive:true,mode:448});const n=e.keyEnvVar??Jo;const i=OO(e.keyFile??process.env[O5]??
 CO(r,"vault.key"));let s;let o;const l=process.env[n];if(l&&l.trim()){s=RO(l,`$${n}`);o="env"}else if(xO(i)){s=RO(E5(i,"\
 utf8"),i);o="file";const h=T5(i).mode&511;if(h!==384){v_(i,384);e.logger.warn("[vault] key file had loose permissions; t\
-ightened to 0600",{keyFilePath:i,was:h.toString(8)})}}else{s=AO();NO(i,s);o="generated";e.logger.warn("[vault] no key fo\
+ightened to 0600",{keyFilePath:i,was:h.toString(8)})}}else{s=NO();AO(i,s);o="generated";e.logger.warn("[vault] no key fo\
 und; generated a new one. BACK THIS FILE UP -- without it every stored credential is unrecoverable.",{keyFilePath:i})}const c=CO(
 r,"vault.db");const u=new S5(c);u.exec("PRAGMA journal_mode = WAL");u.exec("PRAGMA busy_timeout = 5000");u.exec(`
       CREATE TABLE IF NOT EXISTS credentials (
@@ -12016,18 +12062,18 @@ redentials WHERE service = ?").run(e);const n=Number(r.changes)>0;if(n)this.opts
 const e=this.db.prepare("SELECT service, type, notes, created_at, updated_at FROM credentials ORDER BY service").all();return e.
 map(r=>({service:r.service,type:r.type,notes:r.notes??void 0,createdAt:r.created_at,updatedAt:r.updated_at}))}rotate(){if(this.
 keySource==="env"){throw new ln(`refusing to rotate: the active key comes from $${this.opts.keyEnvVar??Jo}, which would \
-keep overriding the newly written key file. Unset it and rotate against the key file instead.`)}const e=AO();const r=`${this.
-keyFilePath}.new`;NO(r,e);const n=this.db.prepare("SELECT service, iv, tag, ciphertext FROM credentials").all();this.db.
+keep overriding the newly written key file. Unset it and rotate against the key file instead.`)}const e=NO();const r=`${this.
+keyFilePath}.new`;AO(r,e);const n=this.db.prepare("SELECT service, iv, tag, ciphertext FROM credentials").all();this.db.
 exec("BEGIN IMMEDIATE");try{for(const s of n){const o=y_(this.key,s,s.service);const l=Rd(e,o,s.service);this.db.prepare(
 "UPDATE credentials SET iv = ?, tag = ?, ciphertext = ? WHERE service = ?").run(l.iv,l.tag,l.ciphertext,s.service)}const i=Rd(
 e,__,oa);this.db.prepare("INSERT OR REPLACE INTO vault_meta (k, iv, tag, ciphertext) VALUES (?, ?, ?, ?)").run(oa,i.iv,i.
 tag,i.ciphertext);this.db.exec("COMMIT")}catch(i){this.db.exec("ROLLBACK");try{$5(r)}catch{}throw i}LO(r,this.keyFilePath);
 this.key=e;this.opts.audit?.("vault.rotate",{rotated:n.length});this.opts.logger.warn("[vault] key rotated; back up the \
 new key file",{keyFilePath:this.keyFilePath,rotated:n.length});return{rotated:n.length,keyFilePath:this.keyFilePath}}close(){
-try{this.db.close()}catch{}}};var A5=["claude-code","opencode"];var N5="claude-code";function UO(t){const e=t.indexOf("/");if(e<=0||e===t.length-1)return{
+try{this.db.close()}catch{}}};var N5=["claude-code","opencode"];var A5="claude-code";function UO(t){const e=t.indexOf("/");if(e<=0||e===t.length-1)return{
 model:t};return{provider:t.slice(0,e),model:t.slice(e+1)}}a(UO,"splitModelId");var DO=["@ai-sdk/openai-compatible","@ai-\
 sdk/openai"];function MO(t){if(t.npm)return t.npm;return t.base_url?"@ai-sdk/openai-compatible":void 0}a(MO,"resolveProv\
-iderNpm");function jO(t,e={}){const r=e.roles?.[t]??{};const n=e.default??{};const i=r.backend??n.backend??N5;const s=r.
+iderNpm");function jO(t,e={}){const r=e.roles?.[t]??{};const n=e.default??{};const i=r.backend??n.backend??A5;const s=r.
 model??n.model;const o=r.effort??n.effort;const l=r.tier??n.tier??"strong";const{provider:c}=s?UO(s):{};return{role:t,backend:i,
 model:s,effort:o,provider:c,tier:l,inherited:r.backend===void 0&&r.model===void 0}}a(jO,"resolveRoleBackend");function FO(t={}){
 const e={};for(const r of wa)e[r]=jO(r,t);return e}a(FO,"resolveAllRoles");function qO(t={}){const e=[];const r=t.providers??
@@ -12035,7 +12081,7 @@ const e={};for(const r of wa)e[r]=jO(r,t);return e}a(FO,"resolveAllRoles");funct
 es npm '${i.npm}'; supported: ${DO.join(", ")}`})}if(!i.base_url){if(MO(i)==="@ai-sdk/openai-compatible"){e.push({provider:n,
 message:`provider '${n}' has no base_url`})}}else if(!/^https?:\/\//.test(i.base_url)){e.push({provider:n,message:`provi\
 der '${n}' base_url must be an http(s) URL`})}else if(!i.base_url.replace(/\/+$/,"").endsWith("/v1")){e.push({provider:n,
-message:`provider '${n}' base_url should end in /v1 (got '${i.base_url}')`})}}for(const n of wa){const i=jO(n,t);if(!A5.
+message:`provider '${n}' base_url should end in /v1 (got '${i.base_url}')`})}}for(const n of wa){const i=jO(n,t);if(!N5.
 includes(i.backend)){e.push({role:n,message:`role '${n}' names unknown backend '${i.backend}'`});continue}if(i.provider&&
 r[i.provider]===void 0&&i.backend==="opencode"){const o=Object.keys(r);if(o.length>0){e.push({role:n,provider:i.provider,
 message:`role '${n}' uses provider '${i.provider}', which is not declared in 'providers' (declared: ${o.join(", ")}). If\
@@ -12115,23 +12161,23 @@ closeError??new Error(`acp agent connection is closed; '${e}' cannot be sent`))}
 (s,o)=>{this.pending.set(n,{resolve:s,reject:o})});this.write({jsonrpc:"2.0",id:n,method:e,params:r});return i}};async function Qo(t){
 const{agent:e,worktreePath:r,systemPrompt:n,userMessage:i,model:s,effort:o,resumeSessionId:l,resumeCumulativeCostUsd:c,timeoutSeconds:u,
 streamOpenTimeoutSeconds:d=120,firstTokenTimeoutSeconds:h=30,streamIdleWarnSeconds:p=90,onStreamSlow:f,onActivity:_,acpGuard:y,
-secretToken:b,logger:g,traceLabel:v}=t;const S=Date.now();const E=[];const T=[];let x=0;let k=0;let C="";let A=false;let P;
+secretToken:b,logger:g,traceLabel:v}=t;const S=Date.now();const E=[];const T=[];let x=0;let k=0;let C="";let N=false;let P;
 let L=Date.now();let F="";let j=l?typeof c==="number"&&Number.isFinite(c)?c:null:0;let Z=null;let me=false;let ne;let ae;
 let pe=false;let xe=false;let ee;let q=0;let Y=0;let z=0;let R=false;const U=a(H=>{const Le=a(se=>typeof se==="number"&&
 Number.isFinite(se)&&se>=0?se:0,"n");if(H.inputTokens===void 0&&H.outputTokens===void 0)return;R=true;q=Le(H.inputTokens);
 Y=Le(H.outputTokens);z=Le(H.cachedWriteTokens)+Le(H.cachedReadTokens)+Le(H.cacheReadTokens)+Le(H.cacheWriteTokens)},"rec\
-ordPromptUsage");const G=a(H=>b?Nr(H,b):H,"scrub");const ce=a(H=>{if(E.length<400)E.push(G(H))},"pushLog");const be=J5(v??
+ordPromptUsage");const G=a(H=>b?Ar(H,b):H,"scrub");const ce=a(H=>{if(E.length<400)E.push(G(H))},"pushLog");const be=J5(v??
 "worker",G);be?.record("meta",{event:"turn_start",label:v??"worker",model:s,worktreePath:r,systemPromptChars:n.length,userMessageChars:i.
 length,timeoutSeconds:u});const He=H5(e.command,e.args,{cwd:r,stdio:["pipe","pipe","pipe"],env:Sl({NO_COLOR:"1",...e.env??
 {}}),detached:true});const We=[];He.stderr.on("data",H=>{be?.record("stderr",H.toString());if(We.length<100)We.push(H.toString())});
 let nt=false;const w=a(H=>{const Le=He.pid;if(Le===void 0)return;try{process.kill(-Le,H)}catch{try{He.kill(H)}catch{}}},
 "signalGroup");const O=a(()=>{if(nt)return;nt=true;w("SIGTERM");const H=setTimeout(()=>w("SIGKILL"),5e3);H.unref?.()},"r\
-eap");let N=null;let D=null;const M=[];const I=a((H,Le)=>{const se=setTimeout(Le,H);se.unref?.();M.push(se)},"arm");const W=a(
-()=>{I(d*1e3,()=>{if(!A){N="first_token_timeout";D={kind:"stream_open",deadlineSeconds:d,elapsedMs:Date.now()-S};ce(`[ac\
-p] stream-open watchdog fired after ${d}s`);O()}})},"armStreamOpenWatchdog");I(u*1e3,()=>{N="timeout";D={kind:"overall",
-deadlineSeconds:u,elapsedMs:Date.now()-S};ce(`[acp] turn timeout after ${u}s`);O()});const de=a(()=>{L=Date.now();if(!A){
-A=true;I(h*1e3,()=>{if(P===void 0){N="first_token_timeout";D={kind:"first_token",deadlineSeconds:h,elapsedMs:Date.now()-
-S};ce(`[acp] first-token watchdog fired after ${h}s`);O()}})}},"markActivity");if(f){const H=setInterval(()=>{if(!me||!A)
+eap");let A=null;let D=null;const M=[];const I=a((H,Le)=>{const se=setTimeout(Le,H);se.unref?.();M.push(se)},"arm");const W=a(
+()=>{I(d*1e3,()=>{if(!N){A="first_token_timeout";D={kind:"stream_open",deadlineSeconds:d,elapsedMs:Date.now()-S};ce(`[ac\
+p] stream-open watchdog fired after ${d}s`);O()}})},"armStreamOpenWatchdog");I(u*1e3,()=>{A="timeout";D={kind:"overall",
+deadlineSeconds:u,elapsedMs:Date.now()-S};ce(`[acp] turn timeout after ${u}s`);O()});const de=a(()=>{L=Date.now();if(!N){
+N=true;I(h*1e3,()=>{if(P===void 0){A="first_token_timeout";D={kind:"first_token",deadlineSeconds:h,elapsedMs:Date.now()-
+S};ce(`[acp] first-token watchdog fired after ${h}s`);O()}})}},"markActivity");if(f){const H=setInterval(()=>{if(!me||!N)
 return;const Le=Date.now()-L;if(Le>=p*1e3){f({idleMs:Le,elapsedMs:Date.now()-S,tokensOut:0,label:"acp"})}},15e3);H.unref?.();
 M.push(H)}const _e=a(H=>{const Le=H["sessionUpdate"];if(!me&&Le!=="usage_update"){be?.record("meta",{event:"resume_repla\
 y_ignored",sessionUpdate:Le??null});return}if(me){de();_?.({kind:Le??"unknown",at:L})}switch(Le){case"agent_message_chun\
@@ -12176,15 +12222,15 @@ request("session/prompt",{sessionId:F,prompt:[{type:"text",text:`${n}
 ---
 
 ${i}`}]});if(er?.usage)U(er.usage);Re=sR[er?.stopReason??"end_turn"]??"tool_error";if(er?.stopReason&&sR[er.stopReason]===
-"tool_error"){ce(`[acp] raw stopReason=${er.stopReason}`)}}catch(H){Re=N??"tool_error";ce(`[acp] ${G(String(H))}`)}finally{
-for(const H of M)clearTimeout(H);O()}if(N)Re=N;if(We.length>0)ce(`[acp stderr] ${G(We.join("").slice(-2e3))}`);const Pe=pe&&
-!xe&&j!==null&&Z!==null&&Z>=j;const Ne=Pe?Z-j:0;const we=pe&&!Pe?"unavailable":X5(pe,R);g?.info("[acp] worker turn finis\
+"tool_error"){ce(`[acp] raw stopReason=${er.stopReason}`)}}catch(H){Re=A??"tool_error";ce(`[acp] ${G(String(H))}`)}finally{
+for(const H of M)clearTimeout(H);O()}if(A)Re=A;if(We.length>0)ce(`[acp stderr] ${G(We.join("").slice(-2e3))}`);const Pe=pe&&
+!xe&&j!==null&&Z!==null&&Z>=j;const Ae=Pe?Z-j:0;const we=pe&&!Pe?"unavailable":X5(pe,R);g?.info("[acp] worker turn finis\
 hed",{stopReason:Re,sessionId:F,denied:T.length,unguardedReads:x,allowedToolCalls:k,usageSource:we,costBaseline:j,costLatest:Z,
 baselineMismatch:xe});be?.record("meta",{event:"turn_end",stopReason:Re,sessionId:F,finalMessageChars:C.trim().length,denied:T.
 length,unguardedReads:x,allowedToolCalls:k,usageSource:we,cumulativeCostUsd:Pe?Z??void 0:void 0,costBaselineUsd:Pe?j??void 0:
 void 0,costCurrency:Pe?ee??"USD":void 0,tokensIn:q,tokensOut:Y,stderr:G(We.join("").slice(-4e3))});return{sdkSessionId:F,
-stopReason:Re,costUsd:Ne,tokensIn:q,tokensOut:Y,tokensCached:R?z:void 0,logsExcerpt:E.join("").slice(-K5),finalMessage:C.
-trim(),streamOpened:A,msToFirstToken:P,usageSource:we,cumulativeCostUsd:Pe?Z??void 0:void 0,costBaselineUsd:Pe?j??void 0:
+stopReason:Re,costUsd:Ae,tokensIn:q,tokensOut:Y,tokensCached:R?z:void 0,logsExcerpt:E.join("").slice(-K5),finalMessage:C.
+trim(),streamOpened:N,msToFirstToken:P,usageSource:we,cumulativeCostUsd:Pe?Z??void 0:void 0,costBaselineUsd:Pe?j??void 0:
 void 0,costCurrency:Pe?ee??"USD":void 0,contextUsed:ne,contextSize:ae,deniedToolCalls:T,unguardedReads:x,allowedToolCalls:k,
 timeout:D}}a(Qo,"runWorkerAcp");function X5(t,e){if(t&&e)return"acp-delta";if(e)return"tokens-only";if(t)return"acp-delt\
 a";return"unavailable"}a(X5,"acpUsageSource");function Y5(t){const e=t["text"];if(typeof e==="string")return e;const r=t["\
@@ -12463,12 +12509,12 @@ uns"}}a($_,"getGitLabCiSnapshot");async function RR(t){const e=await fetch(`${t.
 merge_requests/${t.prNumber}/changes`,{headers:tl(t.token),signal:t.signal});if(!e.ok)throw new Error(`GitLab MR changes\
  failed ${e.status}: ${(await e.text()).slice(0,300)}`);const r=await e.json();return(r.changes??[]).map(n=>({filename:n.
 new_path??n.old_path??"",status:n.new_file?"added":n.deleted_file?"removed":n.renamed_file?"renamed":"modified",...n.diff?
-{patch:n.diff}:{}})).filter(n=>n.filename)}a(RR,"getGitLabMergeRequestFiles");async function AR(t){const e=new URLSearchParams(
+{patch:n.diff}:{}})).filter(n=>n.filename)}a(RR,"getGitLabMergeRequestFiles");async function NR(t){const e=new URLSearchParams(
 {sha:t.expectedHeadSha,squash:"true"});const r=await fetch(`${t.apiBase}/projects/${rl(t.repoFullName)}/merge_requests/${t.
 prNumber}/merge`,{method:"PUT",headers:{...tl(t.token),"Content-Type":"application/x-www-form-urlencoded"},body:e,signal:t.
 signal});const n=await r.json().catch(()=>({}));return{merged:r.ok&&n.state==="merged",sha:n.merge_commit_sha??n.squash_commit_sha??
-"",message:n.message??(!r.ok?`GitLab merge failed ${r.status}`:"")}}a(AR,"mergeGitLabMergeRequest");function NR(t,e){const r=t.trim().toLowerCase();const n=e.trim().toLowerCase();if(!r||!n)return false;const i=r.length<=
-n.length?r:n;const s=i===r?n:r;if(i.length<7)return false;return s.startsWith(i)}a(NR,"sameSha");function x_(t,e){if(!t||
+"",message:n.message??(!r.ok?`GitLab merge failed ${r.status}`:"")}}a(NR,"mergeGitLabMergeRequest");function AR(t,e){const r=t.trim().toLowerCase();const n=e.trim().toLowerCase();if(!r||!n)return false;const i=r.length<=
+n.length?r:n;const s=i===r?n:r;if(i.length<7)return false;return s.startsWith(i)}a(AR,"sameSha");function x_(t,e){if(!t||
 !e)return false;return t.trim().toLowerCase()===e.trim().toLowerCase()}a(x_,"sameRepo");function f3(t,e,r){const n=[];const i=[];
 const s=t.existingPrNumber===e.number&&x_(t.repo,e.repo);if(!x_(t.repo,e.repo)){n.push({kind:"repo_mismatch",message:`Se\
 ssion ${t.sessionId} ran against ${t.repo}, but the PR is in ${e.repo}. A PR number means nothing across repositories.`})}else{
@@ -12483,12 +12529,12 @@ ision would be reviewed against the wrong base.`})}else{i.push(`Base branch matc
 date.`})}else if(e.state.trim().toLowerCase()!=="open"){n.push({kind:"not_open",message:`PR #${e.number} is ${e.state}. \
 Reopen it before linking; the harness will not reopen a PR on an operator's behalf.`})}else{i.push(`PR is open and unmer\
 ged${e.draft?" (draft, which a revision can still update)":""}.`)}const o=t.ledgerCommitShas.filter(l=>e.commitShas.some(
-c=>NR(l,c)));if(t.ledgerCommitShas.length===0){n.push({kind:"no_session_commits",message:`Session ${t.sessionId} recorde\
+c=>AR(l,c)));if(t.ledgerCommitShas.length===0){n.push({kind:"no_session_commits",message:`Session ${t.sessionId} recorde\
 d no commit shas, so there is no evidence tying it to any PR. A matching branch name is not evidence. Link refused rathe\
 r than guessed.`})}else if(o.length===0){n.push({kind:"lineage_mismatch",message:`None of the ${t.ledgerCommitShas.length}\
  commit(s) session ${t.sessionId} recorded appear on PR #${e.number}. The branch may have been force-pushed, or this is \
 a different PR.`})}else{i.push(`Commit lineage confirmed: ${o.length} of ${t.ledgerCommitShas.length} recorded session c\
-ommit(s) are on the PR (${o.map(l=>l.slice(0,12)).join(", ")}).`)}if(t.planBaseSha&&e.mergeBaseSha){if(NR(t.planBaseSha,
+ommit(s) are on the PR (${o.map(l=>l.slice(0,12)).join(", ")}).`)}if(t.planBaseSha&&e.mergeBaseSha){if(AR(t.planBaseSha,
 e.mergeBaseSha)){i.push(`Fork point matches the session's recorded plan base: ${e.mergeBaseSha.slice(0,12)}.`)}else{n.push(
 {kind:"base_sha_mismatch",message:`PR #${e.number} forks from ${e.mergeBaseSha.slice(0,12)}, but session ${t.sessionId} \
 planned against ${t.planBaseSha.slice(0,12)}. The PR was built on a different base.`})}}if(t.existingPrNumber!==null&&t.
@@ -12705,17 +12751,17 @@ timeoutSeconds:i.config.loop.worker_timeout_seconds,firstTokenTimeoutSeconds:u??
 30,streamOpenTimeoutSeconds:i.config.loop.sdk_stream_open_timeout_seconds??120,onStreamSlow:l,onActivity:d,streamIdleWarnSeconds:i.
 config.loop.worker_stream_idle_warn_seconds??90,canUseTool:S})}catch(j){i.logger.error("[worker] SDK call failed",{err:String(
 j)});return{status:"failed",filesChanged:[],costUsd:0,tokensIn:0,tokensOut:0,reason:`sdk_error: ${String(j)}`,usageMeasured:false,
-usageSource:"unavailable"}}const T=await A3(t,r,n,i,v,_);const x=T.filesChanged;const k=T.commitSha;const C=T.commitShas;
-const A=T.reconciliation&&T.reconciliation.dirtyFiles.length>0?T.reconciliation.dirtyFiles:void 0;const P=E.stopReason===
+usageSource:"unavailable"}}const T=await N3(t,r,n,i,v,_);const x=T.filesChanged;const k=T.commitSha;const C=T.commitShas;
+const N=T.reconciliation&&T.reconciliation.dirtyFiles.length>0?T.reconciliation.dirtyFiles:void 0;const P=E.stopReason===
 "first_token_timeout"?"first_token_timeout":E.stopReason==="timeout"?"timeout":E.stopReason==="end_turn"?"completed":"fa\
 iled";const L=T.reconciliation?.state==="git_error";const F=L?"failed":P;if(k&&!C.includes(k))C.push(k);return{status:F,
 filesChanged:x,commitSha:k,commitShas:C,commitReconciliation:T.reconciliation,sdkSessionId:E.sdkSessionId,costUsd:E.costUsd,
 tokensIn:E.tokensIn,tokensOut:E.tokensOut,reason:L?`git_error: ${T.reconciliation?.error??"unknown git failure"}`:E.stopReason,
 logsExcerpt:E.logsExcerpt,finalMessage:E.finalMessage,deniedToolCalls:E.deniedToolCalls,unguardedReads:E.unguardedReads,
-allowedToolCalls:E.allowedToolCalls,uncommittedFiles:A,streamOpened:E.streamOpened,msToFirstToken:E.msToFirstToken,usageMeasured:E.
+allowedToolCalls:E.allowedToolCalls,uncommittedFiles:N,streamOpened:E.streamOpened,msToFirstToken:E.msToFirstToken,usageMeasured:E.
 usageMeasured??true,usageSource:E.usageSource,providerCumulativeCostUsd:E.providerCumulativeCostUsd,providerCostBaselineUsd:E.
 providerCostBaselineUsd,providerCostCurrency:E.providerCostCurrency,actualPromptChars:g.length,actualPromptSha256:$3("sh\
-a256").update(g).digest("hex")}}a(BR,"runWorker");async function A3(t,e,r,n,i,s=[]){const o=`harness(${e.seq}): ${e.title}`;
+a256").update(g).digest("hex")}}a(BR,"runWorker");async function N3(t,e,r,n,i,s=[]){const o=`harness(${e.seq}): ${e.title}`;
 const l=[];const c=a(async()=>{const g=await n.gitListChangedFiles(t,i);if(g.length>0||!n.gitListCommittedFiles)return g;
 return await n.gitListCommittedFiles(t,i)},"listCommitted");if(!n.gitHeadSha||!n.gitStatusPorcelain||!i){const g=await n.
 gitListChangedFiles(t,i);let v;if(g.length>0){v=await n.gitCommit(t,o,r,s)??void 0}if(!v&&n.gitHeadSha&&i){const S=await n.
@@ -12727,9 +12773,9 @@ catch(()=>[]):[],commitSha:p,commitShas:l,reconciliation:{state:"git_error",head
 dirtyBefore:d,error:zR(g)}}}if(f)l.push(f)}let _;try{_=f?await n.gitStatusPorcelain(t):d}catch{_=d}const y=f??p;const b=f?
 h?"worker_commit_remainder":"harness_commit":_.length>0?"uncommitted_changes":h?"worker_commit":"no_change";return{filesChanged:y?
 await c():[],commitSha:y,commitShas:l,reconciliation:{state:b,headBefore:i,headAfter:f??u,workerCommitSha:p,harnessCommitSha:f,
-dirtyFiles:_,dirtyBefore:d}}}a(A3,"reconcileWorkerCommit");function zR(t){const e=t;const r=[e?.message,e?.stdout,e?.stderr].
+dirtyFiles:_,dirtyBefore:d}}}a(N3,"reconcileWorkerCommit");function zR(t){const e=t;const r=[e?.message,e?.stdout,e?.stderr].
 map(i=>typeof i==="string"?i.trim():"").filter(Boolean);const n=r.length>0?Array.from(new Set(r)).join("\n"):String(t);return n.
-slice(0,4e3)}a(zR,"gitErrorText");var N3=new Set(["spec","quality","security"]);function I3(t){return N3.has(zn(t.dimension))&&en(t.severity)}a(I3,"requir\
+slice(0,4e3)}a(zR,"gitErrorText");var A3=new Set(["spec","quality","security"]);function I3(t){return A3.has(zn(t.dimension))&&en(t.severity)}a(I3,"requir\
 esFile");function P3(t){if(!I3(t))return false;const e=(t.file??"").trim();return e.length===0}a(P3,"isUnfiledDiffAddres\
 sable");function R_(t){return t.filter(P3)}a(R_,"findingsMissingFile");function HR(t){const e=["","## FILE ATTRIBUTION (\
 RETRY -- some findings were rejected)","The following finding(s) point at a concrete code defect but did NOT include a `\
@@ -12854,13 +12900,13 @@ import{join as jd}from"node:path";function ZR(t,e={}){const r=e.spawn??GR;const 
 s,"tsc");let l;const c=Md(i)?"present":"missing";if(c==="present"){try{l=z3(i).length}catch{}}let u="missing";if(Md(o)){
 try{F3(o,q3.X_OK);u="executable"}catch{u="present_not_executable"}}let d="not_on_path";try{const h=r("npm",["--version"],
 {cwd:t,encoding:"utf8",timeout:3e4,env:n});if(h.status===0)d="on_path"}catch{}return{nodeModules:c,nodeModulesEntries:l,
-binDir:Md(s)?"present":"missing",tsc:u,npm:d,path:(n.PATH??"").slice(0,400)||void 0}}a(ZR,"diagnoseCheckEnv");function A_(t,e,r={}){
+binDir:Md(s)?"present":"missing",tsc:u,npm:d,path:(n.PATH??"").slice(0,400)||void 0}}a(ZR,"diagnoseCheckEnv");function N_(t,e,r={}){
 const n=r.spawn??GR;const i=r.env??process.env;const s={cwd:t,timeout:e,encoding:"utf8",maxBuffer:8*1024*1024,env:i};const o=jd(
 t,"node_modules",".bin","tsc");const l=[];if(Md(o))l.push({via:"node_modules_bin",cmd:o,args:["--noEmit"]});for(const c of l){
 let u;try{u=n(c.cmd,c.args,s)}catch{continue}const d=String(u.stdout??"");const h=String(u.stderr??"");if(u.status===127||
 u.status===126)continue;if(u.error&&!VR(u))continue;if(/\b(command not found|: not found|could not determine executable)\b/i.
 test(`${d}
-${h}`))continue;return{via:c.via,status:u.status,stdout:d,stderr:h,timedOut:VR(u)}}return null}a(A_,"runTypecheckDirect");
+${h}`))continue;return{via:c.via,status:u.status,stdout:d,stderr:h,timedOut:VR(u)}}return null}a(N_,"runTypecheckDirect");
 function VR(t){const e=t.error?.code;return e==="ETIMEDOUT"||t.signal==="SIGTERM"&&!!t.error}a(VR,"isTimeout");var Vn="openclaw-agent-harness";var KR="OpenClaw Agent Harness";var JR="Multi-agent development harness: crystallise -> \
 plan -> execute -> adversarial review -> PR.";var Gn={pluginVersion:"2.0.0-rc.14",schemaVersion:2,claudeSdkVersion:"0.3.207"};var B3=new Set(["done","failed","aborted","cancelled","accounting_incomplete"]);function XR(t){const e=/^(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$/.
 exec(t.trim());if(!e)return[0,0,0,0];return e.slice(1).map((r,n)=>n===3&&r===void 0?Number.MAX_SAFE_INTEGER:Number(r??0))}
@@ -12877,17 +12923,17 @@ a(W3,"downgradeBlockers");function YR(t,e){const r=W3(t,e);if(r.length===0)retur
 used: ${r.length} incompatible nonterminal session(s): `+r.map(n=>`${n.sessionId} (${n.status}, requires ${n.minimumRuntimeVersion}\
 )`).join(", "))}a(YR,"assertDowngradeSafe");import{definePluginEntry as nJ}from"openclaw/plugin-sdk/plugin-entry";function Q3(t){const e=a(()=>{throw new Error(`credential vault unavailable: ${t}`)},"fail");return{get:e,set:e,delete:e,
 list:e}}a(Q3,"sealedVault");var Fd=null;function eJ(t){const e=t.pluginConfig??t.getConfig?.()??{};const r=H_(e);const n=a(
-async(w,O)=>{const N=await jR(w,{config:r,logger:t.logger,audit:a((M,I)=>s.audit(M,I),"audit"),callClassifier:a(async()=>Y$(
-{execute:A("classifier"),model:r.models.classifier,userText:w,timeoutSeconds:60,apiKey:await k("classifier"),grounding:Ud(
-r)}),"callClassifier"),callCrystalliser:a(async(M,I,W)=>Q$({execute:A("crystalliser"),model:r.models.lead,userText:w,timeoutSeconds:120,
+async(w,O)=>{const A=await jR(w,{config:r,logger:t.logger,audit:a((M,I)=>s.audit(M,I),"audit"),callClassifier:a(async()=>Y$(
+{execute:N("classifier"),model:r.models.classifier,userText:w,timeoutSeconds:60,apiKey:await k("classifier"),grounding:Ud(
+r)}),"callClassifier"),callCrystalliser:a(async(M,I,W)=>Q$({execute:N("crystalliser"),model:r.models.lead,userText:w,timeoutSeconds:120,
 apiKey:await k("crystalliser"),concepts:W,repoOnlyInvariant:r.brief.repo_only_invariant,grounding:Ud(r)}),"callCrystalli\
-ser")},O);const D=N.spend.costUsd;if(N.spend.partial){t.logger.info("[crystalliser] cost is a floor: some calls reported\
- tokens without a price",{tokensIn:N.spend.tokensIn,tokensOut:N.spend.tokensOut})}return N.kind==="brief"?{kind:"brief",
-brief:N.brief,costUsd:D}:{kind:"reject",intent:N.intent,reason:N.reason??"",costUsd:D}},"crystallise");const i=r.storage.
+ser")},O);const D=A.spend.costUsd;if(A.spend.partial){t.logger.info("[crystalliser] cost is a floor: some calls reported\
+ tokens without a price",{tokensIn:A.spend.tokensIn,tokensOut:A.spend.tokensOut})}return A.kind==="brief"?{kind:"brief",
+brief:A.brief,costUsd:D}:{kind:"reject",intent:A.intent,reason:A.reason??"",costUsd:D}},"crystallise");const i=r.storage.
 state_db_path.replace(/^~/,process.env.HOME??"");X3(L_(i),{recursive:true});const s=Z_(i);YR(s.db,Gn.pluginVersion);const o=L_(
 i);const l=iR(t.rootDir??process.cwd(),o);Z$(l.command);const c=new cl({config:ny(r.log,o),logger:t.logger});const u=new yd(
-r.budgets,s);const d=new wd(s.db);const h=new vd(r.pat_routing,d);const p=r.credentials??{};const f=nA(o,p.dir??"harness\
--vault");G$(p.key_env??Jo);let _;let y;try{y=Nd.open({dir:f,keyEnvVar:p.key_env,keyFile:p.key_file,logger:t.logger,audit:a(
+r.budgets,s);const d=new wd(s.db);const h=new vd(r.pat_routing,d);const p=r.credentials??{};const f=nN(o,p.dir??"harness\
+-vault");G$(p.key_env??Jo);let _;let y;try{y=Ad.open({dir:f,keyEnvVar:p.key_env,keyFile:p.key_file,logger:t.logger,audit:a(
 (w,O)=>{try{s.audit(w,O,"")}catch{}},"audit")});t.logger.info("[harness] credential vault opened",{dir:f,keySource:y.keySource})}catch(w){
 _=String(w);t.logger.warn(`[harness] CREDENTIAL VAULT UNAVAILABLE: ${_}. Every credential lookup will fail until this is\
  fixed.`,{dir:f});y=Q3(_)}const b=new Od({logger:t.logger,vault:y});const g=a(w=>{if(w==="worker")return r.models.worker;
@@ -12901,35 +12947,35 @@ s.db));await v.preflight()});const T=a(async()=>{if(S)throw new Error(`backend c
 if(!v)return;await E()},"ensureBackendReady");const x=v?.describe(g)??wa.map(w=>({role:w,backend:"claude-code",provider:"\
 anthropic",model:g(w),tier:"frontier"}));const k=a(async w=>x.find(O=>O.role===w)?.backend==="opencode"?void 0:F(),"apiK\
 eyForRole");const C=a(async w=>{try{const O=rJ(w.reviewReport,{updatedExisting:!!w.pr.updatedExisting,operatorGuidance:w.
-brief.operatorGuidance});const N=await bR({repoFullName:w.repoFullName,prNumber:w.pr.number,body:O,ghToken:w.ghToken,apiBase:w.
-apiBase,refreshCredential:w.refreshCredential});if(!N.ok){t.logger.warn("[harness] PR review comment post failed (non-fa\
-tal)",{repo:w.repoFullName,prNumber:w.pr.number,status:N.status,error:N.error})}}catch(O){t.logger.warn("[harness] PR re\
+brief.operatorGuidance});const A=await bR({repoFullName:w.repoFullName,prNumber:w.pr.number,body:O,ghToken:w.ghToken,apiBase:w.
+apiBase,refreshCredential:w.refreshCredential});if(!A.ok){t.logger.warn("[harness] PR review comment post failed (non-fa\
+tal)",{repo:w.repoFullName,prNumber:w.pr.number,status:A.status,error:A.error})}}catch(O){t.logger.warn("[harness] PR re\
 view comment post threw (non-fatal)",{repo:w.repoFullName,prNumber:w.pr.number,err:String(O)})}},"postHarnessReviewComme\
-nt");const A=a(w=>{if(S){return(async()=>{throw new Error(`backend configuration rejected at startup: ${S}`)})}const O=v?.
-executorFor(w);if(!O)return void 0;return(async N=>{await T();return O({...N,firstTokenTimeoutSeconds:N.firstTokenTimeoutSeconds??
-r.loop.sdk_first_token_timeout_seconds,streamOpenTimeoutSeconds:N.streamOpenTimeoutSeconds??r.loop.sdk_stream_open_timeout_seconds})})},
+nt");const N=a(w=>{if(S){return(async()=>{throw new Error(`backend configuration rejected at startup: ${S}`)})}const O=v?.
+executorFor(w);if(!O)return void 0;return(async A=>{await T();return O({...A,firstTokenTimeoutSeconds:A.firstTokenTimeoutSeconds??
+r.loop.sdk_first_token_timeout_seconds,streamOpenTimeoutSeconds:A.streamOpenTimeoutSeconds??r.loop.sdk_stream_open_timeout_seconds})})},
 "executorFor");let P=false;let L;const F=a(async()=>{if(P)return L;P=true;const w=r.models.auth??{};if(w.credential_service){
 try{const D=await b.getToken(w.credential_service,"api_key");if(D){L=D;t.logger.info("[harness] anthropic key resolved f\
 rom vault",{service:w.credential_service});return L}}catch(D){t.logger.warn("[harness] anthropic vault lookup failed; tr\
-ying env fallback",{service:w.credential_service,err:String(D)})}}const O=w.api_key_env||"ANTHROPIC_API_KEY";const N=process.
-env[O];if(N){L=N;t.logger.info("[harness] anthropic key resolved from env",{envVar:O});return L}t.logger.warn("[harness]\
+ying env fallback",{service:w.credential_service,err:String(D)})}}const O=w.api_key_env||"ANTHROPIC_API_KEY";const A=process.
+env[O];if(A){L=A;t.logger.info("[harness] anthropic key resolved from env",{envVar:O});return L}t.logger.warn("[harness]\
  no Anthropic API key resolved (vault + env both empty); SDK may fall back to interactive /login and fail in headless co\
 ntainers",{credentialService:w.credential_service||"(unset)",envVar:O});return void 0},"anthropicApiKey");let j=false;let Z;
-const me=a(async()=>{if(j)return Z;j=true;if(r.vercel?.credential_service){try{const N=await b.getToken(r.vercel.credential_service);
-if(N){Z=N;t.logger.info("[harness] vercel token resolved from vault",{service:r.vercel.credential_service});return Z}}catch(N){
+const me=a(async()=>{if(j)return Z;j=true;if(r.vercel?.credential_service){try{const A=await b.getToken(r.vercel.credential_service);
+if(A){Z=A;t.logger.info("[harness] vercel token resolved from vault",{service:r.vercel.credential_service});return Z}}catch(A){
 t.logger.warn("[harness] vercel vault lookup failed; trying env fallback",{service:r.vercel.credential_service,err:String(
-N)})}}const w=r.vercel?.api_key_env||"VERCEL_TOKEN";const O=process.env[w];if(O){Z=O;t.logger.info("[harness] vercel tok\
+A)})}}const w=r.vercel?.api_key_env||"VERCEL_TOKEN";const O=process.env[w];if(O){Z=O;t.logger.info("[harness] vercel tok\
 en resolved from env",{envVar:w});return Z}t.logger.warn("[harness] no Vercel token resolved (vault + env both empty); d\
 eploy verification will be unavailable",{credentialService:r.vercel?.credential_service||"(unset)",envVar:w});return void 0},
-"resolveVercelToken");const ne=a(async w=>{if(w.tokenPointer){const N=w.tokenPointer;if(N.value)return N.value;if(N.env){
-const D=process.env[N.env];if(D){t.logger.info("[harness] git token resolved from hierarchy env pointer",{envVar:N.env,provider:w.
-provider,person:w.person});return D}throw new Error(`no ${w.provider} token: hierarchy env pointer '${N.env}' is unset (\
-person '${w.person??"?"}', service '${w.credentialService}')`)}if(N.vault){try{const D=await b.getToken(N.vault,"token");
-if(D)return D}catch(D){throw new Error(`no ${w.provider} token: hierarchy vault pointer '${N.vault}' lookup failed (${String(
-D)}). Store it with 'node scripts/vault.mjs set ${N.vault}', or switch this person's token pointer to env/value.`)}throw new Error(
-`no ${w.provider} token: hierarchy vault pointer '${N.vault}' returned empty (person '${w.person??"?"}')`)}throw new Error(
+"resolveVercelToken");const ne=a(async w=>{if(w.tokenPointer){const A=w.tokenPointer;if(A.value)return A.value;if(A.env){
+const D=process.env[A.env];if(D){t.logger.info("[harness] git token resolved from hierarchy env pointer",{envVar:A.env,provider:w.
+provider,person:w.person});return D}throw new Error(`no ${w.provider} token: hierarchy env pointer '${A.env}' is unset (\
+person '${w.person??"?"}', service '${w.credentialService}')`)}if(A.vault){try{const D=await b.getToken(A.vault,"token");
+if(D)return D}catch(D){throw new Error(`no ${w.provider} token: hierarchy vault pointer '${A.vault}' lookup failed (${String(
+D)}). Store it with 'node scripts/vault.mjs set ${A.vault}', or switch this person's token pointer to env/value.`)}throw new Error(
+`no ${w.provider} token: hierarchy vault pointer '${A.vault}' returned empty (person '${w.person??"?"}')`)}throw new Error(
 `no ${w.provider} token: hierarchy person '${w.person??"?"}' has an empty token pointer (need one of value|env|vault)`)}
-try{const N=await b.getToken(w.credentialService,"token");if(N)return N}catch(N){const D=String(N);if(_){t.logger.warn(`\
+try{const A=await b.getToken(w.credentialService,"token");if(A)return A}catch(A){const D=String(A);if(_){t.logger.warn(`\
 [harness] git token '${w.credentialService}': vault is unavailable (${_}); trying env fallback`,{service:w.credentialService,
 provider:w.provider,envVar:w.apiKeyEnv})}else{t.logger.info(`[harness] git token '${w.credentialService}' not in the vau\
 lt (${D}); trying env fallback`,{service:w.credentialService,provider:w.provider,envVar:w.apiKeyEnv})}}const O=process.env[w.
@@ -12940,27 +12986,27 @@ auth?.api_key_env||"GH_TOKEN",provider:"github"}),"resolveGithubToken");const pe
 logger:t.logger,minFreeDiskBytes:r.storage.min_free_disk_bytes,neverCommitPaths:r.repos.never_commit_paths});const xe=new Dd(
 {logger:t.logger,sendMessage:t.sendMessage??(async()=>({ts:`${Date.now()}`}))});const ee=new pd({config:r,state:s,budget:u,
 pat:h,logger:t.logger,interactionLog:c,effectiveRouteFor:a(w=>x.find(O=>O.role===w),"effectiveRouteFor"),runLead:a(async(w,O)=>{
-const N=O?.requester??r.slack.authorised_users[0];return dy(w,{config:r,sessionId:O?.sessionId,pinnedSessionBranch:O?.pinnedSessionBranch,
+const A=O?.requester??r.slack.authorised_users[0];return dy(w,{config:r,sessionId:O?.sessionId,pinnedSessionBranch:O?.pinnedSessionBranch,
 logger:t.logger,requireConventionsBeforePlanning:r.brief?.ingest_repo_conventions!==false,callLeadModel:a(async(D,M,I)=>ex(
-{execute:A("lead"),model:r.models.lead,brief:D,reposAllowed:r.repos.allowed,timeoutSeconds:r.loop.lead_timeout_seconds??
+{execute:N("lead"),model:r.models.lead,brief:D,reposAllowed:r.repos.allowed,timeoutSeconds:r.loop.lead_timeout_seconds??
 r.loop.worker_timeout_seconds,apiKey:await k("lead"),logger:t.logger,correctiveNote:I,jsonRetryEnabled:r.loop.lead_json_retry_enabled!==
 false,maxOutputTokens:r.models.max_output_tokens,leadSalvageEnabled:r.loop.lead_salvage_truncated_plan!==false,leadSyntaxRetryEnabled:r.
 loop.lead_syntax_retry_enabled!==false,onAttempt:a(W=>s.audit("lead.plan_attempt",W,O?.sessionId),"onAttempt")}),"callLe\
-adModel"),callWorkerContextModel:a(async(D,M,I)=>rx({execute:A("worker_context"),model:r.models.lead,brief:D,subTasks:M.
+adModel"),callWorkerContextModel:a(async(D,M,I)=>rx({execute:N("worker_context"),model:r.models.lead,brief:D,subTasks:M.
 subTasks,missingSeqs:I,timeoutSeconds:r.loop.lead_timeout_seconds??r.loop.worker_timeout_seconds,apiKey:await k("worker_\
 context"),maxOutputTokens:r.models.max_output_tokens,logger:t.logger}),"callWorkerContextModel"),scoutRepo:a(async({brief:D,
-repoFullName:M,runModel:I=true})=>{const[W]=M.split("/");const de=h.resolve({slackUserId:N,gitHubUser:W,repoFullName:M});
+repoFullName:M,runModel:I=true})=>{const[W]=M.split("/");const de=h.resolve({slackUserId:A,gitHubUser:W,repoFullName:M});
 const _e=await ne(de);let ie;try{ie=await pe.allocate({repoFullName:M,baseBranch:r.repos.default_base_branch,sessionBranch:`\
 harness/scout-${Date.now()}-${(globalThis.crypto?.randomUUID?.()??Math.random().toString(16).slice(2)).slice(0,8)}`,sessionId:`\
 scout-${Date.now()}-${(globalThis.crypto?.randomUUID?.()??Math.random().toString(16).slice(2)).slice(0,8)}`,ghToken:_e,commitIdentity:de.
 commitIdentity,bootstrapDeps:false});const Re=r.brief?.ingest_repo_conventions!==false?wl(ie,r.brief?.convention_char_budget??
 1e4):[];if(!I)return{report:"",conventions:Re};try{if(S)await T();if(v?.backendFor("scout").backend==="opencode"){await T();
-const Ne=await Qo({agent:v.agentSpecFor("scout"),worktreePath:ie,systemPrompt:Kd(),userMessage:Jd(D),model:v.backendFor(
+const Ae=await Qo({agent:v.agentSpecFor("scout"),worktreePath:ie,systemPrompt:Kd(),userMessage:Jd(D),model:v.backendFor(
 "scout").model??r.models.lead,effort:v.backendFor("scout").effort,timeoutSeconds:r.loop.lead_scout_timeout_seconds??420,
 acpGuard:$g({bash_whitelist:r.safety.bash_whitelist,bash_denylist_tokens:r.safety.bash_denylist_tokens,path_denylist:r.safety.
-path_denylist,repoRoot:ie,realpath:a(H=>iA(H),"realpath"),allow_git_push:false,allow_network_commands:false}),secretToken:_e,
-logger:t.logger});const we=v.priceTurn("scout",Ne);return{report:Ne.finalMessage,conventions:Re,costUsd:we.costUsd??0,usageMeasured:we.
-costUsd!==void 0,tokensIn:Ne.tokensIn,tokensOut:Ne.tokensOut,timedOut:Ne.stopReason==="timeout"}}const Pe=await X$({model:r.
+path_denylist,repoRoot:ie,realpath:a(H=>iN(H),"realpath"),allow_git_push:false,allow_network_commands:false}),secretToken:_e,
+logger:t.logger});const we=v.priceTurn("scout",Ae);return{report:Ae.finalMessage,conventions:Re,costUsd:we.costUsd??0,usageMeasured:we.
+costUsd!==void 0,tokensIn:Ae.tokensIn,tokensOut:Ae.tokensOut,timedOut:Ae.stopReason==="timeout"}}const Pe=await X$({model:r.
 models.lead,worktreePath:ie,systemPrompt:Kd(),userMessage:Jd(D),timeoutSeconds:r.loop.lead_scout_timeout_seconds??420,maxTurns:r.
 loop.lead_scout_max_turns??Zd,apiKey:await k("scout"),maxOutputTokens:r.models.max_output_tokens,allowedTools:ay,deniedTools:oy,
 logger:t.logger});return{report:Pe.report,conventions:Re,costUsd:Pe.costUsd,usageMeasured:Pe.usageMeasured,tokensIn:Pe.tokensIn,
@@ -12968,25 +13014,25 @@ tokensOut:Pe.tokensOut,timedOut:Pe.timedOut}}catch(Pe){t.logger.warn("[lead] mod
 oaded; planning retains convention context",{repo:M,err:String(Pe)});return{report:"",conventions:Re}}}finally{if(ie){await pe.
 releaseByPath(ie,M).catch(Re=>t.logger.warn("[lead] beta.104: scout worktree release failed (non-fatal)",{path:ie,err:String(
 Re)}))}}},"scoutRepo"),onBranchDecision:O?.onBranchDecision,allocateWorktree:a(async(D,M,I)=>{const[W]=D.split("/");const de=h.
-resolve({slackUserId:N,gitHubUser:W,repoFullName:D});const _e=await ne(de);return pe.allocate({repoFullName:D,baseBranch:r.
+resolve({slackUserId:A,gitHubUser:W,repoFullName:D});const _e=await ne(de);return pe.allocate({repoFullName:D,baseBranch:r.
 repos.default_base_branch,sessionBranch:M,sessionId:`pending-${Date.now()}-${(globalThis.crypto?.randomUUID?.()??Math.random().
 toString(16).slice(2)).slice(0,8)}`,ghToken:_e,commitIdentity:de.commitIdentity,reuseExistingBranch:!!w.pinnedBranch,preserveLocalBranch:!!w.
 resumeFromClarification,recoverBranchFromSha:O?.recoverBranchFromSha,onBranchDecision:I})},"allocateWorktree"),estimateCost:a(
 D=>D.subTasks.reduce((M,I)=>M+ka(r.models.worker,I.estimatedTokens),0),"estimateCost"),remoteBranchExists:a(async(D,M)=>{
-try{const[I]=D.split("/");const W=h.resolve({slackUserId:N,gitHubUser:I,repoFullName:D});const de=await ne(W);return await pe.
+try{const[I]=D.split("/");const W=h.resolve({slackUserId:A,gitHubUser:I,repoFullName:D});const de=await ne(W);return await pe.
 remoteBranchExistsByUrl(D,M,de)}catch{return false}},"remoteBranchExists")})},"runLead"),runLeadReviseSpec:a(async({brief:w,
-plan:O,review:N})=>{const D=await tx({execute:A("revise_spec"),model:r.models.lead,brief:w,subTasks:O.subTasks,review:N,
+plan:O,review:A})=>{const D=await tx({execute:N("revise_spec"),model:r.models.lead,brief:w,subTasks:O.subTasks,review:A,
 timeoutSeconds:r.loop.revise_spec_timeout_seconds??r.loop.worker_timeout_seconds,apiKey:await k("revise_spec"),maxOutputTokens:r.
 models.max_output_tokens,logger:t.logger});return{subTasks:D.subTasks,costUsd:D.costUsd,tokensIn:D.tokensIn,tokensOut:D.
 tokensOut}},"runLeadReviseSpec"),describeWorkerModel:a(w=>{const O=v?.backendFor("worker");if(!O||O.backend!=="opencode")
-return w;return`opencode:${O.model??w}`},"describeWorkerModel"),runWorker:a(async({brief:w,subTask:O,plan:N,worktreePath:D,
+return w;return`opencode:${O.model??w}`},"describeWorkerModel"),runWorker:a(async({brief:w,subTask:O,plan:A,worktreePath:D,
 resumeSessionId:M,requester:I,dispatchHint:W,modelOverride:de,onStreamSlow:_e,onActivity:ie,firstTokenTimeoutSecondsOverride:Re})=>{
-const Pe=O_(w,O);const Ne=Ax(r.safety);const we=h.resolve({slackUserId:I??r.slack.authorised_users[0],gitHubUser:N.repo.
-split("/")[0],repoFullName:N.repo});return BR(D??N.worktreePath,w,O,we.commitIdentity,{config:r,logger:t.logger,buildCanUseTool:a(
-()=>Ne,"buildCanUseTool"),runWorkerModel:a(async H=>{if(S)await T();if(v?.backendFor("worker").backend!=="opencode"){return J$(
+const Pe=O_(w,O);const Ae=Nx(r.safety);const we=h.resolve({slackUserId:I??r.slack.authorised_users[0],gitHubUser:A.repo.
+split("/")[0],repoFullName:A.repo});return BR(D??A.worktreePath,w,O,we.commitIdentity,{config:r,logger:t.logger,buildCanUseTool:a(
+()=>Ae,"buildCanUseTool"),runWorkerModel:a(async H=>{if(S)await T();if(v?.backendFor("worker").backend!=="opencode"){return J$(
 {...H,apiKey:await k("worker"),maxOutputTokens:r.models.max_output_tokens})}await T();const Le=$g({bash_whitelist:r.safety.
 bash_whitelist,bash_denylist_tokens:r.safety.bash_denylist_tokens,path_denylist:r.safety.path_denylist,path_denylist_exceptions:r.
-safety.path_denylist_exceptions,repoRoot:H.worktreePath,realpath:a(st=>iA(st),"realpath"),allow_git_push:r.safety.allow_git_push,
+safety.path_denylist_exceptions,repoRoot:H.worktreePath,realpath:a(st=>iN(st),"realpath"),allow_git_push:r.safety.allow_git_push,
 allow_network_commands:r.safety.allow_network_commands});const se=await Qo({agent:v.agentSpecFor("worker"),worktreePath:H.
 worktreePath,systemPrompt:H.systemPrompt,userMessage:H.userMessage,model:v.backendFor("worker").model??H.model,effort:v.
 backendFor("worker").effort,resumeSessionId:H.resumeSessionId,resumeCumulativeCostUsd:H.resumeSessionId?s.db.prepare(`SE\
@@ -13000,126 +13046,126 @@ providerCostBaselineUsd:se.costBaselineUsd,providerCostCurrency:se.costCurrency}
 H),"gitBaseSha"),gitListChangedFiles:a((H,Le)=>pe.listChangedFiles(H,Le),"gitListChangedFiles"),gitCommit:a((H,Le,se,Ye)=>pe.
 commit(H,Le,se,Ye??[]),"gitCommit"),gitHeadSha:a(H=>pe.baseSha(H),"gitHeadSha"),gitListCommittedFiles:a((H,Le)=>pe.listCommittedFiles(
 H,Le),"gitListCommittedFiles"),gitStatusPorcelain:a(H=>pe.statusPorcelain(H),"gitStatusPorcelain")},M,W,_e,de,Re,ie)},"r\
-unWorker"),runAdversary:a(async({brief:w,plan:O,sessionId:N,runtime:D,requester:M,baseSha:I,priorFindings:W,revision:de})=>{
-const _e=I&&I.length>0?I:r.repos.default_base_branch;let ie;try{const[Ne]=O.repo.split("/");const we=h.resolve({slackUserId:M??
-"",gitHubUser:Ne,repoFullName:O.repo});ie=await ne(we)}catch(Ne){t.logger.warn("[harness] adversary diff: could not reso\
-lve GitHub token (promisor fetch may fail on a private repo)",{repo:O.repo,err:String(Ne)})}let Re=await pe.diff(O.worktreePath,
-_e,ie);if(r.verify?.summarise_generated_for_review===true){const Ne=Qr(r.verify?.generators);if(!Ne.empty){const we=Re.length;
-const{diff:H,folded:Le}=jy(Re,se=>Ne.ownerOf(se)?.script??null);if(Le.length>0){Re=H;s.audit("adversary.generated_output\
+unWorker"),runAdversary:a(async({brief:w,plan:O,sessionId:A,runtime:D,requester:M,baseSha:I,priorFindings:W,revision:de})=>{
+const _e=I&&I.length>0?I:r.repos.default_base_branch;let ie;try{const[Ae]=O.repo.split("/");const we=h.resolve({slackUserId:M??
+"",gitHubUser:Ae,repoFullName:O.repo});ie=await ne(we)}catch(Ae){t.logger.warn("[harness] adversary diff: could not reso\
+lve GitHub token (promisor fetch may fail on a private repo)",{repo:O.repo,err:String(Ae)})}let Re=await pe.diff(O.worktreePath,
+_e,ie);if(r.verify?.summarise_generated_for_review===true){const Ae=Qr(r.verify?.generators);if(!Ae.empty){const we=Re.length;
+const{diff:H,folded:Le}=jy(Re,se=>Ae.ownerOf(se)?.script??null);if(Le.length>0){Re=H;s.audit("adversary.generated_output\
 _folded",{fileCount:Le.length,scripts:[...new Set(Le.map(se=>se.script))],bytesBefore:we,bytesAfter:Re.length,sample:Le.
-slice(0,20).map(se=>se.path)},N)}}}const Pe=nA(r.storage.worktree_root.replace(/^~/,process.env.HOME??""),`${Date.now()}\
+slice(0,20).map(se=>se.path)},A)}}}const Pe=nN(r.storage.worktree_root.replace(/^~/,process.env.HOME??""),`${Date.now()}\
 .diff`);await Y3(L_(Pe),{recursive:true});await K3(Pe,Re,"utf8");try{return await WR({crystallisedPrompt:[`Title: ${w.title}`,
-`Motivation: ${w.motivation}`,`Acceptance criteria:`,...w.acceptanceCriteria.map(Ne=>`- ${Ne}`),...w.outOfScope?.length?
-["Out of scope:",...w.outOfScope.map(Ne=>`- ${Ne}`)]:[]].join("\n"),diffPath:Pe,repoPath:O.worktreePath,runtime:D,reviewChecklist:O.
+`Motivation: ${w.motivation}`,`Acceptance criteria:`,...w.acceptanceCriteria.map(Ae=>`- ${Ae}`),...w.outOfScope?.length?
+["Out of scope:",...w.outOfScope.map(Ae=>`- ${Ae}`)]:[]].join("\n"),diffPath:Pe,repoPath:O.worktreePath,runtime:D,reviewChecklist:O.
 reviewChecklist,model:r.models.adversary,timeoutSeconds:r.loop.adversary_timeout_seconds,repoConventions:w.repoConventions,
-priorFindings:W,revision:de,repoHasTestScript:(()=>{try{return yn(O.worktreePath).some(Ne=>Ne.name==="test")}catch{return false}})(),
-hasDeclaredGenerators:!Qr(r.verify?.generators).empty},{logger:t.logger,readDiff:a(async Ne=>await Z3(Ne,"utf8"),"readDi\
-ff"),onFileAttributionRetry:a(Ne=>t.logger.info("[adversary] loop.file_attribution_retry",{event:"loop.file_attribution_\
-retry",before:Ne.before,after:Ne.after,applied:Ne.applied,hadPriorFindings:Ne.hadPriorFindings}),"onFileAttributionRetry"),
-callAdversaryModel:a(async Ne=>{const we=await ix({...Ne,execute:A("adversary"),firstTokenTimeoutSeconds:r.loop.sdk_first_token_timeout_seconds,
+priorFindings:W,revision:de,repoHasTestScript:(()=>{try{return yn(O.worktreePath).some(Ae=>Ae.name==="test")}catch{return false}})(),
+hasDeclaredGenerators:!Qr(r.verify?.generators).empty},{logger:t.logger,readDiff:a(async Ae=>await Z3(Ae,"utf8"),"readDi\
+ff"),onFileAttributionRetry:a(Ae=>t.logger.info("[adversary] loop.file_attribution_retry",{event:"loop.file_attribution_\
+retry",before:Ae.before,after:Ae.after,applied:Ae.applied,hadPriorFindings:Ae.hadPriorFindings}),"onFileAttributionRetry"),
+callAdversaryModel:a(async Ae=>{const we=await ix({...Ae,execute:N("adversary"),firstTokenTimeoutSeconds:r.loop.sdk_first_token_timeout_seconds,
 apiKey:await k("adversary"),logger:t.logger});return{parsed:{verdict:we.parsed.verdict,findings:we.parsed.findings.map(H=>({
 dimension:H.dimension??"quality",severity:qn(H.severity),title:H.title??"(untitled)",detail:H.detail??"",file:H.file,line:H.
 line,relatedFiles:Array.isArray(H.relatedFiles)?H.relatedFiles.filter(Le=>typeof Le==="string"&&Le.trim().length>0):void 0})),
 summary:we.parsed.summary},sdkSessionId:we.sdkSessionId,costUsd:we.costUsd,usageMeasured:we.usageMeasured,tokensIn:we.tokensIn,
 tokensOut:we.tokensOut}},"callAdversaryModel")})}finally{await J3(Pe,{force:true}).catch(()=>void 0)}},"runAdversary"),previewVerificationEnabled:r.
-vercel?.enabled===true,fetchRuntime:a(async({plan:w,sessionId:O,waitForPreview:N=false,commitSha:D})=>{const M=s.db.prepare(
+vercel?.enabled===true,fetchRuntime:a(async({plan:w,sessionId:O,waitForPreview:A=false,commitSha:D})=>{const M=s.db.prepare(
 `SELECT status, source, logs_excerpt, error_count, deployment_url, uploaded_at, uploaded_by
              FROM runtime_uploads
             WHERE session_id = ?
          ORDER BY uploaded_at DESC
-            LIMIT 1`).get(O);if(M&&!N){return{provider:"manual",status:M.status,deploymentUrl:M.deployment_url??void 0,logsExcerpt:M.
+            LIMIT 1`).get(O);if(M&&!A){return{provider:"manual",status:M.status,deploymentUrl:M.deployment_url??void 0,logsExcerpt:M.
 logs_excerpt,errorCount:M.error_count??void 0,uploadedAt:M.uploaded_at,uploadedBy:M.uploaded_by,source:M.source??void 0}}
-if(!r.vercel?.enabled)return void 0;if(!N)return void 0;if(!D){return{provider:"vercel",status:"unavailable",logsExcerpt:"\
+if(!r.vercel?.enabled)return void 0;if(!A)return void 0;if(!D){return{provider:"vercel",status:"unavailable",logsExcerpt:"\
 Exact candidate SHA was not supplied; refusing branch-based preview lookup."}}const I=await me();if(!I){return{provider:"\
 vercel",status:"unavailable",logsExcerpt:"Vercel token unavailable (no vault entry and env fallback unset). Set VERCEL_T\
 OKEN or the vault service.",errorCount:void 0}}{const W=await UR({vercelToken:I,teamId:r.vercel.team_id,projectId:r.vercel.
 project_id,sha:D,waitSeconds:r.vercel.preview_wait_seconds,logger:t.logger});return{provider:"vercel",status:W.status===
 "ready"?"ok":W.status==="error"?"build_failed":W.status==="pending"?"no_deploy_yet":"unavailable",deploymentUrl:W.deploymentUrl?
 W.deploymentUrl.startsWith("http")?W.deploymentUrl:`https://${W.deploymentUrl}`:void 0,logsExcerpt:W.logsExcerpt??W.detail,
-errorCount:W.status==="error"?1:0}}},"fetchRuntime"),pushBranchForPreview:a(async({plan:w,requester:O,commitSha:N,resolveCredentialForMutation:D})=>{
+errorCount:W.status==="error"?1:0}}},"fetchRuntime"),pushBranchForPreview:a(async({plan:w,requester:O,commitSha:A,resolveCredentialForMutation:D})=>{
 const M=D?await D("push_feature_branch"):await(async()=>{const W=h.resolve({slackUserId:O??r.slack.authorised_users[0],gitHubUser:w.
 repo.split("/")[0],repoFullName:w.repo});return{...W,token:await ne(W)}})();await pe.pushBranch(w.worktreePath,"origin",
-w.branch,M.token);const I=await pe.remoteBranchSha(w.worktreePath,"origin",w.branch,M.token);if(I!==N){throw new Error(`\
-preview push did not publish expected SHA ${N}; remote is ${I??"(missing)"}`)}return{remoteSha:I}},"pushBranchForPreview"),
-remoteBranchSha:a(async({plan:w,branch:O,requester:N})=>{const D=h.resolve({slackUserId:N??r.slack.authorised_users[0],gitHubUser:w.
+w.branch,M.token);const I=await pe.remoteBranchSha(w.worktreePath,"origin",w.branch,M.token);if(I!==A){throw new Error(`\
+preview push did not publish expected SHA ${A}; remote is ${I??"(missing)"}`)}return{remoteSha:I}},"pushBranchForPreview"),
+remoteBranchSha:a(async({plan:w,branch:O,requester:A})=>{const D=h.resolve({slackUserId:A??r.slack.authorised_users[0],gitHubUser:w.
 repo.split("/")[0],repoFullName:w.repo});const M=await ne(D);return await pe.remoteBranchSha(w.worktreePath,"origin",O,M)},
-"remoteBranchSha"),openPullRequest:a(async({plan:w,brief:O,reviewReport:N,requester:D,resolveCredentialForMutation:M})=>{
+"remoteBranchSha"),openPullRequest:a(async({plan:w,brief:O,reviewReport:A,requester:D,resolveCredentialForMutation:M})=>{
 const I=M?await M("open_pull_request"):await(async()=>{const _e=h.resolve({slackUserId:D??r.slack.authorised_users[0],gitHubUser:w.
 repo.split("/")[0],repoFullName:w.repo});return{..._e,token:await ne(_e)}})();const W=I.token;if(I.provider!=="github"){
 throw new Error(`provider '${I.provider}' branch was pushed but automated MR/PR creation is not implemented (see issue #\
 25); open the merge request manually for branch '${w.branch}'`)}const de=await E_({repoFullName:w.repo,head:w.branch,base:r.
-repos.default_base_branch,title:`harness: ${O.title}`,body:sA(O,N),ghToken:W,apiBase:I.apiBase,draft:(r.repos.draft_pr_on_nonpass??
-false)&&N.verdict!=="pass",labels:n_(N),logger:t.logger,refreshCredential:M?async()=>{const _e=await M("open_pull_reques\
-t");return{ghToken:_e.token,apiBase:_e.apiBase}}:void 0});await C({repoFullName:w.repo,pr:de,brief:O,reviewReport:N,ghToken:W,
+repos.default_base_branch,title:`harness: ${O.title}`,body:sN(O,A),ghToken:W,apiBase:I.apiBase,draft:(r.repos.draft_pr_on_nonpass??
+false)&&A.verdict!=="pass",labels:n_(A),logger:t.logger,refreshCredential:M?async()=>{const _e=await M("open_pull_reques\
+t");return{ghToken:_e.token,apiBase:_e.apiBase}}:void 0});await C({repoFullName:w.repo,pr:de,brief:O,reviewReport:A,ghToken:W,
 apiBase:I.apiBase??"https://api.github.com",refreshCredential:M?async()=>{const _e=await M("update_pull_request");return{
 ghToken:_e.token,apiBase:_e.apiBase}}:void 0});return de.htmlUrl},"openPullRequest"),pushBranchAndOpenPr:a(async({plan:w,
-brief:O,reviewReport:N,requester:D,resolveCredentialForMutation:M})=>{const I=M?await M("push_feature_branch"):await(async()=>{
+brief:O,reviewReport:A,requester:D,resolveCredentialForMutation:M})=>{const I=M?await M("push_feature_branch"):await(async()=>{
 const ie=h.resolve({slackUserId:D??r.slack.authorised_users[0],gitHubUser:w.repo.split("/")[0],repoFullName:w.repo});return{
 ...ie,token:await ne(ie)}})();await pe.pushBranch(w.worktreePath,"origin",w.branch,I.token);const W=M?await M("open_pull\
 _request"):await(async()=>{const ie=h.resolve({slackUserId:D??r.slack.authorised_users[0],gitHubUser:w.repo.split("/")[0],
 repoFullName:w.repo});return{...ie,token:await ne(ie)}})();const de=W.token;if(W.provider!=="github"){throw new Error(`p\
 rovider '${W.provider}' push succeeded but automated MR/PR creation is not yet implemented (see issue #25); open the mer\
 ge request manually for branch '${w.branch}'`)}const _e=await E_({repoFullName:w.repo,head:w.branch,base:r.repos.default_base_branch,
-title:`harness: ${O.title}`,body:sA(O,N),ghToken:de,apiBase:W.apiBase,draft:(r.repos.draft_pr_on_nonpass??false)&&N.verdict!==
-"pass",labels:n_(N),logger:t.logger,refreshCredential:M?async()=>{const ie=await M("open_pull_request");return{ghToken:ie.
-token,apiBase:ie.apiBase}}:void 0});await C({repoFullName:w.repo,pr:_e,brief:O,reviewReport:N,ghToken:de,apiBase:W.apiBase??
+title:`harness: ${O.title}`,body:sN(O,A),ghToken:de,apiBase:W.apiBase,draft:(r.repos.draft_pr_on_nonpass??false)&&A.verdict!==
+"pass",labels:n_(A),logger:t.logger,refreshCredential:M?async()=>{const ie=await M("open_pull_request");return{ghToken:ie.
+token,apiBase:ie.apiBase}}:void 0});await C({repoFullName:w.repo,pr:_e,brief:O,reviewReport:A,ghToken:de,apiBase:W.apiBase??
 "https://api.github.com",refreshCredential:M?async()=>{const ie=await M("update_pull_request");return{ghToken:ie.token,apiBase:ie.
 apiBase}}:void 0});return _e.htmlUrl},"pushBranchAndOpenPr"),worktreeHeadSha:a(async w=>pe.baseSha(w),"worktreeHeadSha"),
 worktreeStatusPorcelain:a(async w=>pe.statusPorcelain(w),"worktreeStatusPorcelain"),worktreeMergeBase:a(async(w,O)=>pe.mergeBase(
 w,O).catch(()=>""),"worktreeMergeBase"),worktreeCommitCount:a(async(w,O)=>pe.commitCount(w,O).catch(()=>-1),"worktreeCom\
-mitCount"),unreachableCommits:a(async(w,O,N)=>pe.unreachableCommits(w,O,N).catch(()=>[]),"unreachableCommits"),listRepoFiles:a(
-async w=>pe.listTrackedFiles(w).catch(()=>[]),"listRepoFiles"),checkpointGitRunner:a(async({repo:w,requester:O})=>{const N=h.
-resolve({slackUserId:O||r.slack.authorised_users[0],gitHubUser:w.split("/")[0],repoFullName:w});const D=await ne(N);return pe.
+mitCount"),unreachableCommits:a(async(w,O,A)=>pe.unreachableCommits(w,O,A).catch(()=>[]),"unreachableCommits"),listRepoFiles:a(
+async w=>pe.listTrackedFiles(w).catch(()=>[]),"listRepoFiles"),checkpointGitRunner:a(async({repo:w,requester:O})=>{const A=h.
+resolve({slackUserId:O||r.slack.authorised_users[0],gitHubUser:w.split("/")[0],repoFullName:w});const D=await ne(A);return pe.
 authenticatedRunner(D)},"checkpointGitRunner"),gitDiffStat:a(async(w,O)=>pe.diffStat(w,O).catch(()=>""),"gitDiffStat"),worktreeCommittedFiles:a(
-async(w,O)=>pe.listCommittedFiles(w,O).catch(()=>[]),"worktreeCommittedFiles"),runTypecheckDirect:a((w,O)=>A_(w,O),"runT\
-ypecheckDirect"),diagnoseCheckEnv:a(w=>ZR(w),"diagnoseCheckEnv"),runScriptedTsc:a(async(w,O)=>{const N=A_(w,O);if(!N){return{
-ok:false,output:"TypeScript compiler unavailable: node_modules/.bin/tsc is missing or unusable."}}const D=`${N.stdout}${N.
-stderr}`;return{ok:N.status===0&&!N.timedOut,output:D.slice(-4e3)}},"runScriptedTsc"),ciCombinedStatus:a(async({repoFullName:w,
-sha:O,requester:N})=>{const[D]=w.split("/");const M=h.resolve({slackUserId:N??"",gitHubUser:D,repoFullName:w});const I=await ne(
+async(w,O)=>pe.listCommittedFiles(w,O).catch(()=>[]),"worktreeCommittedFiles"),runTypecheckDirect:a((w,O)=>N_(w,O),"runT\
+ypecheckDirect"),diagnoseCheckEnv:a(w=>ZR(w),"diagnoseCheckEnv"),runScriptedTsc:a(async(w,O)=>{const A=N_(w,O);if(!A){return{
+ok:false,output:"TypeScript compiler unavailable: node_modules/.bin/tsc is missing or unusable."}}const D=`${A.stdout}${A.
+stderr}`;return{ok:A.status===0&&!A.timedOut,output:D.slice(-4e3)}},"runScriptedTsc"),ciCombinedStatus:a(async({repoFullName:w,
+sha:O,requester:A})=>{const[D]=w.split("/");const M=h.resolve({slackUserId:A??"",gitHubUser:D,repoFullName:w});const I=await ne(
 M).catch(()=>"");return $R({repoFullName:w,sha:O,ghToken:I,apiBase:M.apiBase})},"ciCombinedStatus"),ciSnapshot:a(async({
-repoFullName:w,sha:O,requester:N})=>{const[D]=w.split("/");const M=h.resolve({slackUserId:N??"",gitHubUser:D,repoFullName:w});
+repoFullName:w,sha:O,requester:A})=>{const[D]=w.split("/");const M=h.resolve({slackUserId:A??"",gitHubUser:D,repoFullName:w});
 const I=await ne(M).catch(()=>"");return el({repoFullName:w,sha:O,ghToken:I,apiBase:M.apiBase,workflowRunsFallback:r.ci?.
-workflow_runs_fallback!==false})},"ciSnapshot"),tokenScopes:a(async({repoFullName:w,requester:O})=>{const[N]=w.split("/");
-const D=h.resolve({slackUserId:O??"",gitHubUser:N,repoFullName:w});const M=await ne(D).catch(()=>"");if(!M)return null;return CC(
-await TR({ghToken:M,apiBase:D.apiBase}))},"tokenScopes"),ciFailingLogs:a(async({repoFullName:w,sha:O,requester:N})=>{const[
-D]=w.split("/");const M=h.resolve({slackUserId:N??"",gitHubUser:D,repoFullName:w});const I=await ne(M).catch(()=>"");return xR(
+workflow_runs_fallback!==false})},"ciSnapshot"),tokenScopes:a(async({repoFullName:w,requester:O})=>{const[A]=w.split("/");
+const D=h.resolve({slackUserId:O??"",gitHubUser:A,repoFullName:w});const M=await ne(D).catch(()=>"");if(!M)return null;return CC(
+await TR({ghToken:M,apiBase:D.apiBase}))},"tokenScopes"),ciFailingLogs:a(async({repoFullName:w,sha:O,requester:A})=>{const[
+D]=w.split("/");const M=h.resolve({slackUserId:A??"",gitHubUser:D,repoFullName:w});const I=await ne(M).catch(()=>"");return xR(
 {repoFullName:w,sha:O,ghToken:I,apiBase:M.apiBase})},"ciFailingLogs"),ciAuthorWorkflow:a(async({worktreePath:w,assertMutationAuthorized:O})=>{
-const N=Object.values(r.pat_routing.commit_identity??{})[0];return LR({worktreePath:w,assertMutationAuthorized:O,gitCommit:a(
-(D,M)=>pe.commit(D,M,{name:N?.name||"openclaw-agent-harness",email:N?.email||"harness@openclaw.local"}),"gitCommit")})},
-"ciAuthorWorkflow"),releaseWorktree:a(async({sessionId:w,repoFullName:O,worktreePath:N,reason:D})=>{t.logger.info("[harn\
-ess] releasing worktree on terminal transition",{sessionId:w,reason:D,worktreePath:N});const M=await pe.releaseByPath(N,
-O);if(!M.ok){t.logger.warn("[harness] worktree release did not succeed",{sessionId:w,reason:D,worktreePath:N,error:M.error})}
-return M},"releaseWorktree"),buildVerifyProbes:pO({git:pe,pat:h,config:r,resolveGitToken:ne}),reportProgress:a(async(w,O,N)=>{
-try{s.audit("loop.progress",{status:O,...N&&typeof N==="object"?N:{meta:N}},w)}catch(D){t.logger.warn("[harness] reportP\
+const A=Object.values(r.pat_routing.commit_identity??{})[0];return LR({worktreePath:w,assertMutationAuthorized:O,gitCommit:a(
+(D,M)=>pe.commit(D,M,{name:A?.name||"openclaw-agent-harness",email:A?.email||"harness@openclaw.local"}),"gitCommit")})},
+"ciAuthorWorkflow"),releaseWorktree:a(async({sessionId:w,repoFullName:O,worktreePath:A,reason:D})=>{t.logger.info("[harn\
+ess] releasing worktree on terminal transition",{sessionId:w,reason:D,worktreePath:A});const M=await pe.releaseByPath(A,
+O);if(!M.ok){t.logger.warn("[harness] worktree release did not succeed",{sessionId:w,reason:D,worktreePath:A,error:M.error})}
+return M},"releaseWorktree"),buildVerifyProbes:pO({git:pe,pat:h,config:r,resolveGitToken:ne}),reportProgress:a(async(w,O,A)=>{
+try{s.audit("loop.progress",{status:O,...A&&typeof A==="object"?A:{meta:A}},w)}catch(D){t.logger.warn("[harness] reportP\
 rogress audit failed",{sessionId:w,status:O,err:String(D)})}},"reportProgress"),deliverProgress:a(()=>void 0,"deliverPro\
 gress"),postWarning:a(()=>void 0,"postWarning")});const q={config:r,authorisedUsers:r.slack.authorised_users,state:s,budget:u,
 pat:h,interactionLog:c,slack:xe,git:pe,creds:b,ownedRunningSessionIds:a(()=>ee.ownedRunningSessionIds(),"ownedRunningSes\
 sionIds"),effectiveBackendRoutes:x,ensureBackendReady:T,vault:y,vaultError:_,crystallise:n,anthropicApiKey:F,githubToken:ae,
 gitToken:ne,githubServiceFor:a(w=>{const O=w??r.repos.allowed.find(M=>!M.includes("*"))??r.repos.allowed[0];if(!O)return void 0;
-const N="/*";const D=O.endsWith(N)?O.slice(0,-1)+"_probe":O;try{return h.resolve({slackUserId:r.slack.authorised_users[0]??
+const A="/*";const D=O.endsWith(A)?O.slice(0,-1)+"_probe":O;try{return h.resolve({slackUserId:r.slack.authorised_users[0]??
 "unknown",gitHubUser:D.split("/")[0],repoFullName:D}).credentialService}catch{return void 0}},"githubServiceFor"),routeOverlay:d,
-gitResolutionFor:a((w,O)=>{const N=w??r.repos.allowed.find(I=>!I.includes("*"))??r.repos.allowed[0];if(!N)return void 0;
-const D="/*";const M=N.endsWith(D)?N.slice(0,-1)+"_probe":N;try{const I=h.resolve({slackUserId:O??r.slack.authorised_users[0]??
+gitResolutionFor:a((w,O)=>{const A=w??r.repos.allowed.find(I=>!I.includes("*"))??r.repos.allowed[0];if(!A)return void 0;
+const D="/*";const M=A.endsWith(D)?A.slice(0,-1)+"_probe":A;try{const I=h.resolve({slackUserId:O??r.slack.authorised_users[0]??
 "unknown",gitHubUser:M.split("/")[0],repoFullName:M});const W=I.tokenPointer;const de=W?W.vault?"vault":W.env?"env":"val\
 ue":void 0;return{credentialService:I.credentialService,provider:I.provider,apiBase:I.apiBase,apiKeyEnv:I.apiKeyEnv,tokenSource:de,
-vaultPointer:W?.vault}}catch{return void 0}},"gitResolutionFor"),preflight:a(async({requester:w,repoFullName:O})=>{let N;
-try{N=h.resolve({slackUserId:w,gitHubUser:O.split("/")[0],repoFullName:O})}catch(ie){return{ok:false,missing:["routing"],
+vaultPointer:W?.vault}}catch{return void 0}},"gitResolutionFor"),preflight:a(async({requester:w,repoFullName:O})=>{let A;
+try{A=h.resolve({slackUserId:w,gitHubUser:O.split("/")[0],repoFullName:O})}catch(ie){return{ok:false,missing:["routing"],
 message:`I don't have credentials set up for you to work in ${O}. ${String(ie instanceof Error?ie.message:ie)} Tell me y\
-our git email and a token for this repo and I'll store it, or ask your OpenClaw operator to add you.`}}const D=[];const M=N.
-commitIdentity?.name?.trim();const I=N.commitIdentity?.email?.trim();if(!M)D.push("name");if(!I||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.
-test(I))D.push("email");let W=false;let de="";try{const ie=await ne(N);W=!!ie}catch(ie){de=String(ie instanceof Error?ie.
-message:ie)}if(!W)D.push("token");if(D.length===0){const ie=N.provider==="gitlab"?"Note: automated merge-request creatio\
+our git email and a token for this repo and I'll store it, or ask your OpenClaw operator to add you.`}}const D=[];const M=A.
+commitIdentity?.name?.trim();const I=A.commitIdentity?.email?.trim();if(!M)D.push("name");if(!I||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.
+test(I))D.push("email");let W=false;let de="";try{const ie=await ne(A);W=!!ie}catch(ie){de=String(ie instanceof Error?ie.
+message:ie)}if(!W)D.push("token");if(D.length===0){const ie=A.provider==="gitlab"?"Note: automated merge-request creatio\
 n for GitLab is not yet implemented (issue #25). The run will complete and push its branch, but you will need to open th\
-e MR manually.":"";return{ok:true,missing:[],message:ie,provenance:N.provenance}}const _e=[];if(D.includes("email"))_e.push(
-"a git commit email address");if(D.includes("name"))_e.push("a git commit name");if(D.includes("token"))_e.push(`a ${N.provider}\
- token${de?` (${de})`:""}`);return{ok:false,missing:D,provenance:N.provenance,message:`Before I run this on ${O} I need ${_e.
-join(" and ")}. Please provide ${D.includes("token")?"the token":"it"} and I'll store it under your identity (${N.person??
+e MR manually.":"";return{ok:true,missing:[],message:ie,provenance:A.provenance}}const _e=[];if(D.includes("email"))_e.push(
+"a git commit email address");if(D.includes("name"))_e.push("a git commit name");if(D.includes("token"))_e.push(`a ${A.provider}\
+ token${de?` (${de})`:""}`);return{ok:false,missing:D,provenance:A.provenance,message:`Before I run this on ${O} I need ${_e.
+join(" and ")}. Please provide ${D.includes("token")?"the token":"it"} and I'll store it under your identity (${A.person??
 w}) so future runs just work.`}},"preflight"),mergePr:a(async({sessionId:w})=>({ok:false,refused:true,message:`Legacy se\
 ssion merge is disabled for ${w}. Use the attested control-plane merge operation.`}),"mergePr"),linkPr:a(async w=>IR({db:s.
-db,audit:a((O,N,D)=>s.audit(O,N,D),"audit"),authorisedUsers:r.slack.authorised_users,defaultBaseBranch:r.repos.default_base_branch,
-fetchPr:a(async({repo:O,prNumber:N,requester:D})=>{const M=h.resolve({slackUserId:D,gitHubUser:O.split("/")[0],repoFullName:O});
-const I=await ne(M);const W=await Pd({repoFullName:O,prNumber:N,ghToken:I,apiBase:M.apiBase});const de=await wR({repoFullName:O,
-prNumber:N,ghToken:I,apiBase:M.apiBase});const _e=await kR({repoFullName:O,base:W.baseBranch,head:W.headSha,ghToken:I,apiBase:M.
+db,audit:a((O,A,D)=>s.audit(O,A,D),"audit"),authorisedUsers:r.slack.authorised_users,defaultBaseBranch:r.repos.default_base_branch,
+fetchPr:a(async({repo:O,prNumber:A,requester:D})=>{const M=h.resolve({slackUserId:D,gitHubUser:O.split("/")[0],repoFullName:O});
+const I=await ne(M);const W=await Pd({repoFullName:O,prNumber:A,ghToken:I,apiBase:M.apiBase});const de=await wR({repoFullName:O,
+prNumber:A,ghToken:I,apiBase:M.apiBase});const _e=await kR({repoFullName:O,base:W.baseBranch,head:W.headSha,ghToken:I,apiBase:M.
 apiBase});return{headRepo:W.headRepoFullName,headRef:W.headRef,headSha:W.headSha,baseRef:W.baseBranch,state:W.state,merged:W.
 merged,draft:W.draft,htmlUrl:W.htmlUrl,commitShas:de.shas,commitsTruncated:de.truncated,mergeBaseSha:_e}},"fetchPr")},w),
 "linkPr"),disposers:[]};const Y=new Cd(s.db);const z=new Zo({repository:Y,ownerId:`runtime:${process.pid}:${Date.now()}`,
@@ -13128,23 +13174,23 @@ provenance:w.provenance,person:w.person??null,commitIdentity:w.commitIdentity,to
 env}:w.tokenPointer?.vault?{vault:w.tokenPointer.vault}:w.tokenPointer?.value?{inlineDigest:P_("sha256").update(w.tokenPointer.
 value).digest("hex")}:null}),"controlCredentialRoute");const U=a(w=>P_("sha256").update(JSON.stringify(R(w))).digest("he\
 x"),"controlCredentialRouteDigest");const G=a(w=>{if(!ml(w,r.repos.allowed))throw new De("repository_not_allowed",`Repos\
-itory ${w} is not in repos.allowed.`)},"assertControlRepoAllowed");const ce=a(async(w,O,N,D)=>{G(O);const M=s.db.prepare(
+itory ${w} is not in repos.allowed.`)},"assertControlRepoAllowed");const ce=a(async(w,O,A,D)=>{G(O);const M=s.db.prepare(
 `SELECT p.credential_route_digest,r.state,r.version,r.repository,r.requester_id,p.pr_number FROM control_proposals p JOI\
 N control_runs r ON r.id=p.run_id WHERE r.id=?`).get(w);if(!M?.credential_route_digest||M.repository!==O||M.requester_id!==
-D||M.pr_number!==N)throw new Error("credential_route_binding_missing");const I=h.resolve({slackUserId:D,gitHubUser:O.split(
+D||M.pr_number!==A)throw new Error("credential_route_binding_missing");const I=h.resolve({slackUserId:D,gitHubUser:O.split(
 "/")[0],repoFullName:O});if(U(I)!==M.credential_route_digest){if(M.state==="pr_ready"||M.state==="awaiting_merge")Y.transition(
 {runId:w,expectedVersion:M.version,to:"failed",actor:"credential_guard",reason:"credential_route_changed",terminalCode:"\
 credential_escalation",at:Date.now()});throw new Error("credential_route_changed")}return{route:I,token:await ne(I)}},"r\
 esolveBoundControlCredential");const be=TO({db:s.db,resolveCredential:ce,getPullRequest:a(async w=>w.provider==="gitlab"?
 T_({repoFullName:w.repoFullName,prNumber:w.prNumber,token:w.ghToken,apiBase:w.apiBase,signal:w.signal}):Pd(w),"getPullRe\
 quest"),getCiSnapshot:a(async w=>w.provider==="gitlab"?$_({repoFullName:w.repoFullName,sha:w.sha,token:w.ghToken,apiBase:w.
-apiBase,signal:w.signal}):el(w),"getCiSnapshot"),mergePullRequest:a(async w=>w.provider==="gitlab"?AR({repoFullName:w.repoFullName,
+apiBase,signal:w.signal}):el(w),"getCiSnapshot"),mergePullRequest:a(async w=>w.provider==="gitlab"?NR({repoFullName:w.repoFullName,
 prNumber:w.prNumber,token:w.ghToken,apiBase:w.apiBase,expectedHeadSha:w.expectedHeadSha,signal:w.signal}):CR(w),"mergePu\
 llRequest")});const He=new kd(s.db,Y,be);q.controlPlane=new Td({db:s.db,repository:Y,engine:z,mergeService:He,crystallise:q.
 crystallise,maximumBudgetUsd:r.budgets?.session_hard_ceiling_usd,maximumTimeSeconds:r.loop?.session_hard_timeout_seconds,
 maximumCycles:r.loop?.max_cycles,maximumRetries:Math.max(1,r.loop?.worker_protocol_max_attempts??1)+(r.loop?.worker_timeout_retry_enabled===
-false?0:1),resolveRepository:a(async({repository:w,baseRef:O,actorIdentity:N})=>{const D=O?.trim()||r.repos?.default_base_branch||
-"main";G(w);const M=h.resolve({slackUserId:N,gitHubUser:w.split("/")[0],repoFullName:w});const I=await ne(M);const W=M.apiBase??
+false?0:1),resolveRepository:a(async({repository:w,baseRef:O,actorIdentity:A})=>{const D=O?.trim()||r.repos?.default_base_branch||
+"main";G(w);const M=h.resolve({slackUserId:A,gitHubUser:w.split("/")[0],repoFullName:w});const I=await ne(M);const W=M.apiBase??
 "https://api.github.com";const de=M.provider==="gitlab"?await OR({repoFullName:w,ref:D,token:I,apiBase:W}):await(async()=>{
 const _e=await fetch(`${W}/repos/${w}/commits/${encodeURIComponent(D)}`,{headers:{Authorization:`Bearer ${I}`,Accept:"ap\
 plication/vnd.github+json","X-GitHub-Api-Version":"2022-11-28","User-Agent":"openclaw-agent-harness/control-plane"}});if(!_e.
@@ -13153,7 +13199,7 @@ test(ie.sha))throw new Error("Repository base revision was not returned by the p
 return{repositoryIdentity:w.toLowerCase(),baseRef:D,baseRevision:de,credentialRoute:R(M),policyDigest:P_("sha256").update(
 JSON.stringify({contract:"control-plane-contract/v3",allowedRepos:r.repos?.allowed??[],baseRef:D})).digest("hex"),securityClass:"\
 medium"}},"resolveRepository"),executeEngine:a(async w=>{w.assertCurrent();G(w.repositoryIdentity);let O=h.resolve({slackUserId:w.
-actorIdentity,gitHubUser:w.repositoryIdentity.split("/")[0],repoFullName:w.repositoryIdentity});const N=U(O);if(N!==w.credentialRouteDigest){
+actorIdentity,gitHubUser:w.repositoryIdentity.split("/")[0],repoFullName:w.repositoryIdentity});const A=U(O);if(A!==w.credentialRouteDigest){
 const ve=Y.getRun(w.changeId);if(!ve)throw new Error("credential_escalation");z.decide(w.changeId,w.lease,{kind:"impleme\
 ntation_choice",request:{requesterId:ve.requesterId,conversationId:ve.conversationId,repository:ve.repository,baseRef:ve.
 baseRef,briefDigest:ve.briefDigest,policyDigest:ve.policyDigest,nonce:ve.authorityEnvelope.nonce,action:"implement",projectedBudgetUsd:0,
@@ -13181,13 +13227,13 @@ _at,budget_usd,cost_usd,cycles_ran,estimated_usd,hard_timeout_seconds,plan_base_
 w.repositoryIdentity,JSON.stringify(ie),_e,_e,w.budgetUsd,w.budgetUsd,w.timeLimitSeconds,w.baseRevision,Gn.pluginVersion);
 w.assertCurrent();const Re=s.db.prepare(`SELECT status,pr_number,final_pr_url,published_sha,published_at FROM sessions W\
 HERE id=?`).get(w.changeId);const Pe=Re&&["done","failed","aborted"].includes(Re.status)&&Re.pr_number&&Re.final_pr_url&&
-Re.published_sha&&Re.published_at;const Ne=Pe?{status:"shipped",sessionId:w.changeId,prUrl:Re.final_pr_url??void 0,cycles:0,
+Re.published_sha&&Re.published_at;const Ae=Pe?{status:"shipped",sessionId:w.changeId,prUrl:Re.final_pr_url??void 0,cycles:0,
 totalCostUsd:0}:await ee.runConfirmedControl(w.changeId,ie,eO(W),async ve=>{W({kind:"implementation_choice",action:ve,paths:[],
 projectedBudgetUsd:Number(s.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(w.changeId)?.cost_usd??0),projectedActiveTimeMs:I(),
 projectedCycles:Number(s.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(w.changeId)?.cycles_ran??0),projectedRetries:0});
 const Mt=h.resolve({slackUserId:w.actorIdentity,gitHubUser:w.repositoryIdentity.split("/")[0],repoFullName:w.repositoryIdentity});
 if(U(Mt)!==w.credentialRouteDigest)throw new Error("credential_escalation");return{provider:Mt.provider,apiBase:Mt.apiBase,
-token:await ne(Mt)}});w.assertCurrent();if(Ne.status!=="shipped")throw new Error(`autonomous_terminal:${Ne.status}`);const we=s.
+token:await ne(Mt)}});w.assertCurrent();if(Ae.status!=="shipped")throw new Error(`autonomous_terminal:${Ae.status}`);const we=s.
 db.prepare(`SELECT pr_number,final_pr_url,published_sha,published_at,cost_usd,created_at,updated_at,merge_recommendation\
 ,deploy_status FROM sessions WHERE id=?`).get(w.changeId);const H=s.db.prepare(`SELECT verdict,findings FROM reviews WHE\
 RE session_id=? ORDER BY cycle DESC LIMIT 1`).get(w.changeId);if(!we.pr_number||!we.published_sha)throw new Error("publi\
@@ -13213,7 +13259,7 @@ AS rank
       ) SELECT verification_status,commit_sha,ended_at FROM ranked WHERE rank=1`).all(w.changeId);const Fr=Dt.filter(ve=>ve.
 verification_status==="passed").length;const qe=Dt.filter(ve=>ve.verification_status!=="passed"&&ve.verification_status!==
 "failed").length;const ur=ut.some(ve=>/secret|credential|security/i.test(JSON.stringify(ve)));const Rt=er.every(ve=>ve.status===
-"removed"||typeof ve.patch==="string");const xt=Zu(er.map(ve=>ve.patch??"").join("\n"));const At=Number(we.published_at);
+"removed"||typeof ve.patch==="string");const xt=Zu(er.map(ve=>ve.patch??"").join("\n"));const Nt=Number(we.published_at);
 s.audit("control.pr_diff_observed",{sessionId:w.changeId,sha:se.headSha,paths:vt,prNumber:Number(we.pr_number)},w.changeId);
 const tr=s.db.prepare(`INSERT INTO control_security_receipts (run_id,sha,complete,detected,observed_at) VALUES (?,?,?,?,\
 CAST(unixepoch('subsec')*1000 AS INTEGER)) RETURNING sha,complete,detected,observed_at`).get(w.changeId,se.headSha,Rt?1:
@@ -13226,9 +13272,9 @@ find(ve=>ve.role==="worker");if(vt.length>0&&he)$.push({operation:"implement",ob
 _calls:worker"});const Te=ti.filter(ve=>ve.role==="adversary").sort((ve,Mt)=>Mt.observed_at-ve.observed_at)[0];if(Fr>0&&
 Te)$.push({operation:"test",observedAt:Math.max(Te.observed_at,...Dt.filter(ve=>ve.verification_status==="passed").map(ve=>ve.
 ended_at)),source:"provider_calls+sub_task_attempts"});const ot=Dt.filter(ve=>ve.commit_sha===String(we.published_sha)).
-sort((ve,Mt)=>Mt.ended_at-ve.ended_at)[0];if(we.published_sha&&Number.isFinite(At)&&At>0){$.push({operation:"commit",observedAt:ot?.
-ended_at??At,sha:String(we.published_sha),source:ot?"sub_task_attempts":"sessions.publication"});$.push({operation:"push\
-_feature_branch",observedAt:At,sha:String(we.published_sha),source:"sessions.publication"})}if(we.pr_number&&we.final_pr_url&&
+sort((ve,Mt)=>Mt.ended_at-ve.ended_at)[0];if(we.published_sha&&Number.isFinite(Nt)&&Nt>0){$.push({operation:"commit",observedAt:ot?.
+ended_at??Nt,sha:String(we.published_sha),source:ot?"sub_task_attempts":"sessions.publication"});$.push({operation:"push\
+_feature_branch",observedAt:Nt,sha:String(we.published_sha),source:"sessions.publication"})}if(we.pr_number&&we.final_pr_url&&
 vr)$.push({operation:"open_pull_request",observedAt:vr.created_at,sha:String(we.published_sha),source:"audit_log:loop.sh\
 ipped"});const Qe=s.db.prepare(`SELECT created_at,payload FROM audit_log WHERE session_id=? AND event='loop.preview_runt\
 ime' ORDER BY id DESC LIMIT 1`).get(w.changeId);let Ut={status:r.vercel?.enabled?"indeterminate":"not_required"};if(r.vercel?.
@@ -13238,7 +13284,7 @@ created_at}}catch{Ut={status:"indeterminate"}}}const Gt=$.map(ve=>ve.operation);
 we.merge_recommendation==="merge"?"pass":H?.verdict==="block"?"block":"revise",blockingFindings:ut.filter(ve=>zu(ve,pi(ve,
 {repoHasTestScript:true,hasDeclaredGenerators:!Qr(r.verify?.generators).empty}))).length,reviewCompleted:!!H,verificationProbes:{
 completed:Fr,required:Dt.length,indeterminate:qe},candidateSha:String(we.published_sha),publication:{sha:String(we.published_sha),
-observedAt:At},pullRequest:{repository:w.repositoryIdentity,baseRef:se.baseBranch,headSha:se.headSha,open:se.state==="op\
+observedAt:Nt},pullRequest:{repository:w.repositoryIdentity,baseRef:se.baseBranch,headSha:se.headSha,open:se.state==="op\
 en"&&!se.merged,number:Number(we.pr_number),url:String(we.final_pr_url)},expectedRepository:w.repositoryIdentity,expectedBaseRef:w.
 baseRef,requiredCi:{registered:st.statusReadable&&st.checksReadable&&st.checkNames.length>0,requiredChecks:st.checkNames,
 successfulChecks:st.state==="success"?st.checkNames:[],sha:se.headSha,status:st.state==="success"?"success":st.state==="\
@@ -13257,25 +13303,25 @@ e, in the session worktree. Remove ${nt.length===1?"this key":"these keys"} from
 storage.audit_retention_days,pruneTerminalSessions:r.storage.prune_terminal_sessions,pruneTerminalSessionsDays:r.storage.
 prune_terminal_sessions_days});t.logger.info("[harness] retention prune on start",w)}catch(w){t.logger.warn("[harness] r\
 etention prune on start failed",{err:String(w)})}{const w=new _d(s,{logger:t.logger,intervalMs:3e5,git:pe,slackNotify:a(
-(O,N,D)=>xe.replyInThread(O,N,D),"slackNotify"),resolveGhToken:a(async(O,N)=>{const[D]=O.split("/");const M=h.resolve({slackUserId:N,
+(O,A,D)=>xe.replyInThread(O,A,D),"slackNotify"),resolveGhToken:a(async(O,A)=>{const[D]=O.split("/");const M=h.resolve({slackUserId:A,
 gitHubUser:D,repoFullName:O});return{token:await ne(M),apiBase:M.apiBase}},"resolveGhToken")});if(t.registerService){const O=t.
 registerService({id:`${Vn}:pr-watcher`,start:a(()=>w.start(),"start"),stop:a(()=>w.stop(),"stop")});q.disposers.push(async()=>{
 await w.stop();if(typeof O==="function")O();else if(O&&"dispose"in O&&typeof O.dispose==="function")O.dispose()})}else{void w.
 start().catch(O=>t.logger.warn("[harness] pr-watcher.start failed",{err:String(O)}));q.disposers.push(()=>w.stop())}}{const w=24*
-60*60*1e3;let O;const N=a(()=>{try{const D=l_(s,{auditRetentionDays:r.storage.audit_retention_days,pruneTerminalSessions:r.
+60*60*1e3;let O;const A=a(()=>{try{const D=l_(s,{auditRetentionDays:r.storage.audit_retention_days,pruneTerminalSessions:r.
 storage.prune_terminal_sessions,pruneTerminalSessionsDays:r.storage.prune_terminal_sessions_days});t.logger.info("[harne\
 ss] retention nightly prune",D)}catch(D){t.logger.warn("[harness] retention nightly prune failed",{err:String(D)})}},"ti\
-ck");if(t.registerService){const D=t.registerService({id:`${Vn}:retention-nightly`,start:a(()=>{O=setInterval(N,w)},"sta\
+ck");if(t.registerService){const D=t.registerService({id:`${Vn}:retention-nightly`,start:a(()=>{O=setInterval(A,w)},"sta\
 rt"),stop:a(()=>{if(O)clearInterval(O);O=void 0},"stop")});q.disposers.push(async()=>{if(O)clearInterval(O);O=void 0;if(typeof D===
-"function")D();else if(D&&"dispose"in D&&typeof D.dispose==="function")D.dispose()})}else{O=setInterval(N,w);q.disposers.
+"function")D();else if(D&&"dispose"in D&&typeof D.dispose==="function")D.dispose()})}else{O=setInterval(A,w);q.disposers.
 push(()=>{if(O)clearInterval(O);O=void 0})}}{const w=r.loop.stall_sweep_interval_seconds??60;const O=Math.max(15,Math.min(
-600,w))*1e3;let N;let D=false;const M=a(()=>{if(D)return;D=true;void ee.sweepStalls().then(I=>{if(I.recovered.length>0||
+600,w))*1e3;let A;let D=false;const M=a(()=>{if(D)return;D=true;void ee.sweepStalls().then(I=>{if(I.recovered.length>0||
 I.terminated.length>0){t.logger.info("[harness] stall-sweep acted",{recovered:I.recovered.length,terminated:I.terminated.
 length})}}).catch(I=>t.logger.warn("[harness] stall-sweep tick failed",{err:String(I)})).finally(()=>{D=false})},"tick");
-if(t.registerService){const I=t.registerService({id:`${Vn}:stall-sweep`,start:a(()=>{N=setInterval(M,O)},"start"),stop:a(
-()=>{if(N)clearInterval(N);N=void 0},"stop")});q.disposers.push(async()=>{if(N)clearInterval(N);N=void 0;if(typeof I==="\
-function")I();else if(I&&"dispose"in I&&typeof I.dispose==="function")I.dispose()})}else{N=setInterval(M,O);q.disposers.
-push(()=>{if(N)clearInterval(N);N=void 0})}}Fd=q;g_(q);return q}a(eJ,"bootstrapHarnessSync");async function tJ(t,e){const{
+if(t.registerService){const I=t.registerService({id:`${Vn}:stall-sweep`,start:a(()=>{A=setInterval(M,O)},"start"),stop:a(
+()=>{if(A)clearInterval(A);A=void 0},"stop")});q.disposers.push(async()=>{if(A)clearInterval(A);A=void 0;if(typeof I==="\
+function")I();else if(I&&"dispose"in I&&typeof I.dispose==="function")I.dispose()})}else{A=setInterval(M,O);q.disposers.
+push(()=>{if(A)clearInterval(A);A=void 0})}}Fd=q;g_(q);return q}a(eJ,"bootstrapHarnessSync");async function tJ(t,e){const{
 config:r,state:n,creds:i,slack:s,git:o}=t;try{const l=W_(r.budgets);for(const c of l){e.logger.warn(`[harness] budget co\
 nfig INCOHERENT: ${c}`)}if(l.length>0){n.audit("harness.budget_incoherent",{warnings:l,budgets:r.budgets})}}catch(l){e.logger.
 warn("[harness] budget coherence check threw (non-fatal)",{err:String(l)})}try{const l=t.effectiveBackendRoutes??[];const c=l.
@@ -13289,7 +13335,7 @@ n.audit("harness.model_pricing_unpriced",{unpriced:f,notLive:_,anthropicRoles:c.
 "")}if(_.length>0){e.logger.warn("[harness] model pricing health: configured model(s) not found in the live Anthropic /v\
 1/models list; the id may be renamed or deprecated.",{notLive:_})}if(h===null){e.logger.info("[harness] model pricing he\
 alth: /v1/models unreachable (no key or network); using static price table.")}}}catch(l){e.logger.warn("[harness] model \
-pricing health check failed (non-fatal)",{err:String(l)})}try{const{ensureWorktreesRootWritable:l}=await Promise.resolve().then(()=>(eA(),QR));
+pricing health check failed (non-fatal)",{err:String(l)})}try{const{ensureWorktreesRootWritable:l}=await Promise.resolve().then(()=>(eN(),QR));
 const{existsSync:c,mkdirSync:u,writeFileSync:d,rmSync:h}=await import("node:fs");const{join:p}=await import("node:path");
 const f=r.storage.worktree_root.replace(/^~/,process.env.HOME??"");const _=l({worktreesRoot:f,exists:a(y=>c(y),"exists"),
 mkdirp:a(y=>u(y,{recursive:true}),"mkdirp"),probeWritable:a(y=>{const b=p(y,`.oah-write-probe-${process.pid}-${Date.now()}`);
@@ -13306,7 +13352,7 @@ ting is NOT active: ${S.reason}`);n.audit("harness.checkpoint_root_unusable",{ch
 n.audit("harness.checkpoint_root_ready",{checkpointRoot:v})}}else{e.logger.error(`[harness] ${_.message}`,{worktreesRoot:_.
 worktreesRoot,uid:_.uid,chownCommand:_.chownCommand});n.audit("harness.worktrees_root_not_writable",{worktreesRoot:_.worktreesRoot,
 uid:_.uid,chownCommand:_.chownCommand})}}catch(l){e.logger.warn("[harness] worktrees-root preflight failed (non-fatal)",
-{err:String(l)})}try{const{healOrphanedWorktrees:l}=await Promise.resolve().then(()=>(rA(),tA));const c=i_();const u=[];
+{err:String(l)})}try{const{healOrphanedWorktrees:l}=await Promise.resolve().then(()=>(rN(),tN));const c=i_();const u=[];
 if(c.length>0){try{const p=c.map(()=>"?").join(",");const f=n.db.prepare(`SELECT worktree_path FROM sessions WHERE id IN\
  (${p})`).all(...c);for(const _ of f)if(_.worktree_path&&_.worktree_path.trim())u.push(_.worktree_path)}catch(p){e.logger.
 warn("[harness] worktree-heal: failed to resolve live session worktrees",{err:String(p)})}}try{const p=n.db.prepare(`SEL\
@@ -13347,7 +13393,7 @@ t.summary:"",``,s.length?`### Findings (${s.length})`:"_No findings._",...s.map(
 ** [${c.dimension??"?"}] ${c.title??""}${c.file?` (${c.file}${c.line?`:${c.line}`:""})`:""}${c.detail?`
   ${c.detail}`:""}`),``,`---`,`_Posted by openclaw-agent-harness${typeof t.costUsd==="number"?` — review cost $${t.costUsd.
 toFixed(2)}`:""}. This comment is auto-generated on every review._`];return l.filter(c=>c!==""||true).join("\n")}a(rJ,"r\
-enderReviewComment");function sA(t,e){const r=e.verdict!=="pass";const n=(e.findings??[]).filter(o=>o?.dimension==="runt\
+enderReviewComment");function sN(t,e){const r=e.verdict!=="pass";const n=(e.findings??[]).filter(o=>o?.dimension==="runt\
 ime"||/runtime|preview|deploy|render/i.test(String(o?.title??"")+" "+String(o?.detail??"")));const i=e.verdictDowngraded?
 [``,`## ⚠️ This \`pass\` was downgraded from \`revise\``,`The adversary returned \`revise\`. The harness downgraded it\
  to \`pass\` because no NEW finding was both diff-addressable and at least medium severity -- the remaining findings were \
@@ -13363,7 +13409,7 @@ dimension}] ${o.title}`)]:[];return[`## Motivation`,t.motivation,``,`## Acceptan
 o=>`- [ ] ${o}`),...i,...s,``,`## Adversarial review`,`Verdict: **${e.verdict}**`,``,e.summary,``,e.findings.length?`###\
  Findings (${e.findings.length})`:"",...e.findings.map(o=>`- **${(o.severity??"info").toUpperCase()}** [${o.dimension}] ${o.
 title}${o.file?` (${o.file}${o.line?`:${o.line}`:""})`:""}
-  ${o.detail}`),``,`---`,`_Opened by openclaw-agent-harness ${Gn.pluginVersion}._`].filter(Boolean).join("\n")}a(sA,"ren\
+  ${o.detail}`),``,`---`,`_Opened by openclaw-agent-harness ${Gn.pluginVersion}._`].filter(Boolean).join("\n")}a(sN,"ren\
 derPrBody");async function iJ(t,e){if(t.asyncBootstrap){try{await t.asyncBootstrap}catch(d){e.logger.warn("[harness] asy\
 nc bootstrap rejected during teardown",{err:String(d)})}}const r=t.config?.loop?.teardown_drain_seconds??3600;const n=Date.
 now()+r*1e3;const i=(t.config?.loop?.stuck_loop_seconds??2700)*1e3;const s=a(()=>t.ownedRunningSessionIds?.()??i_(),"own\

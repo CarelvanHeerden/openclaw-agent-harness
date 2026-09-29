@@ -180,9 +180,13 @@ export class ControlRepository {
         }
     }
     renewLease(runId, ownerId, fence, ttlMs, now = Date.now()) {
+        const activation = this.db.prepare("SELECT execution_expires_at FROM control_authority_activations WHERE run_id = ?").get(runId);
+        if (!activation || activation.execution_expires_at <= now)
+            return false;
+        const expiresAt = Math.min(now + ttlMs, activation.execution_expires_at);
         const result = this.db.prepare(`UPDATE run_leases SET expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?`)
-            .run(now + ttlMs, runId, ownerId, fence, now);
+            .run(expiresAt, runId, ownerId, fence, now);
         return Number(result.changes) === 1;
     }
     releaseLease(runId, ownerId, fence, now = Date.now()) {

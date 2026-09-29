@@ -147,6 +147,27 @@ const MUTATIONS = [
     tests: ["tests/control-service.test.mjs"],
   },
   {
+    name: "control authority: engine lease is clamped to execution deadline",
+    file: "dist/control/engine.js",
+    find: "this.options.repository.acquireLease(runId, this.options.ownerId, Math.min(Math.max(this.options.leaseTtlMs, leaseTtlMs), remainingMs), now, authorityHash)",
+    replace: "this.options.repository.acquireLease(runId, this.options.ownerId, Math.max(this.options.leaseTtlMs, leaseTtlMs), now, authorityHash)",
+    tests: ["tests/control-engine-v2.test.mjs"],
+  },
+  {
+    name: "control authority: lease renewal cannot extend execution deadline",
+    file: "dist/control/repository.js",
+    find: "        const expiresAt = Math.min(now + ttlMs, activation.execution_expires_at);",
+    replace: "        const expiresAt = now + ttlMs;",
+    tests: ["tests/control-engine-v2.test.mjs"],
+  },
+  {
+    name: "control authority: durable activation rows are immutable",
+    file: "dist/state/migrations.js",
+    find: "CREATE TRIGGER control_authority_activation_no_update\nBEFORE UPDATE ON control_authority_activations",
+    replace: "CREATE TRIGGER control_authority_activation_no_update\nBEFORE UPDATE ON control_authority_activations WHEN 0",
+    tests: ["tests/control-service.test.mjs"],
+  },
+  {
     // Repository hosts compare owner/repository identities case-insensitively.
     // Reverting the canonical comparison recreates the live control-plane
     // failure where a lower-cased request cannot match mixed-case config.

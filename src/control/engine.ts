@@ -92,11 +92,25 @@ export class AutonomousControlEngine {
     if (run.state !== "autonomous_run") throw new Error(`Run ${runId} is not autonomous`);
     const authorityHash = executionAuthorityDigest(run);
     if (!authorityHash) throw new Error(`Run ${runId} has no execution authority activation`);
+    const now = this.now();
+    const remainingMs = run.executionActivation!.executionExpiresAt - now;
+    if (remainingMs <= 0) {
+      this.options.repository.transition({
+        runId,
+        expectedVersion: run.version,
+        to: "failed",
+        actor: "autonomous_engine",
+        reason: "expired",
+        terminalCode: "authority_expired",
+        at: now,
+      });
+      throw new Error(`authority_expired:${runId}`);
+    }
     const lease = this.options.repository.acquireLease(
       runId,
       this.options.ownerId,
-      Math.max(this.options.leaseTtlMs, leaseTtlMs),
-      this.now(),
+      Math.min(Math.max(this.options.leaseTtlMs, leaseTtlMs), remainingMs),
+      now,
       authorityHash,
     );
     if (!lease) throw new Error(`Run ${runId} already has a live executor`);

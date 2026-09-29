@@ -105,6 +105,16 @@ test("fenced checkpoints reject stale lease generations", async () => withStore(
   assert.throws(() => repo.writeVerifiedCheckpoint(run.id, first, sha("e", 40), sha("a"), 112), /stale_write/);
 }));
 
+test("engine lease acquisition and renewal are clamped to execution authority", async () => withStore(({ db }) => {
+  const repo = new ControlRepository(db); const run = autonomous(repo);
+  const engine = new AutonomousControlEngine({ repository: repo, ownerId: "a", leaseTtlMs: 10_000, now: () => 100 });
+  const lease = engine.acquire(run.id, 10_000);
+  assert.equal(lease.expiresAt, run.executionActivation.executionExpiresAt);
+  assert.equal(repo.renewLease(run.id, lease.ownerId, lease.fence, 10_000, 500), true);
+  const stored = db.prepare("SELECT expires_at FROM run_leases WHERE run_id=?").get(run.id);
+  assert.equal(stored.expires_at, run.executionActivation.executionExpiresAt);
+}));
+
 test("merge authorization is one-time and exact-head gated", async () => withStore(async ({ db }) => {
   const repo = new ControlRepository(db); let run = autonomous(repo);
   run = repo.transition({ runId: run.id, expectedVersion: run.version, to: "pr_ready", actor: "engine", reason: "strict_readiness_passed", pullRequestUrl: "https://example/pr/1", at: 20 });

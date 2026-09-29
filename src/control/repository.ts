@@ -227,9 +227,14 @@ export class ControlRepository implements AuthorityNonceStore {
   }
 
   renewLease(runId: string, ownerId: string, fence: number, ttlMs: number, now = Date.now()): boolean {
+    const activation = this.db.prepare(
+      "SELECT execution_expires_at FROM control_authority_activations WHERE run_id = ?",
+    ).get(runId) as { execution_expires_at: number } | undefined;
+    if (!activation || activation.execution_expires_at <= now) return false;
+    const expiresAt = Math.min(now + ttlMs, activation.execution_expires_at);
     const result = this.db.prepare(`UPDATE run_leases SET expires_at = ?
       WHERE run_id = ? AND owner_id = ? AND fence = ? AND expires_at > ?`)
-      .run(now + ttlMs, runId, ownerId, fence, now);
+      .run(expiresAt, runId, ownerId, fence, now);
     return Number(result.changes) === 1;
   }
 
