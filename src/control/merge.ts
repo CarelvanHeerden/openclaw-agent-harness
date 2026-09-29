@@ -42,7 +42,7 @@ export class InternalMergeService {
   constructor(private readonly db:DatabaseSync,private readonly repository:ControlRepository,private readonly provider:MergeProvider,private readonly now:()=>number=Date.now,private readonly providerDeadlineMs=15_000){}
   private async providerCall<T>(operation:string,call:()=>Promise<T>):Promise<T>{
     let timer:ReturnType<typeof setTimeout>|undefined;
-    const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${operation}_deadline_exceeded`)),this.providerDeadlineMs);timer.unref?.();});
+    const timeout=new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`${operation}_deadline_exceeded`)),this.providerDeadlineMs);});
     try{return await Promise.race([call(),timeout]);}finally{if(timer)clearTimeout(timer);}
   }
   private inspect(input:Parameters<MergeProvider["inspect"]>[0]):Promise<MergeInspection>{return this.providerCall("provider_inspect",()=>this.provider.inspect(input));}

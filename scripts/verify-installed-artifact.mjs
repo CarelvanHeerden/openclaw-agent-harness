@@ -116,7 +116,9 @@ function verifyInstallLock(installedFiles, committedLock) {
       if (packageJson.libc !== undefined) expected.libc = packageJson.libc;
     }
     if (!isDeepStrictEqual(actual, expected)) {
-      throw new Error(`installed package-manager lock metadata is not bound to the tested commit: ${key}`);
+      const differingFields = [...new Set([...Object.keys(expected), ...Object.keys(actual)])]
+        .filter((field) => !isDeepStrictEqual(actual[field], expected[field]));
+      throw new Error(`installed package-manager lock metadata is not bound to the tested commit: ${key} (${differingFields.join(", ")})`);
     }
   }
 }
