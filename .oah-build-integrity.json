@@ -492,7 +492,7 @@
     "scripts/prepare-package-artifact.mjs": "16ae177f6d3988df462a12cffa169ef014ce49387fe766b61b97f8eb3a1c964e",
     "scripts/test-isolated.mjs": "967938e3c39305c8a85735a34b6b7cb9b15198ba939dc4e64a8d2acc32a7f36f",
     "scripts/vault.mjs": "01d866367a88bd1dc2d69cd74259299147372cff2c6e1562db8bc99c977bfd3a",
-    "scripts/verify-installed-artifact.mjs": "ad0a20941a0ad12c68431824fd5a0cd6f4a5068b3b560c9ed214dc27c7c86dbf",
+    "scripts/verify-installed-artifact.mjs": "15a1b96dbd1dd68bc796439a22cda421afec5d0d1446348a5a991f4307c61f31",
     "src/adapters/acp.ts": "0b390c6c768e125be370770ff9147ec6c1698b8b906f068f142a40597c6d74cd",
     "src/adapters/backend-router.ts": "a93c5ac2c4ae740ece39c5d02dfa07efb0bb282210f802e2ce3b95c2d27ee89c",
     "src/adapters/backend.ts": "1e2c89d18b0960f8bfa5003c79e6dc70f52e3d63c02211e8713dd606cc901161",
