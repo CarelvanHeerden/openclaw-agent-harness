@@ -60,57 +60,91 @@ let ran = 0;
 
 const MUTATIONS = [
   {
-    // Accepted external turns can carry the active agent run id. Treating that
-    // correlation id as internal provenance recreates the live Slack miss.
-    name: "rc.13 host attestation: external run correlation remains admissible",
-    file: "dist/control/attestation-broker.js",
-    find: "        if (!isExternalInbound(event, ctx))\n            return;",
-    replace: "        if (!isExternalInbound(event, ctx) || text(ctx.runId) || text(event.runId))\n            return;",
-    tests: ["tests/control-attestation-broker.test.mjs"],
+    name: "control interaction: approval challenge is consumed once",
+    file: "dist/control/interactive-approval.js",
+    find: "          WHERE token_hash=? AND claimed_at IS NULL AND expires_at>=?`",
+    replace: "          WHERE token_hash=? AND expires_at>=?`",
+    tests: ["tests/control-interactive-approval.test.mjs"],
   },
   {
-    // Raw user authority is accepted only from a channel-backed host event,
-    // not a runtime-shaped event that merely supplies sender/message ids.
-    name: "rc.13 host attestation: external channel provenance is required",
-    file: "dist/control/attestation-broker.js",
-    find: "    if (!channelId || surfaces.length === 0 || surfaces.some((surface) => surface !== channelId))\n        return false;",
-    replace: "    if (!channelId)\n        return false;",
-    tests: ["tests/control-attestation-broker.test.mjs"],
+    name: "control interaction: approval is bound to the reviewed target digest",
+    file: "dist/control/interactive-approval.js",
+    find: "        if (target.targetDigest !== String(row.target_digest))",
+    replace: "        if (false)",
+    tests: ["tests/control-interactive-approval.test.mjs"],
   },
   {
-    // The hook and tool factory project Slack conversations differently:
-    // hook routes may be channel-prefixed while nativeChannelId is not.
-    name: "rc.13 host attestation: hook and tool conversation ids normalize identically",
-    file: "dist/control/attestation-broker.js",
-    find: "    while (channelId && normalized.toLowerCase().startsWith(prefix))\n        normalized = normalized.slice(prefix.length);",
-    replace: "    if (false)\n        normalized = normalized.slice(prefix.length);",
-    tests: ["tests/control-attestation-broker.test.mjs"],
+    name: "control interaction: host authorization is mandatory",
+    file: "dist/control/interactive-approval.js",
+    find: "        if (!context.auth?.isAuthorizedSender || !sender || !this.authorisedUsers.includes(sender) || context.interaction.kind !== \"button\") {",
+    replace: "        if (!sender || context.interaction.kind !== \"button\") {",
+    tests: ["tests/control-interactive-approval.test.mjs"],
   },
   {
-    // Without the raw inbound hook there is no independent human evidence;
-    // confirmations must remain unavailable rather than trusting model args.
-    name: "rc.13 host attestation: documented raw message hook is registered",
-    file: "dist/control/attestation-broker.js",
-    find: 'const disposer = api.on("message_received", (event, context) => {',
-    replace: 'const disposer = undefined; if (false) { void event; void context;',
-    tests: ["tests/control-attestation-broker.test.mjs", "tests/sdk-compliance.test.mjs"],
+    name: "control interaction: account and conversation binding is enforced",
+    file: "dist/control/interactive-approval.js",
+    find: "            !interactionConversations.includes(expectedConversation) ||",
+    replace: "            false ||",
+    tests: ["tests/control-interactive-approval.test.mjs"],
   },
   {
-    // Reintroducing a context-supplied attestation is the live blocker in
-    // reverse: it gives model/runtime arguments authority the host never saw.
-    name: "rc.13 host attestation: tools consume only broker-minted evidence",
+    name: "control interaction: thread binding is enforced",
+    file: "dist/control/interactive-approval.js",
+    find: "            actualThread !== expectedThread) {",
+    replace: "            false) {",
+    tests: ["tests/control-interactive-approval.test.mjs"],
+  },
+  {
+    name: "control interaction: missing host interactive API fails closed",
+    file: "dist/control/interactive-approval.js",
+    find: "        this.enabled = typeof api.sendMessage === \"function\" && typeof api.registerInteractiveHandler === \"function\";",
+    replace: "        this.enabled = true;",
+    tests: ["tests/control-interactive-approval.test.mjs"],
+  },
+  {
+    name: "control interaction: text tools cannot regain execution authority",
     file: "dist/tools/registration.js",
-    find: '? runtime.controlAttestationBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)',
-    replace: '? context.trustedControlAttestation',
-    tests: ["tests/control-attestation-broker.test.mjs", "tests/rc13-human-provenance.test.mjs"],
+    find: "    const definitions = [\n        [\"harness_prepare_change\"",
+    replace: "    const definitions = [\n        [\"harness_confirm_change\", (context) => tool(\"harness_confirm_change\", \"unsafe\", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? \"\"), trusted), rt)],\n        [\"harness_prepare_change\"",
+    tests: ["tests/control-interactive-approval.test.mjs", "tests/tools.test.mjs"],
   },
   {
-    // A broker record is authorization, not a reusable session capability.
-    name: "rc.13 host attestation: matching authorization is consumed once",
-    file: "dist/control/attestation-broker.js",
-    find: "        if (record)\n            this.records.delete(key);",
-    replace: "        if (false)\n            this.records.delete(key);",
-    tests: ["tests/control-attestation-broker.test.mjs"],
+    name: "control authority: execution deadline starts at confirmation",
+    file: "dist/control/service.js",
+    find: "            const executionExpiresAt = now + run.authorityEnvelope.limits.activeTimeMs;",
+    replace: "            const executionExpiresAt = run.authorityEnvelope.issuedAt + run.authorityEnvelope.limits.activeTimeMs;",
+    tests: ["tests/control-service.test.mjs"],
+  },
+  {
+    name: "control authority: engine uses the persisted execution deadline",
+    file: "dist/control/engine.js",
+    find: "    const activeAuthority = executionAuthorityEnvelope(run);",
+    replace: "    const activeAuthority = run.authorityEnvelope;",
+    tests: ["tests/control-service.test.mjs"],
+  },
+  {
+    name: "control authority: confirmation persists one activation record",
+    file: "dist/control/service.js",
+    find: "            this.deps.db.prepare(`INSERT INTO control_authority_activations",
+    replace: "            this.deps.db.prepare(`INSERT INTO missing_control_authority_activations",
+    tests: ["tests/control-service.test.mjs"],
+  },
+  {
+    name: "control authority: activation remains bound to the reviewed envelope",
+    file: "dist/control/authority.js",
+    find:
+      "export function executionAuthorityEnvelope(run) {\n" +
+      "    const activation = run.executionActivation;\n" +
+      "    if (!activation ||\n" +
+      "        activation.runVersion !== run.version ||\n" +
+      "        activation.authorityDigest !== authorityEnvelopeDigest(run.authorityEnvelope))",
+    replace:
+      "export function executionAuthorityEnvelope(run) {\n" +
+      "    const activation = run.executionActivation;\n" +
+      "    if (!activation ||\n" +
+      "        activation.runVersion !== run.version ||\n" +
+      "        false)",
+    tests: ["tests/control-service.test.mjs"],
   },
   {
     // Repository hosts compare owner/repository identities case-insensitively.

@@ -8,7 +8,7 @@ const { openStateStoreSync } = await import("../dist/state/store.js");
 const { ControlRepository } = await import("../dist/control/repository.js");
 const { AutonomousControlEngine, decideEngineAuthority } = await import("../dist/control/engine.js");
 const { evaluatePrReadiness } = await import("../dist/control/readiness.js");
-const { createAuthorityEnvelope } = await import("../dist/control/authority.js");
+const { authorityEnvelopeDigest, createAuthorityEnvelope } = await import("../dist/control/authority.js");
 const { InternalMergeService, createVerifiedMergeAuthorization } = await import("../dist/control/merge.js");
 
 const sha = (c, n = 64) => c.repeat(n);
@@ -32,6 +32,14 @@ function withStore(fn) {
 function autonomous(repo, id = "r1") {
   let run = repo.createRun({ id, authority: authority(), createdAt: 10 });
   run = repo.transition({ runId: id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "U1", reason: "prepared", at: 11 });
+  const attestationId = `att-${id}`;
+  repo.db.prepare(`INSERT INTO control_host_attestations
+    (id,run_id,operation_kind,provenance,actor_identity,conversation_identity,host_event_id,nonce,binding_digest,issued_at,expires_at,consumed_at)
+    VALUES (?,?,'confirm_change','host_verified','U1','C1:T1',?,?,?,11,10000,12)`)
+    .run(attestationId,id,`event-${id}`,`nonce-${id}`,sha("9"));
+  repo.db.prepare(`INSERT INTO control_authority_activations
+    (run_id,run_version,attestation_id,authority_digest,activated_at,execution_expires_at,created_at)
+    VALUES (?,?,?,?,12,1012,12)`).run(id,run.version+1,attestationId,authorityEnvelopeDigest(run.authorityEnvelope));
   return repo.transition({ runId: id, expectedVersion: run.version, to: "autonomous_run", actor: "host", reason: "confirmed", at: 12 });
 }
 function readyInput(overrides = {}) {

@@ -330,6 +330,52 @@ CREATE INDEX idx_control_host_capability_lookup
 UPDATE control_metadata SET value='7',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
     }),
+    Object.freeze({
+        id: "20260929_008_execution_authority_activation",
+        sql: `
+CREATE TABLE control_authority_activations (
+  run_id TEXT PRIMARY KEY REFERENCES control_runs(id) ON DELETE CASCADE,
+  run_version INTEGER NOT NULL CHECK (run_version > 0),
+  attestation_id TEXT NOT NULL UNIQUE REFERENCES control_host_attestations(id),
+  authority_digest TEXT NOT NULL,
+  activated_at INTEGER NOT NULL,
+  execution_expires_at INTEGER NOT NULL CHECK (execution_expires_at > activated_at),
+  created_at INTEGER NOT NULL,
+  UNIQUE(run_id, run_version)
+);
+CREATE INDEX idx_control_authority_activation_expiry
+  ON control_authority_activations(execution_expires_at);
+UPDATE control_metadata SET value='8',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+    }),
+    Object.freeze({
+        id: "20260929_009_interactive_control_approvals",
+        sql: `
+CREATE TABLE control_interactive_bindings (
+  run_id TEXT PRIMARY KEY REFERENCES control_runs(id) ON DELETE CASCADE,
+  actor_identity TEXT NOT NULL,
+  authority_conversation TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  account_id TEXT NOT NULL,
+  transport_conversation TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE control_interactive_challenges (
+  token_hash TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES control_runs(id) ON DELETE CASCADE,
+  operation_kind TEXT NOT NULL CHECK (operation_kind IN ('confirm_change','merge_change')),
+  target_digest TEXT NOT NULL,
+  expires_at INTEGER NOT NULL,
+  claimed_at INTEGER,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_control_interactive_challenge_lookup
+  ON control_interactive_challenges(run_id,operation_kind,expires_at,claimed_at);
+UPDATE control_metadata SET value='9',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+    }),
 ]);
 function terminaliseLegacyControlChanges(db) {
     const present = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_changes'").get();

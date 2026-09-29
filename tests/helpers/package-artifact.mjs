@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { constants, cpSync, mkdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { createManagedTemp } from "../../scripts/managed-temp.mjs";
 
@@ -29,7 +29,11 @@ export function packIsolatedHead(root, prefix = "oah-package-artifact-") {
     const packDir = join(temp, "pack");
     mkdirSync(packDir);
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
+    cpSync(join(root, "node_modules"), join(source, "node_modules"), {
+      recursive: true,
+      preserveTimestamps: true,
+      mode: constants.COPYFILE_FICLONE,
+    });
     const packed = JSON.parse(run("npm", ["pack", source, "--json", "--pack-destination", packDir], temp, {
       npm_config_cache: join(temp, "npm-cache"),
     }));

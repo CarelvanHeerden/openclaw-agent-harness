@@ -1749,7 +1749,7 @@ export declare class OrchestratorLoop {
      *   - this cycle's own sub-task self-verification is fully GREEN (the latest
      *     verification for every sub-task passed),
      * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
-     * human can inspect the adversary-motivated commits. The harness_merge_change
+     * human can inspect the adversary-motivated commits. The host-native merge
      * hard gate refuses `needs_human_review` (never auto-overridable), so this
      * cannot silently ship unverified code -- it just preserves the deliverable.
      * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch
@@ -1767,7 +1767,7 @@ export declare class OrchestratorLoop {
      * Historical-loop clarification finalizer. Confirmed control-plane runs take
      * the first branch below and end terminally before any interaction state,
      * progress delivery, or continuation record is created. The remaining path
-     * exists only to recover legacy sessions that predate the four-operation
+     * exists only to recover legacy sessions that predate the current control
      * contract.
      */
     private finaliseAwaitingClarification;

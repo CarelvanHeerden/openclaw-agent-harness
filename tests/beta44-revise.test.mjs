@@ -22,5 +22,6 @@ test("beta44: revise/list interactions are absent; autonomous repair stays behin
   const reg=readFileSync(resolve(root,"src/tools/registration.ts"),"utf8");
   assert.doesNotMatch(reg,/name:\s*"harness_(revise|list_revisable)"/);
   assert.match(reg,/function tool\(\s*name: string,\s*description: string,\s*parameters: unknown/);
-  assert.match(reg,/harness_confirm_change/);
+  assert.doesNotMatch(reg,/harness_confirm_change|harness_merge_change/);
+  assert.match(readFileSync(resolve(root,"src/control/interactive-approval.ts"),"utf8"),/registerInteractiveHandler/);
 });

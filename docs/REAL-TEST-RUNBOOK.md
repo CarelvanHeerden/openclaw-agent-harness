@@ -42,7 +42,7 @@ Use a disposable allowed repository and non-production credentials. Never paste 
 2. Confirm through the authenticated host flow. Verify exactly one durable dispatch intent and one autonomous execution.
 3. Poll `harness_change_result`. The only successful pre-merge terminal state is `pr_ready`; failures must expose only a stable code and safe summary.
 4. Verify the PR repository, base, open state, head SHA, required CI, runtime/security evidence, scope, credential route, elapsed time, and spend all match the confirmed proposal.
-5. Call `harness_merge_change` through a separate authenticated host decision. Verify the provider received the attested head SHA and the run reaches `merged` only after provider readback.
+5. Use the separate host-native **Approve merge** interaction. Verify the provider received the attested head SHA and the run reaches `merged` only after provider readback.
 6. Repeat merge after a simulated ambiguous provider response. The service must reconcile provider state rather than issuing an unsafe second merge.
 
 Do not install or restart the production gateway as part of this repository test.

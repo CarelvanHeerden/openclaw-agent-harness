@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, constants, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -15,6 +15,14 @@ function run(command, args, cwd, env = {}) {
     encoding: "utf8",
     env: { ...process.env, npm_config_audit: "false", npm_config_fund: "false", ...env },
     timeout: 300_000,
+  });
+}
+
+function copyNodeModules(source) {
+  cpSync(join(root, "node_modules"), join(source, "node_modules"), {
+    recursive: true,
+    preserveTimestamps: true,
+    mode: constants.COPYFILE_FICLONE,
   });
 }
 
@@ -39,7 +47,7 @@ test("npm pack rejects package-eligible untracked content before binding a commi
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
+    copyNodeModules(source);
     writeFileSync(join(source, "docs", "untracked-pack-probe.md"), "must never ship\n");
     const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
     assert.notEqual(packed.status, 0);
@@ -54,7 +62,7 @@ test("npm pack rejects package-eligible content hidden by git excludes", () => {
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
+    copyNodeModules(source);
     writeFileSync(join(source, ".git", "info", "exclude"), "dist/ignored-pack-probe.js\n", { flag: "a" });
     writeFileSync(join(source, "dist", "ignored-pack-probe.js"), "must never ship\n");
     assert.equal(run("git", ["status", "--porcelain", "--untracked-files=all"], source), "");
@@ -69,7 +77,7 @@ test("npm pack rejects modified bundled dependency bytes hidden in node_modules"
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
+    copyNodeModules(source);
     const manifest = join(source, "node_modules", "zod", "package.json");
     const original = readFileSync(manifest, "utf8");
     rmSync(manifest);
@@ -86,7 +94,7 @@ test("npm pack rejects extra packable bundled dependency bytes hidden in node_mo
   try {
     const source = join(temp, "source");
     run("git", ["clone", "--quiet", "--shared", root, source], temp);
-    run("cp", ["-a", "--reflink=auto", join(root, "node_modules"), join(source, "node_modules")], temp);
+    copyNodeModules(source);
     writeFileSync(join(source, "node_modules", "zod", "commit-binding-probe.js"), "export default 'must never ship';\n");
     const packed = spawnSync("npm", ["pack", "--pack-destination", temp], { cwd: source, encoding: "utf8", timeout: 300_000 });
     assert.notEqual(packed.status, 0);

@@ -24,6 +24,28 @@ function stable(value) {
 export function authorityEnvelopeDigest(envelope) {
     return createHash("sha256").update(stable(envelope)).digest("hex");
 }
+export function executionAuthorityEnvelope(run) {
+    const activation = run.executionActivation;
+    if (!activation ||
+        activation.runVersion !== run.version ||
+        activation.authorityDigest !== authorityEnvelopeDigest(run.authorityEnvelope))
+        return undefined;
+    return createAuthorityEnvelope({
+        ...run.authorityEnvelope,
+        expiresAt: activation.executionExpiresAt,
+    });
+}
+export function executionAuthorityDigest(run) {
+    const activation = run.executionActivation;
+    if (!activation ||
+        activation.runVersion !== run.version ||
+        activation.authorityDigest !== authorityEnvelopeDigest(run.authorityEnvelope))
+        return undefined;
+    return createHash("sha256").update(stable({
+        envelope: run.authorityEnvelope,
+        activation,
+    })).digest("hex");
+}
 function cleanPath(path) {
     const replaced = path.replaceAll("\\", "/").replace(/^\.\//, "");
     const normalized = posix.normalize(replaced);

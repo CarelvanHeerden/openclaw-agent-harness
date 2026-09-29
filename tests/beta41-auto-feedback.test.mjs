@@ -7,8 +7,9 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const registration = readFileSync(resolve(root, "src/tools/registration.ts"), "utf8");
 
-test("beta41: public registration contains the four canonical operations", () => {
-  for (const name of ["harness_prepare_change", "harness_confirm_change", "harness_change_result", "harness_merge_change"]) assert.match(registration, new RegExp(`"${name}"`));
+test("beta41: public registration contains typed request and status operations only", () => {
+  for (const name of ["harness_prepare_change", "harness_change_result"]) assert.match(registration, new RegExp(`"${name}"`));
+  assert.doesNotMatch(registration, /"harness_(?:confirm|merge)_change"/);
 });
 
 test("beta41: no tool asks the caller to poll or relay progress", () => {

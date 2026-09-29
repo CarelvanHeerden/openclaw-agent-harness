@@ -245,9 +245,8 @@ export interface BriefConfig {
   /** beta.120: hard cap on a `requestPath` file. Default 262144 (256 KB). */
   request_file_max_bytes: number;
   /**
-   * Compatibility setting for legacy callers. The four-operation control
-   * plane always requires exact authenticated confirmation before planning or
-   * worker spend and exposes no additional operator-decision boundary.
+   * Compatibility setting for legacy callers. The control plane always
+   * requires host-native interactive approval before planning or worker spend.
    */
   confirm_before_spend: "off" | "high_risk" | "always";
   /**
@@ -1441,7 +1440,7 @@ export interface DeployRepairConfig {
    * loop (all attempts) shares this pool; if exhausted mid-loop, the harness
    * reverts to a working `main` and pauses for the user's go-ahead. Default
    * 0.25 (25% of daily max). User-overridable per invocation via the
-   * `harness_merge_change` `repairBudgetUsd` param.
+   * the merge-repair policy.
    */
   budget_ratio: number;
 }

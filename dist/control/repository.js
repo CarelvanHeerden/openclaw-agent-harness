@@ -14,6 +14,21 @@ function mapRun(row) {
         briefDigest: row.brief_digest,
         policyDigest: row.policy_digest,
         authorityEnvelope: authority,
+        ...(row.activation_run_version !== null &&
+            row.activation_attestation_id !== null &&
+            row.activation_authority_digest !== null &&
+            row.activated_at !== null &&
+            row.execution_expires_at !== null
+            ? {
+                executionActivation: Object.freeze({
+                    runVersion: row.activation_run_version,
+                    attestationId: row.activation_attestation_id,
+                    authorityDigest: row.activation_authority_digest,
+                    activatedAt: row.activated_at,
+                    executionExpiresAt: row.execution_expires_at,
+                }),
+            }
+            : {}),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         ...(row.terminal_code ? { terminalCode: row.terminal_code } : {}),
@@ -51,7 +66,29 @@ export class ControlRepository {
         return this.getRun(id);
     }
     getRun(runId) {
-        const row = this.db.prepare("SELECT * FROM control_runs WHERE id = ?").get(runId);
+        let row;
+        try {
+            row = this.db.prepare(`SELECT r.*,
+        a.run_version AS activation_run_version,
+        a.attestation_id AS activation_attestation_id,
+        a.authority_digest AS activation_authority_digest,
+        a.activated_at,
+        a.execution_expires_at
+        FROM control_runs r
+        LEFT JOIN control_authority_activations a ON a.run_id = r.id
+        WHERE r.id = ?`).get(runId);
+        }
+        catch (error) {
+            if (!/no such table: control_authority_activations/i.test(String(error)))
+                throw error;
+            row = this.db.prepare(`SELECT r.*,
+        NULL AS activation_run_version,
+        NULL AS activation_attestation_id,
+        NULL AS activation_authority_digest,
+        NULL AS activated_at,
+        NULL AS execution_expires_at
+        FROM control_runs r WHERE r.id = ?`).get(runId);
+        }
         return row ? mapRun(row) : null;
     }
     transition(input) {

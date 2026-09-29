@@ -4,10 +4,10 @@ import { CONTROL_STATES } from "../dist/control/types.js";
 import { allowedControlTransitions, canTransitionControlState } from "../dist/control/state-machine.js";
 import { sessionScopedBranch } from "../dist/orchestrator/lead.js";
 import { decideEngineAuthority } from "../dist/control/engine.js";
-import { createAuthorityEnvelope } from "../dist/control/authority.js";
+import { authorityEnvelopeDigest, createAuthorityEnvelope } from "../dist/control/authority.js";
 const d=c=>c.repeat(64);
 const authority=createAuthorityEnvelope({version:1,requesterId:"U",conversationId:"C",repository:"o/r",baseRef:"main",briefDigest:d("a"),policyDigest:d("b"),scope:{paths:["src"]},allowedActions:["implement","test"],limits:{budgetUsd:5,activeTimeMs:1000,cycles:1,retries:1},issuedAt:1,expiresAt:100,nonce:"n"});
-const run={id:"chg",state:"autonomous_run",version:2,requesterId:"U",conversationId:"C",repository:"o/r",baseRef:"main",briefDigest:d("a"),policyDigest:d("b"),authorityEnvelope:authority,createdAt:1,updatedAt:2};
+const run={id:"chg",state:"autonomous_run",version:2,requesterId:"U",conversationId:"C",repository:"o/r",baseRef:"main",briefDigest:d("a"),policyDigest:d("b"),authorityEnvelope:authority,executionActivation:{runVersion:2,attestationId:"att",authorityDigest:authorityEnvelopeDigest(authority),activatedAt:2,executionExpiresAt:1002},createdAt:1,updatedAt:2};
 const request=(over={})=>({requesterId:"U",conversationId:"C",repository:"o/r",baseRef:"main",briefDigest:d("a"),policyDigest:d("b"),nonce:"n",action:"implement",paths:["src/x.ts"],projectedBudgetUsd:1,projectedActiveTimeMs:10,projectedCycles:1,projectedRetries:0,now:3,...over});
 
 test("beta122: canonical state vocabulary contains no clarification, pause or resume state",()=>{assert.deepEqual(CONTROL_STATES,["draft","awaiting_confirmation","autonomous_run","pr_ready","awaiting_merge","done","failed","cancelled"]);assert.ok(!CONTROL_STATES.some(x=>/clarif|pause|resume|input/i.test(x)));});

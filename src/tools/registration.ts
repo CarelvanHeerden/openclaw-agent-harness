@@ -1,6 +1,6 @@
 import type { HarnessPluginApi, HarnessToolContext, HarnessToolDefinition } from "../index.js";
-import { ControlError, ControlPlaneService, type ControlOperation, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
-import type { ControlAttestationBroker } from "../control/attestation-broker.js";
+import { ControlError, ControlPlaneService, type PrepareChangeInput, type TrustedControlContext } from "../control/service.js";
+import type { InteractiveControlApprovals } from "../control/interactive-approval.js";
 
 /** Stable terminal envelope failures. */
 export const CONTROL_TERMINAL_CODES = [
@@ -41,13 +41,13 @@ const PREPARE_SCHEMA = {
   additionalProperties: false,
   required: ["request", "repository"],
   properties: {
-    request: { type: "string", minLength: 10, maxLength: 100000 },
-    repository: { type: "string", pattern: "^[^/\\s]+/[^/\\s]+$" },
+    request: { type: "string", minLength: 10, maxLength: 100000, description: "The complete natural-language request, preserving every restriction, exclusion, and success condition. This is interpretation input, never execution approval." },
+    repository: { type: "string", pattern: "^[^/\\s]+/[^/\\s]+$", description: "Canonical owner/name repository inferred from the conversation and authenticated repository context." },
     baseRef: { type: "string", minLength: 1, maxLength: 240 },
-    scope: { type: "array", maxItems: 200, items: { type: "string", minLength: 1, maxLength: 500 } },
-    excludedScope: { type: "array", maxItems: 200, items: { type: "string", minLength: 1, maxLength: 500 } },
-    budgetUsd: { type: "number", exclusiveMinimum: 0 },
-    timeLimitSeconds: { type: "integer", minimum: 60 },
+    scope: { type: "array", maxItems: 200, description: "Repository-relative paths the user authorized this change to touch.", items: { type: "string", minLength: 1, maxLength: 500 } },
+    excludedScope: { type: "array", maxItems: 200, description: "Repository-relative paths or areas the user excluded. Never silently drop a negative instruction.", items: { type: "string", minLength: 1, maxLength: 500 } },
+    budgetUsd: { type: "number", exclusiveMinimum: 0, description: "Dollar limit interpreted from the user's words; omit only when the user gave no limit." },
+    timeLimitSeconds: { type: "integer", minimum: 60, description: "Active execution duration interpreted from the user's words. Waiting for approval does not consume it." },
   },
 } as const;
 
@@ -92,7 +92,7 @@ function safeFailure(error: unknown): Record<string, unknown> {
   return { ok: false, code: "control_unavailable", summary: "The change service is temporarily unavailable." };
 }
 
-type ControlRuntime = { controlPlane?: ControlPlaneService; controlAttestationBroker?: ControlAttestationBroker; authorisedUsers?: readonly string[] };
+type ControlRuntime = { controlPlane?: ControlPlaneService; interactiveControlApprovals?: InteractiveControlApprovals; authorisedUsers?: readonly string[] };
 
 function serviceFor(runtime: ControlRuntime): ControlPlaneService {
   const service = runtime.controlPlane;
@@ -107,7 +107,6 @@ function tool(
   context: HarnessToolContext,
   run: (service: ControlPlaneService, input: Record<string, unknown>, trusted: TrustedControlContext) => Promise<unknown> | unknown,
   runtime: ControlRuntime,
-  attestedOperation?: ControlOperation,
 ): HarnessToolDefinition {
   return {
     name,
@@ -124,9 +123,6 @@ function tool(
           requesterSenderId: context.requesterSenderId,
           conversationId: trustedConversationId(context),
           workspaceId: context.workspaceId,
-          trustedControlAttestation: attestedOperation
-            ? runtime.controlAttestationBroker?.consume(attestedOperation, String(call.input.changeId ?? ""), context)
-            : undefined,
         } satisfies TrustedControlContext;
         const actor = trusted.requesterSenderId?.trim() ?? "";
         if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
@@ -141,9 +137,9 @@ function tool(
 }
 
 /**
- * Register the ordinary OpenClaw product surface. It intentionally contains
- * four operations and no direct commands. Diagnostics remain host/operator
- * services rather than aliases in an ordinary user's catalog.
+ * OpenClaw translates ordinary language into a typed prepared proposal.
+ * Execution and merge authority are host-native Slack interactions, never
+ * model-selected words or tool arguments.
  */
 export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRuntime): () => void {
   const disposers: Array<() => void> = [];
@@ -152,20 +148,27 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
   const definitions: Array<[string, (context: HarnessToolContext) => HarnessToolDefinition]> = [
     ["harness_prepare_change", (context) => tool(
       "harness_prepare_change",
-      "Prepare one complete repository change for review without starting implementation.",
+      "Translate the user's ordinary-language repository request into one complete typed proposal without starting work. Preserve all restrictions and exclusions; do not ask the user for harness syntax.",
       PREPARE_SCHEMA,
       context,
-      (service, input, trusted) => service.prepare(input as unknown as PrepareChangeInput, trusted),
+      async (service, input, trusted) => {
+        const prepared = await service.prepare(input as unknown as PrepareChangeInput, trusted);
+        const changeId = String((prepared as Record<string, unknown>).changeId ?? "");
+        const presented = changeId
+          ? await rt.interactiveControlApprovals?.presentConfirmation(changeId, context) ?? false
+          : false;
+        return {
+          ...(prepared as Record<string, unknown>),
+          approval: {
+            mode: presented ? "slack_interactive" : "unavailable",
+            required: true,
+            summary: presented
+              ? "Review the structured proposal and use its Approve and run button."
+              : "Interactive approval could not be presented; execution remains paused.",
+          },
+        };
+      },
       rt,
-    )],
-    ["harness_confirm_change", (context) => tool(
-      "harness_confirm_change",
-      "Confirm the exact prepared change after the current authenticated user message plainly approves it. Conversational approval is allowed; the user does not need to repeat a change ID. Authorization still requires the matching fresh raw host event.",
-      CHANGE_ID_SCHEMA,
-      context,
-      (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted),
-      rt,
-      "confirm_change",
     )],
     ["harness_change_result", (context) => tool(
       "harness_change_result",
@@ -174,15 +177,6 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
       context,
       (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted),
       rt,
-    )],
-    ["harness_merge_change", (context) => tool(
-      "harness_merge_change",
-      "Merge a ready pull request only after the current authenticated user message plainly authorizes merge. Conversational approval is allowed; authorization still requires the matching fresh raw host event.",
-      CHANGE_ID_SCHEMA,
-      context,
-      (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted),
-      rt,
-      "merge_change",
     )],
   ];
 

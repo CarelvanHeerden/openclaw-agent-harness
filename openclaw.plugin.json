@@ -9,9 +9,7 @@
   "contracts": {
     "tools": [
       "harness_prepare_change",
-      "harness_confirm_change",
-      "harness_change_result",
-      "harness_merge_change"
+      "harness_change_result"
     ]
   },
   "configSchema": {
@@ -1103,7 +1101,7 @@
               "always"
             ],
             "default": "always",
-            "description": "Compatibility setting for legacy callers. The four-operation control plane always requires exact authenticated harness_confirm_change confirmation before material work; it does not expose an additional operator pause or continuation surface."
+            "description": "Compatibility setting for legacy callers. The control plane always requires a host-native interactive approval before material work; model/tool text cannot authorize execution."
           },
           "confirm_min_risk": {
             "type": "string",

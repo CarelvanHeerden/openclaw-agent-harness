@@ -90,6 +90,13 @@ export interface HarnessPluginApi {
     }) => (() => void) | {
         dispose?: () => void;
     };
+    registerInteractiveHandler?: (registration: {
+        channel: "slack";
+        namespace: string;
+        handler: (context: unknown) => Promise<unknown> | unknown;
+    }) => (() => void) | {
+        dispose?: () => void;
+    };
     registerService?: (svc: {
         id: string;
         start?: () => Promise<void> | void;
@@ -107,7 +114,7 @@ export interface HarnessPluginApi {
         channel: string;
         threadTs?: string;
         text: string;
-        blocks?: unknown[];
+        presentation?: unknown;
     }) => Promise<{
         ts: string;
     }>;
@@ -140,7 +147,7 @@ export interface PreflightResult {
     /** Provenance of the routing decision, for logging. */
     provenance?: string;
 }
-/** beta.34: result of a harness_merge_change invocation. */
+/** beta.34: result of an internal merge invocation. */
 export interface MergePrResult {
     ok: boolean;
     /** True when the hard gate refused the merge (recommendation = do_not_merge / needs_human_review). */

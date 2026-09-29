@@ -8,14 +8,15 @@ This document defines the public product boundary. It is normative: the acceptan
 
 ## 1. Product promise
 
-An ordinary user performs one bounded change through four operations only:
+An ordinary user talks to OpenClaw normally. OpenClaw translates that request
+into two model-callable control operations:
 
 1. `harness_prepare_change` — turn a request into a reviewable, immutable proposal without starting implementation.
-2. `harness_confirm_change` — authorize that exact proposal once through a trusted host attestation and start it.
-3. `harness_change_result` — read a stable, user-safe status or terminal result; the caller never polls internal phases.
-4. `harness_merge_change` — authorize and perform one merge through a new, separate trusted host attestation.
+2. `harness_change_result` — read a stable, user-safe status or terminal result; the caller never polls internal phases.
 
-No direct command or interactive session-management operation is present in the ordinary-user catalog.
+Execution and merge authority are separate host-native Slack buttons bound to
+the exact prepared/readiness state. They are not model-callable operations and
+never depend on words or phrases in chat.
 
 Administrative diagnostics and migration controls may exist only on an explicitly privileged host surface. They are not aliases for the four user operations and must not be discoverable in an ordinary-user tool catalog.
 
@@ -65,7 +66,7 @@ Success returns a single review object:
   "limits": { "cycles": 3, "retries": 10 },
   "risk": "medium",
   "assumptions": [],
-  "contract": { "policyVersion": "control-plane-contract/v2", "minimumRuntimeVersion": "2.0.0-rc.13" },
+  "contract": { "policyVersion": "control-plane-contract/v3", "minimumRuntimeVersion": "2.0.0-rc.14" },
   "confirmation": {
     "expiresAt": "2026-09-24T08:33:00.000Z",
     "reviewDigest": "0123456789abcdef…"
@@ -93,9 +94,15 @@ OpenClaw resolves ordinary ambiguity before returning this object. It chooses th
 
 Validation failure is terminal for that prepare attempt. It is reserved for a non-change request, a genuine safety refusal, invalid configuration, or an unavailable authenticated repository binding. It returns one stable error code and a user-remediable summary; ambiguity never creates a harness pause.
 
-### 2.2 Confirm
+### 2.2 Approve execution
 
-The user confirms the proposal in normal conversational language in the same authenticated conversation; examples include `Confirm Smoke`, `yes, run that README smoke`, and `looks good, go ahead`. The plugin observes OpenClaw's typed `message_received` hook and independently recognizes a bounded positive authorization phrase after normalizing harmless Markdown. A process-local broker resolves exactly one pending change, binds the host-observed sender, channel/account/conversation/thread, message ID, timestamp, operation, nonce, and current review digest, and permits one matching tool call for at most 60 seconds. The tool call must carry the same host event ID as the raw inbound message, so an agent cannot reuse an older approval or invent approval in model/tool arguments. The public tool input carries only `changeId`; users never need to type it. Missing hooks/events, nested/runtime/subagent messages, questions, ambiguous or negated prose, stale state, replay, identity/event/conversation mismatch, and unknown material modifiers fail closed.
+OpenClaw presents the complete structured proposal with an **Approve and run**
+button. Clicking it produces a host-native Slack interaction; no conversational
+confirmation grammar exists in the harness. The interaction is bound to one
+random one-time token, authenticated sender, channel/account/conversation/thread,
+operation, expiry, and exact current review digest. Model/tool arguments cannot
+mint or redirect it. Missing interaction support, stale or replaced buttons,
+replay, and identity/account/conversation mismatch fail closed.
 
 A confirmation attestation binds all of the following values exactly:
 
@@ -112,9 +119,9 @@ A confirmation attestation binds all of the following values exactly:
 - security/risk classification;
 - proposal generation/version;
 - expiry;
-- unique host event/message identity and one-use nonce.
+- unique host interaction identity and one-use nonce.
 
-`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. At hook time the broker recomputes that digest from current state and combines it with independently authenticated event metadata to create the attestation `bindingDigest`. If the message includes budget, time, scope, or excluded-scope modifiers, each must exactly equal the prepared state; otherwise no broker record is minted.
+`confirmation.reviewDigest` binds the complete immutable proposal, including the displayed brief, scope, exclusions, actions, limits, risk, assumptions, repository/base revision, policy/runtime contract, credential-route digest, generation, and expiry. When the button is clicked, the interactive handler recomputes that digest from current state and combines it with independently authenticated interaction metadata to create the attestation `bindingDigest`.
 
 Both digests are domain-separated and versioned:
 
@@ -129,7 +136,7 @@ bindingDigest = SHA-256("control-plane-confirm/v2\n" + canonical-json({
 
 Canonical JSON uses UTF-8, sorted object keys, preserved array order, integers for time values, decimal strings for money, normalized repository/base identities, and no omitted-vs-null ambiguity.
 
-Confirmation is an atomic compare-and-swap from `prepared` to the internal autonomous execution state, exposed publicly as `running`. The attestation is consumed in the same transaction as the state transition and durable execution intent. A replay, expired receipt, changed proposal, changed base revision, wrong actor, wrong conversation, wrong repository, wrong operation, or already-consumed nonce fails closed and starts no work.
+Approval is an atomic compare-and-swap from `prepared` to the internal autonomous execution state, exposed publicly as `running`. The attestation and a durable execution activation are consumed in the same transaction as the state transition and dispatch intent. Proposal freshness ends at approval; the reviewed active execution duration starts at the persisted activation timestamp. Recovery and retries reuse that exact deadline and cannot renew it. A replay, expired button, changed proposal, changed base revision, wrong actor, wrong conversation, wrong repository, wrong operation, or already-consumed nonce fails closed and starts no work.
 
 A successful response is concise:
 
@@ -162,7 +169,9 @@ The host may deliver lifecycle notifications. Correctness cannot depend on a use
 
 ### 2.4 Merge
 
-`pr_ready` does not merge automatically. The user makes a second decision after seeing the PR-ready result. The host mints a new attestation for operation kind `merge_change`.
+`pr_ready` does not merge automatically. The harness presents a separate
+**Approve merge** button after strict readiness succeeds. That host-native click
+mints a new attestation for operation kind `merge_change`.
 
 The merge attestation is distinct from the confirmation attestation and binds:
 
@@ -309,7 +318,7 @@ There is no ordinary-user `resume`. Preparing a new change is the only way to au
 Migration from rc.13 is one-way and fail-closed.
 
 - New tables/records use an explicit control-plane schema and contract version.
-- Existing rc.13 sessions remain readable through a privileged legacy diagnostic surface, but are never made confirmable or mergeable through the new four-operation API merely by mapping status names.
+- Existing rc.13 sessions remain readable through a privileged legacy diagnostic surface, but are never made approvable or mergeable through the new control API merely by mapping status names.
 - An unstarted rc.13 proposal may be imported only as a new `prepared` change after recomputing the full binding envelope; it requires a new host confirmation attestation.
 - A running, paused, resumable, or `awaiting_clarification` rc.13 session is terminalized as legacy/non-authorizable for the new surface. It cannot inherit a prior answer receipt.
 - An rc.13 PR may become a new prepared merge candidate only after the controller rebuilds all readiness evidence against the current PR head; merge still requires a fresh merge attestation.
@@ -341,7 +350,7 @@ Privileged audit records may retain internal correlation identifiers and structu
 
 ## 11. Stable error codes
 
-The four operations use stable product codes, including:
+The public operations and interactive approval boundary use stable product codes, including:
 
 - `invalid_request`, `repository_not_allowed`, `policy_rejected`, `scope_rejected`, `credential_unavailable`;
 - `confirmation_required`, `confirmation_expired`, `confirmation_replayed`, `wrong_actor`, `wrong_conversation`, `stale_confirmation`;

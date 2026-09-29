@@ -42,7 +42,7 @@ import { RouteOverlay } from "./auth/route-overlay.js";
 import { pruneRetention } from "./state/retention.js";
 import { registerHarnessTools } from "./tools/registration.js";
 import { ControlError, ControlPlaneService } from "./control/service.js";
-import { ControlAttestationBroker, registerControlAttestationHook } from "./control/attestation-broker.js";
+import { InteractiveControlApprovals } from "./control/interactive-approval.js";
 import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
@@ -170,6 +170,11 @@ export interface HarnessPluginApi {
     handler: (event: unknown) => unknown,
     opts?: { name: string; description?: string },
   ) => (() => void) | { dispose?: () => void };
+  registerInteractiveHandler?: (registration: {
+    channel: "slack";
+    namespace: string;
+    handler: (context: unknown) => Promise<unknown> | unknown;
+  }) => (() => void) | { dispose?: () => void };
   registerService?: (svc: {
     id: string;
     start?: () => Promise<void> | void;
@@ -182,7 +187,7 @@ export interface HarnessPluginApi {
   workspaceDir?: string;
 
   /** Optional -- for sending Slack messages. Different runtimes wire this differently. */
-  sendMessage?: (input: { channel: string; threadTs?: string; text: string; blocks?: unknown[] }) => Promise<{ ts: string }>;
+  sendMessage?: (input: { channel: string; threadTs?: string; text: string; presentation?: unknown }) => Promise<{ ts: string }>;
 
   /**
    * Optional -- lookup for calling another plugin's tool. beta.110: NO LONGER
@@ -293,8 +298,8 @@ interface HarnessRuntime {
   mergePr: (args: { sessionId: string; authenticatedActor?: string; repairBudgetUsd?: number }) => Promise<MergePrResult>;
   /** Ordinary-user control plane. Authority is accepted only through trusted host context. */
   controlPlane?: ControlPlaneService;
-  /** One-shot bridge from host-observed raw inbound intent to control tools. */
-  controlAttestationBroker?: ControlAttestationBroker;
+  /** Host-native structured approval presenter and handler. */
+  interactiveControlApprovals?: InteractiveControlApprovals;
   /**
    * rc.4: associate an EXISTING pull request with the session that produced it,
    * after a failure lost the association.
@@ -378,7 +383,7 @@ export interface PreflightResult {
   provenance?: string;
 }
 
-/** beta.34: result of a harness_merge_change invocation. */
+/** beta.34: result of an internal merge invocation. */
 export interface MergePrResult {
   ok: boolean;
   /** True when the hard gate refused the merge (recommendation = do_not_merge / needs_human_review). */
@@ -2111,7 +2116,7 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             return payload.sha.toLowerCase();
           })();
       return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision, credentialRoute: controlCredentialRoute(route),
-        policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v2", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" as const };
+        policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v3", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" as const };
     },
     executeEngine: async (change) => {
       change.assertCurrent();
@@ -2144,6 +2149,9 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       }
       const controlRun = controlRepository.getRun(change.changeId);
       if (!controlRun) throw new Error("authority_violation");
+      const activatedAt = controlRun.executionActivation?.activatedAt;
+      if (activatedAt === undefined) throw new Error("authority_violation");
+      const projectedActiveTimeMs = () => Math.max(0, Date.now() - activatedAt);
       const authorize = (check: ControlAuthorityCheck): void => {
         change.assertCurrent();
         route = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
@@ -2172,7 +2180,7 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         if (decision.outcome === "terminate") throw new Error(decision.code);
       };
       const boundProviderCredential = async (action: "test"|"push_feature_branch"|"open_pull_request"|"update_pull_request", kind: ControlAuthorityCheck["kind"] = "verification_retry") => {
-        authorize({ kind, action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: Math.max(0,Date.now()-controlRun.createdAt), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
+        authorize({ kind, action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
         const boundRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
         if (controlCredentialRouteDigest(boundRoute) !== change.credentialRouteDigest) throw new Error("credential_escalation");
         route = boundRoute;
@@ -2191,7 +2199,7 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const outcome = terminalLegacyPublication
         ? { status: "shipped" as const, sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
         : await (loop as unknown as { runConfirmedControl(id:string, brief:CrystallisedBrief, guard:(check:ControlAuthorityCheck)=>void, credentials:(action:"push_feature_branch"|"open_pull_request"|"update_pull_request")=>Promise<{provider:string;apiBase?:string;token:string}>):Promise<import("./orchestrator/legacy-loop.js").LoopOutcome> }).runConfirmedControl(change.changeId, controlledBrief, createInternalConfirmedControlAuthorityGuard(authorize), async (action) => {
-          authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: Math.max(0, Date.now()-controlRun.createdAt), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
+          authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
           const freshRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
           if (controlCredentialRouteDigest(freshRoute) !== change.credentialRouteDigest) throw new Error("credential_escalation");
           return { provider: freshRoute.provider, apiBase: freshRoute.apiBase, token: await resolveGitToken(freshRoute) };
@@ -2206,7 +2214,7 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         action: "test",
         paths: [],
         projectedBudgetUsd: Number(row.cost_usd),
-        projectedActiveTimeMs: Number(row.updated_at)-Number(row.created_at),
+        projectedActiveTimeMs: projectedActiveTimeMs(),
         projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as { cycles_ran?: number } | undefined)?.cycles_ran ?? 0),
         projectedRetries: 0,
       });
@@ -2290,8 +2298,13 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       };
     },
   });
-  runtime.controlAttestationBroker = new ControlAttestationBroker(runtime.controlPlane, Date.now, 60_000, state.db);
-  runtime.disposers.push(registerControlAttestationHook(api, runtime.controlAttestationBroker));
+  runtime.interactiveControlApprovals = new InteractiveControlApprovals(
+    state.db,
+    runtime.controlPlane,
+    api,
+    runtime.authorisedUsers,
+  );
+  runtime.disposers.push(runtime.interactiveControlApprovals.register());
   runtime.disposers.push(() => runtime.controlPlane?.dispose());
   runtime.disposers.push(() => backendRouter?.dispose());
   runtime.disposers.push(verifiedClaude.cleanup);
@@ -2868,8 +2881,8 @@ function renderReviewComment(
   const emoji = verdict === "pass" ? "\u2705" : verdict === "block" ? "\u26d4" : "\u{1f501}";
   const gate =
     verdict === "pass"
-      ? "No blocking findings from this review. The `harness_merge_change` gate still applies."
-      : "This review did NOT sign off (`" + verdict + "`). Address the findings below; `harness_merge_change` will refuse a non-pass verdict.";
+      ? "No blocking findings from this review. The host-native merge approval gate still applies."
+      : "This review did NOT sign off (`" + verdict + "`). Address the findings below; the merge approval gate will refuse a non-pass verdict.";
   const findings = review.findings ?? [];
   // The operator's steer for this revise, above the verdict it was reviewed
   // against. A revise updates an existing PR and createPullRequest only writes a
@@ -2907,7 +2920,7 @@ function renderPrBody(
   // in-loop preview deploy) -- become an explicit, honest PR annotation
   // instead of silently killing the run. The runtime-dimension findings in
   // particular are exactly what the post-merge Vercel deploy verification
-  // (harness_merge_change) checks for real, so we call that out: the loop
+  // host-native merge gate checks for real, so we call that out: the loop
   // couldn't render it, but the merge step will verify the actual deploy.
   const shippedWithoutCleanPass = review.verdict !== "pass";
   const runtimeFindings = (review.findings ?? []).filter(
@@ -2937,7 +2950,7 @@ function renderPrBody(
           `but they are NOT resolved in-loop and must be verified before/at merge.`,
         runtimeFindings.length
           ? `\n**Runtime not verified in-loop (${runtimeFindings.length} finding${runtimeFindings.length === 1 ? "" : "s"}):** the harness has no in-loop preview-deploy pipeline, so it could not render/exercise this change. ` +
-            `The post-merge Vercel deploy verification (\`harness_merge_change\`) will verify the real deployment for the merge commit (READY/ERROR + build logs).`
+            `The post-merge Vercel deploy verification will verify the real deployment for the merge commit (READY/ERROR + build logs).`
           : ``,
         ...runtimeFindings.map(
           (f: any) => `- **${(f.severity ?? "info").toUpperCase()}** [${f.dimension}] ${f.title}`,

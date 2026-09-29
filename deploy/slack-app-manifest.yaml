@@ -1,16 +1,17 @@
 # Optional Slack app manifest for outbound control-plane notifications.
 #
-# Ordinary users drive the product through four host-authenticated control-plane
-# tools. Install this app only when the host should post lifecycle messages into
-# Slack.
+# Ordinary users describe changes to OpenClaw; this app posts structured
+# proposals and receives host-native approval button interactions. Preserve the
+# existing OpenClaw Slack routing and authorization configuration when applying
+# this optional manifest.
 
 display_information:
   name: OpenClaw Agent Harness
-  description: Outbound notifications for confirmed repository changes.
+  description: Structured approval and lifecycle notifications for repository changes.
   background_color: "#0f172a"
   long_description: |
-    Posts concise lifecycle notifications for changes prepared, confirmed,
-    executed, reviewed, and published through the OpenClaw control plane.
+    Posts structured proposals and lifecycle notifications for changes prepared,
+    approved, executed, reviewed, and published through the OpenClaw control plane.
 
 features:
   bot_user:

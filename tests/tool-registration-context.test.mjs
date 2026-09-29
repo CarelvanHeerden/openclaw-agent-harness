@@ -34,14 +34,11 @@ test("OpenClaw contextual registration binds live requester and canonical route 
   registerHarnessTools(host.api, {
     controlPlane: {
       prepare: async (input, context) => (calls.push({ operation: "prepare", input, context }), { ok: true }),
-      confirm: async (changeId, context) => (calls.push({ operation: "confirm", changeId, context }), { ok: true }),
     },
   });
 
   assert.deepEqual(host.names(), [
     "harness_change_result",
-    "harness_confirm_change",
-    "harness_merge_change",
     "harness_prepare_change",
   ]);
 
@@ -55,12 +52,6 @@ test("OpenClaw contextual registration binds live requester and canonical route 
     request: "Make a bounded repository change.",
     repository: "owner/repo",
   });
-  await host.materialize("harness_confirm_change", liveContext).execute(
-    "call-id",
-    { changeId: "chg_abcdefghijkl" },
-    { requesterSenderId: "U-attacker", conversationId: "C-attacker" },
-  );
-
   assert.deepEqual(calls.map(({ operation, context }) => ({ operation, context })), [
     {
       operation: "prepare",
@@ -68,16 +59,6 @@ test("OpenClaw contextual registration binds live requester and canonical route 
         requesterSenderId: "U-live",
         conversationId: "user:U-live",
         workspaceId: undefined,
-        trustedControlAttestation: undefined,
-      },
-    },
-    {
-      operation: "confirm",
-      context: {
-        requesterSenderId: "U-live",
-        conversationId: "user:U-live",
-        workspaceId: undefined,
-        trustedControlAttestation: undefined,
       },
     },
   ]);

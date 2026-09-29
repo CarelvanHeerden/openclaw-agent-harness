@@ -1,4 +1,4 @@
-// beta.133 credential routing coverage plus the canonical four-operation surface.
+// beta.133 credential routing coverage plus the simplified control surface.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -19,8 +19,8 @@ test("beta133: the retired onboarding module is absent from source and dist", ()
   assert.equal(existsSync(new URL("../dist/slack/onboarding.js", import.meta.url)), false);
 });
 
-test("beta133: ordinary interaction exposes exactly four operations", () => {
+test("beta133: ordinary interaction exposes translation and status only", () => {
   const names = [];
   registerHarnessTools({ logger: { info() {}, warn() {}, error() {} }, registerTool(def) { names.push(def.name); return () => {}; } }, {});
-  assert.deepEqual(names.sort(), ["harness_change_result", "harness_confirm_change", "harness_merge_change", "harness_prepare_change"]);
+  assert.deepEqual(names.sort(), ["harness_change_result", "harness_prepare_change"]);
 });

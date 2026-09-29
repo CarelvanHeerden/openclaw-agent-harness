@@ -19,11 +19,11 @@ export const PLUGIN_DESCRIPTION = "Multi-agent development harness: crystallise 
  * answer audited under rc.3 could have raised a ceiling; one audited under
  * rc.6 could not.
  */
-// rc.13: pre-spend brief approvals/revisions require a human, and revisions
-// remain staged until that human confirms the complete stored proposal hash.
-export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.13";
+// rc.14: natural language produces proposals only; host-native interactions
+// provide one-shot execution and merge authority.
+export const CLARIFICATION_POLICY_VERSION = "clarification-policy/2026-09-rc.14";
 export const PLUGIN_VERSION = {
-    pluginVersion: "2.0.0-rc.13",
+    pluginVersion: "2.0.0-rc.14",
     schemaVersion: 2,
     claudeSdkVersion: "0.3.207",
 };

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
-import { SAFE_AUTHORITY_ACTIONS, type AuthorityDecision, type AuthorityEnvelope, type AuthorityRequest } from "./types.js";
+import { SAFE_AUTHORITY_ACTIONS, type AuthorityDecision, type AuthorityEnvelope, type AuthorityRequest, type ControlRun } from "./types.js";
 
 export interface AuthorityNonceStore {
   consume(nonce: string, envelopeDigest: string, consumedAt: number): boolean;
@@ -29,6 +29,32 @@ function stable(value: unknown): string {
 
 export function authorityEnvelopeDigest(envelope: AuthorityEnvelope): string {
   return createHash("sha256").update(stable(envelope)).digest("hex");
+}
+
+export function executionAuthorityEnvelope(run: ControlRun): AuthorityEnvelope | undefined {
+  const activation = run.executionActivation;
+  if (
+    !activation ||
+    activation.runVersion !== run.version ||
+    activation.authorityDigest !== authorityEnvelopeDigest(run.authorityEnvelope)
+  ) return undefined;
+  return createAuthorityEnvelope({
+    ...run.authorityEnvelope,
+    expiresAt: activation.executionExpiresAt,
+  });
+}
+
+export function executionAuthorityDigest(run: ControlRun): string | undefined {
+  const activation = run.executionActivation;
+  if (
+    !activation ||
+    activation.runVersion !== run.version ||
+    activation.authorityDigest !== authorityEnvelopeDigest(run.authorityEnvelope)
+  ) return undefined;
+  return createHash("sha256").update(stable({
+    envelope: run.authorityEnvelope,
+    activation,
+  })).digest("hex");
 }
 
 function cleanPath(path: string): string | null {

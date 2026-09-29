@@ -8,11 +8,13 @@ import { buildTerminalReport } from "../dist/control/report.js";
 import { allowedControlTransitions } from "../dist/control/state-machine.js";
 const root=resolve(dirname(fileURLToPath(import.meta.url)),"..");
 const reg=readFileSync(resolve(root,"src/tools/registration.ts"),"utf8");
+const interactive=readFileSync(resolve(root,"src/control/interactive-approval.ts"),"utf8");
 
-test("beta55: the only pre-execution human boundary is exact authenticated confirmation",()=>{
+test("beta55: the only pre-execution human boundary is host-native structured approval",()=>{
   assert.deepEqual(allowedControlTransitions("awaiting_confirmation"),["autonomous_run","failed","cancelled"]);
-  assert.match(reg,/current authenticated user message plainly approves/);
-  assert.match(reg,/matching fresh raw host event/);
+  assert.match(interactive,/registerInteractiveHandler/);
+  assert.match(interactive,/target\.targetDigest/);
+  assert.doesNotMatch(reg,/harness_confirm_change|harness_merge_change/);
   assert.doesNotMatch(reg,/awaiting_clarification|clarification_answer|harness_answer/);
 });
 

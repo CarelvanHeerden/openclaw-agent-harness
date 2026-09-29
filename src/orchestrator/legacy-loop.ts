@@ -1367,7 +1367,7 @@ export class OrchestratorLoop {
           // (renderPrBody #3). The post-ship merge recommendation is derived
           // from `reachedCleanPass=false`, so it comes out `do_not_merge`
           // (beta.34 hard gate): the PR exists, but a HUMAN must approve the
-          // merge (via harness_merge_change, which will refuse and point to the
+          // merge (via the host-native merge gate, which will refuse and point to the
           // GitHub UI, or via the UI directly) -- which is exactly the
           // "you review, then tell me to merge and verify the deploy" flow.
           // A `block` verdict never reaches here (returned above): a genuine
@@ -1835,7 +1835,7 @@ export class OrchestratorLoop {
       );
       db.prepare(
         `UPDATE sessions SET accounting_state = 'ok',
-                             minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`,
+                             minimum_runtime_version = '2.0.0-rc.14', updated_at = ? WHERE id = ?`,
       ).run(Date.now(), params.sessionId);
       db.exec("COMMIT");
       return { id, attempt };
@@ -3952,7 +3952,7 @@ export class OrchestratorLoop {
           plan.approvedRevisionScopeFiles = nextApprovedRevisionScope;
           this.deps.state.db
             .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                         minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`)
+                                         minimum_runtime_version = '2.0.0-rc.14', updated_at = ? WHERE id = ?`)
             .run(JSON.stringify(plan), Date.now(), sessionId);
           this.deps.state.audit(
             "loop.revision_scope_approved",
@@ -6578,7 +6578,7 @@ export class OrchestratorLoop {
               if (bound.changedConsumers.length > 0) {
                 this.deps.state.db.prepare(
                   `UPDATE sessions SET lead_plan_json = ?, plan_revision = ?,
-                                       minimum_runtime_version = '2.0.0-rc.13', updated_at = ? WHERE id = ?`,
+                                       minimum_runtime_version = '2.0.0-rc.14', updated_at = ? WHERE id = ?`,
                 ).run(JSON.stringify(bound.plan), resultRevision, Date.now(), sessionId);
               }
               this.deps.state.db.prepare(
@@ -8075,7 +8075,7 @@ export class OrchestratorLoop {
 
     // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
     // the final review + whether we reached a clean pass. Persist it + the PR
-    // number for the harness_merge_change hard gate.
+    // number for the host-native merge hard gate.
     const reachedCleanPass = lastReview.verdict === "pass";
     const mergeBlockers = this.mergeBlockingFindings(lastReview.findings);
     const rec = deriveMergeRecommendation({
@@ -10810,7 +10810,7 @@ export class OrchestratorLoop {
     try {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                     minimum_runtime_version = '2.0.0-rc.13' WHERE id = ?`)
+                                     minimum_runtime_version = '2.0.0-rc.14' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the CI repair sub-task", { sessionId, err: String(err) });
@@ -10914,7 +10914,7 @@ export class OrchestratorLoop {
     try {
       this.deps.state.db
         .prepare(`UPDATE sessions SET lead_plan_json = ?, plan_revision = COALESCE(plan_revision,0) + 1,
-                                     minimum_runtime_version = '2.0.0-rc.13' WHERE id = ?`)
+                                     minimum_runtime_version = '2.0.0-rc.14' WHERE id = ?`)
         .run(JSON.stringify(plan), sessionId);
     } catch (err) {
       this.deps.logger.warn("[loop] could not persist the finding repair sub-task(s)", { sessionId, err: String(err) });
@@ -12006,7 +12006,7 @@ export class OrchestratorLoop {
    *   - this cycle's own sub-task self-verification is fully GREEN (the latest
    *     verification for every sub-task passed),
    * open the PR anyway with `merge_recommendation = 'needs_human_review'` so a
-   * human can inspect the adversary-motivated commits. The harness_merge_change
+   * human can inspect the adversary-motivated commits. The host-native merge
    * hard gate refuses `needs_human_review` (never auto-overridable), so this
    * cannot silently ship unverified code -- it just preserves the deliverable.
    * OTHERWISE fail terminally but PRESERVE the worktree (fix #3) so the branch
@@ -12151,7 +12151,7 @@ export class OrchestratorLoop {
    * Historical-loop clarification finalizer. Confirmed control-plane runs take
    * the first branch below and end terminally before any interaction state,
    * progress delivery, or continuation record is created. The remaining path
-   * exists only to recover legacy sessions that predate the four-operation
+   * exists only to recover legacy sessions that predate the current control
    * contract.
    */
   private async finaliseAwaitingClarification(

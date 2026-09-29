@@ -1,12 +1,28 @@
 {
   "version": 1,
   "packages": {
+    "opencode-darwin-arm64": {
+      "version": "1.18.23",
+      "integrity": "sha512-QP9PjwpHtZoLVXw2WvUmPZecz7mWbQkT4t3K36B//fCaDG+zWa+SsztIeaW5azujNwwtUemLA5icE/zINng48Q==",
+      "entries": [
+        "f7c45939a895e5a9febf141ab16307418bc41da31879aa0b2e65223190ca1c1a  bin/opencode",
+        "8262f51b215e228fe358a0ebfa5abb64cb60f5aa4dc4ec860e567f6a87ea4d5b  package.json"
+      ]
+    },
     "opencode-linux-arm64": {
       "version": "1.18.23",
       "integrity": "sha512-g1zDFhuE9FOYwjSGderlu69wfd4GQzS0xsDiIY11QUciuBmM6DrHqLvmhlLFsUVHYVnCPY1YeN1pq5ewE3x72Q==",
       "entries": [
         "ef8514274321679d97f1c7f2ad251890d7f073f2fca743859f379bff55085ac8  bin/opencode",
         "ba293c5cf92af17b4d885ab835df46af6d3351311019e89b51e4258bfdde34e1  package.json"
+      ]
+    },
+    "opencode-linux-x64": {
+      "version": "1.18.23",
+      "integrity": "sha512-5x9d1Cm/YtqzR6lAlNbgVprTQ3R3hx7qGTWCzm5l5u6lBNkhYTrhy2s8k25dxKKuxqZ9Kngqz9JYWvSVHy2Lmw==",
+      "entries": [
+        "de0724a36eaf3166e7f1ff38d0f4478b95ccc47725e9597b3fe66d3d3e18baa2  bin/opencode",
+        "63729586c1e15e2014e16f9f3a983804ce7f6e501b726770a4eac4363aafa704  package.json"
       ]
     }
   }

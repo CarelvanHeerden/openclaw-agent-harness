@@ -1,7 +1,7 @@
 // Restored beta.130 coverage, translated to the canonical autonomous control plane.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createAuthorityEnvelope, evaluateAuthority } from "../dist/control/authority.js";
+import { authorityEnvelopeDigest, createAuthorityEnvelope, evaluateAuthority } from "../dist/control/authority.js";
 import { decideEngineAuthority } from "../dist/control/engine.js";
 
 const sha = (c) => c.repeat(64);
@@ -19,7 +19,7 @@ const request = (over = {}) => ({
 
 test("beta130: an in-envelope CI repair continues autonomously without an interaction ask", () => {
   assert.deepEqual(evaluateAuthority(envelope, request()), { outcome: "approve", reason: "in_envelope" });
-  const run = { state: "autonomous_run", authorityEnvelope: envelope };
+  const run = { state: "autonomous_run", version: 2, authorityEnvelope: envelope, executionActivation: { runVersion: 2, attestationId: "att", authorityDigest: authorityEnvelopeDigest(envelope), activatedAt: 2, executionExpiresAt: 3_600_002 } };
   assert.deepEqual(decideEngineAuthority(run, { kind: "repair", request: request() }), {
     outcome: "continue", kind: "repair", auditCode: "autonomous_in_envelope",
   });

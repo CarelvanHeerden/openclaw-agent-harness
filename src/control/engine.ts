@@ -1,4 +1,4 @@
-import { authorityEnvelopeDigest, evaluateAuthority } from "./authority.js";
+import { evaluateAuthority, executionAuthorityDigest, executionAuthorityEnvelope } from "./authority.js";
 import type { ControlRepository, RunLease } from "./repository.js";
 import type { AuthorityRequest, ControlRun } from "./types.js";
 import { evaluatePrReadiness, type PrReadinessInput, type PrReadinessResult } from "./readiness.js";
@@ -53,7 +53,11 @@ export function decideEngineAuthority(run: ControlRun, input: DecideEngineAuthor
   if (run.state !== "autonomous_run") {
     return Object.freeze({ outcome: "terminate", code: "authority_violation", reason: `run_state_${run.state}` });
   }
-  const decision = evaluateAuthority(run.authorityEnvelope, input.request);
+  const activeAuthority = executionAuthorityEnvelope(run);
+  if (!activeAuthority) {
+    return Object.freeze({ outcome: "terminate", code: "authority_violation", reason: "execution_activation_missing" });
+  }
+  const decision = evaluateAuthority(activeAuthority, input.request);
   if (decision.outcome === "approve") {
     return Object.freeze({ outcome: "continue", kind: input.kind, auditCode: "autonomous_in_envelope" });
   }
@@ -86,12 +90,14 @@ export class AutonomousControlEngine {
   acquire(runId: string, leaseTtlMs = this.options.leaseTtlMs): RunLease {
     const run = this.requireRun(runId);
     if (run.state !== "autonomous_run") throw new Error(`Run ${runId} is not autonomous`);
+    const authorityHash = executionAuthorityDigest(run);
+    if (!authorityHash) throw new Error(`Run ${runId} has no execution authority activation`);
     const lease = this.options.repository.acquireLease(
       runId,
       this.options.ownerId,
       Math.max(this.options.leaseTtlMs, leaseTtlMs),
       this.now(),
-      authorityEnvelopeDigest(run.authorityEnvelope),
+      authorityHash,
     );
     if (!lease) throw new Error(`Run ${runId} already has a live executor`);
     return lease;

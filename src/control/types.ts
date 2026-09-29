@@ -49,6 +49,14 @@ export interface AuthorityEnvelope {
   readonly nonce: string;
 }
 
+export interface ExecutionAuthorityActivation {
+  readonly runVersion: number;
+  readonly attestationId: string;
+  readonly authorityDigest: string;
+  readonly activatedAt: number;
+  readonly executionExpiresAt: number;
+}
+
 export interface ControlRun {
   readonly id: string;
   readonly state: ControlState;
@@ -60,6 +68,7 @@ export interface ControlRun {
   readonly briefDigest: string;
   readonly policyDigest: string;
   readonly authorityEnvelope: AuthorityEnvelope;
+  readonly executionActivation?: ExecutionAuthorityActivation;
   readonly createdAt: number;
   readonly updatedAt: number;
   readonly terminalCode?: string;
