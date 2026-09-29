@@ -9,15 +9,19 @@ export declare class InteractiveControlApprovals {
     private readonly authorisedUsers;
     private readonly now;
     private readonly enabled;
+    private readonly availabilityCode;
     private mergeTimer?;
+    private readonly diagnostics;
     constructor(db: DatabaseSync, service: ControlPlaneService, api: HarnessPluginApi, authorisedUsers: readonly string[], now?: () => number);
     register(): () => void;
     presentConfirmation(changeId: string, context: HarnessToolContext): Promise<boolean>;
     presentMerge(changeId: string): Promise<boolean>;
+    diagnostic(changeId: string): string;
     private presentPendingApprovals;
     private present;
     private handle;
     private storeBinding;
     private loadBinding;
+    private unavailable;
 }
 //# sourceMappingURL=interactive-approval.d.ts.map

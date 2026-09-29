@@ -89,7 +89,14 @@ function fixture() {
   };
   const api = {
     logger: { info() {}, warn() {}, error() {} },
-    async sendMessage(input) { sent.push(input); return { ts: `M${sent.length}` }; },
+    runtime: {
+      gateway: {
+        async request(method, params) {
+          sent.push({ method, ...params, ...(params.params ?? {}) });
+          return { ok: true };
+        },
+      },
+    },
     registerInteractiveHandler(value) { registration = value; return () => { registration = undefined; }; },
     registerTool(factory, options) {
       tools.set(options.name, factory);
@@ -105,6 +112,7 @@ function fixture() {
     messageChannel: "slack",
     agentAccountId: "default",
     deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" },
+    sessionKey: "agent:main:slack:direct:U1",
   };
   const click = async (payload, overrides = {}) => {
     const responses = [];
@@ -147,6 +155,10 @@ test("prepared natural-language intent is rendered as a host-native approval but
   try {
     assert.equal(await f.approvals.presentConfirmation(f.target.changeId, f.toolContext), true);
     assert.equal(f.sent.length, 1);
+    assert.equal(f.sent[0].method, "message.action");
+    assert.equal(f.sent[0].action, "send");
+    assert.equal(f.sent[0].sessionKey, "agent:main:slack:direct:U1");
+    assert.match(f.sent[0].idempotencyKey, /^oah-control:confirm_change:/);
     assert.equal("blocks" in f.sent[0], false, "provider-native Slack blocks belong to the host renderer");
     assert.match(JSON.stringify(f.sent[0].presentation.blocks), /README\.md/);
     assert.match(JSON.stringify(f.sent[0].presentation.blocks), /900000/);
@@ -175,6 +187,7 @@ test("OpenClaw request translation prepares and presents without a magic confirm
     });
     assert.equal(out.state, "prepared");
     assert.equal(out.approval.mode, "slack_interactive");
+    assert.equal(out.approval.diagnostic, "presented");
     assert.equal(f.sent.length, 1);
     assert.equal(f.calls.length, 0, "preparation and interpretation never authorize execution");
   } finally { f.close(); }
@@ -301,13 +314,19 @@ test("missing host interactive API leaves approval unavailable and execution pau
   const store = openStateStoreSync(join(dir, "state.db"));
   const approvals = new InteractiveControlApprovals(
     store.db,
-    { runForInteraction() { return null; } },
-    { logger: { warn() {}, info() {}, error() {} } },
+    { runForInteraction() { return { requesterId: "U1", conversationId: "user:U1" }; } },
+    { logger: { warn() {}, info() {}, error() {} }, registerInteractiveHandler() {} },
     ["U1"],
   );
   try {
     const dispose = approvals.register();
-    assert.equal(await approvals.presentConfirmation("chg_missingapi12", {}), false);
+    assert.equal(await approvals.presentConfirmation("chg_missingapi12", {
+      requesterSenderId: "U1", conversationId: "user:U1", nativeChannelId: "D1",
+      messageChannel: "slack", agentAccountId: "default",
+      sessionKey: "agent:main:slack:direct:U1",
+      deliveryContext: { channel: "slack", to: "user:U1", accountId: "default" },
+    }), false);
+    assert.equal(approvals.diagnostic("chg_missingapi12"), "host_outbound_gateway_unavailable");
     dispose();
   } finally {
     store.close();

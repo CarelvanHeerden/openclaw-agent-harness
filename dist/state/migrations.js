@@ -401,6 +401,7 @@ CREATE TABLE control_interactive_bindings (
   account_id TEXT NOT NULL,
   transport_conversation TEXT NOT NULL,
   thread_id TEXT NOT NULL,
+  session_key TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );

@@ -7379,6 +7379,7 @@ CREATE TABLE control_interactive_bindings (
   account_id TEXT NOT NULL,
   transport_conversation TEXT NOT NULL,
   thread_id TEXT NOT NULL,
+  session_key TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -11761,34 +11762,39 @@ d5(s),u.input,d)}catch(u){return u5(u)}}}}a(vO,"tool");function bO(t,e){const r=
 change",s=>vO("harness_prepare_change","Translate the user's ordinary-language repository request into one complete type\
 d proposal without starting work. Preserve all restrictions and exclusions; do not ask the user for harness syntax.",s5,
 s,async(o,l,c)=>{const u=await o.prepare(l,c);const d=String(u.changeId??"");const h=d?await n.interactiveControlApprovals?.
-presentConfirmation(d,s)??false:false;return{...u,approval:{mode:h?"slack_interactive":"unavailable",required:true,summary:h?
-"Review the structured proposal and use its Approve and run button.":"Interactive approval could not be presented; execu\
-tion remains paused."}}},n)],["harness_change_result",s=>vO("harness_change_result","Read the safe current or final outc\
-ome of a change.",n5,s,(o,l,c)=>o.result(String(l.changeId??""),c),n)]];for(const[s,o]of i){r.push(a5(t.registerTool(o5(
-s,o),{name:s})))}return()=>{for(const s of r.reverse())s()}}a(bO,"registerHarnessTools");import{createHash as p5,randomBytes as wO}from"node:crypto";var kO="openclaw-agent-harness.control";function SO(t){return p5("sha256").update(t).digest("hex")}a(SO,"tokenHash");function $d(t){
+presentConfirmation(d,s)??false:false;return{...u,approval:{mode:h?"slack_interactive":"unavailable",required:true,diagnostic:n.
+interactiveControlApprovals?.diagnostic(d)??"interactive_provider_missing",summary:h?"Review the structured proposal and\
+ use its Approve and run button.":"Interactive approval could not be presented; execution remains paused."}}},n)],["harn\
+ess_change_result",s=>vO("harness_change_result","Read the safe current or final outcome of a change.",n5,s,(o,l,c)=>o.result(
+String(l.changeId??""),c),n)]];for(const[s,o]of i){r.push(a5(t.registerTool(o5(s,o),{name:s})))}return()=>{for(const s of r.
+reverse())s()}}a(bO,"registerHarnessTools");import{createHash as p5,randomBytes as wO}from"node:crypto";var kO="openclaw-agent-harness.control";function SO(t){return p5("sha256").update(t).digest("hex")}a(SO,"tokenHash");function $d(t){
 let e=(t??"").trim();while(/^team:[^:]+:/i.test(e))e=e.replace(/^team:[^:]+:/i,"");return e}a($d,"normalizeConversation");
 function h5(t,e,r){const n=(t.messageChannel||t.deliveryContext?.channel||"").trim().toLowerCase();const i=(t.nativeChannelId||
-t.deliveryContext?.to||t.conversationId||"").trim();if(n!=="slack"||!e||!r||!i)return void 0;return Object.freeze({actorIdentity:e,
-authorityConversation:r,channel:n,accountId:(t.agentAccountId||t.deliveryContext?.accountId||"default").trim().toLowerCase(),
-transportConversation:i,threadId:String(t.deliveryContext?.threadId??"").trim()})}a(h5,"bindingFromContext");function EO(t,e){
-const r=t==="merge_change"?`Pull request for change ${String(e.changeId)} passed strict readiness.`:`Prepared change ${String(
-e.changeId)} — complete proposal`;const n=t==="merge_change"?"Review the PR identity and exact head below, then approv\
-e this merge.":"Review every interpreted field below. Ask OpenClaw for changes instead of approving if anything is wrong\
-.";const i=JSON.stringify(e,null,2);const s=[];for(let o=0;o<i.length;o+=2800)s.push(i.slice(o,o+2800));if(s.length>40)return void 0;
-return{text:`${r}
+t.deliveryContext?.to||t.conversationId||"").trim();const s=(t.sessionKey||"").trim();if(n!=="slack"||!e||!r||!i||!s)return void 0;
+return Object.freeze({actorIdentity:e,authorityConversation:r,channel:n,accountId:(t.agentAccountId||t.deliveryContext?.
+accountId||"default").trim().toLowerCase(),transportConversation:i,threadId:String(t.deliveryContext?.threadId??"").trim(),
+sessionKey:s})}a(h5,"bindingFromContext");function EO(t,e){const r=t==="merge_change"?`Pull request for change ${String(
+e.changeId)} passed strict readiness.`:`Prepared change ${String(e.changeId)} — complete proposal`;const n=t==="merge_\
+change"?"Review the PR identity and exact head below, then approve this merge.":"Review every interpreted field below. A\
+sk OpenClaw for changes instead of approving if anything is wrong.";const i=JSON.stringify(e,null,2);const s=[];for(let o=0;o<
+i.length;o+=2800)s.push(i.slice(o,o+2800));if(s.length>40)return void 0;return{text:`${r}
 ${n}`,blocks:[{type:"text",text:`${r}
 ${n}`},...s.map((o,l)=>({type:"text",text:`Proposal ${l+1}/${s.length}
-${o}`}))]}}a(EO,"reviewMessage");var xd=class{static{a(this,"InteractiveControlApprovals")}db;service;api;authorisedUsers;now;enabled;mergeTimer;constructor(e,r,n,i,s=Date.
-now){this.db=e;this.service=r;this.api=n;this.authorisedUsers=i;this.now=s;this.enabled=typeof n.sendMessage==="function"&&
-typeof n.registerInteractiveHandler==="function"}register(){if(!this.enabled){this.api.logger.warn("[harness] Slack inte\
-ractive approval API unavailable; execution and merge approvals remain fail-closed.");return()=>{}}const e=this.api.registerInteractiveHandler(
-{channel:"slack",namespace:kO,handler:a(n=>this.handle(n),"handler")});queueMicrotask(()=>{void this.presentPendingApprovals()});
-this.mergeTimer=setInterval(()=>{void this.presentPendingApprovals()},5e3);this.mergeTimer.unref?.();const r=typeof e===
-"function"?e:e?.dispose?()=>e.dispose?.():()=>{};return()=>{if(this.mergeTimer)clearInterval(this.mergeTimer);r()}}async presentConfirmation(e,r){
-const n=this.service.runForInteraction(e);if(!n)return false;const i=h5(r,n.requesterId,n.conversationId);if(!i)return false;
-this.storeBinding(e,i);return await this.present("confirm_change",e,i)}async presentMerge(e){const r=this.loadBinding(e);
-if(!r)return false;return await this.present("merge_change",e,r)}async presentPendingApprovals(){if(!this.enabled)return;
-const e=this.now();const r=this.db.prepare(`SELECT r.id,r.state
+${o}`}))]}}a(EO,"reviewMessage");var xd=class{static{a(this,"InteractiveControlApprovals")}db;service;api;authorisedUsers;now;enabled;availabilityCode;mergeTimer;diagnostics=new Map;constructor(e,r,n,i,s=Date.
+now){this.db=e;this.service=r;this.api=n;this.authorisedUsers=i;this.now=s;const o=typeof n.registerInteractiveHandler===
+"function";const l=typeof n.runtime?.gateway?.request==="function";this.enabled=o&&l;this.availabilityCode=!o?"host_inte\
+ractive_handler_unavailable":!l?"host_outbound_gateway_unavailable":"available"}register(){if(!this.enabled){this.api.logger.
+warn("[harness] Slack interactive approval API unavailable; execution and merge approvals remain fail-closed.",{diagnostic:this.
+availabilityCode});return()=>{}}const e=this.api.registerInteractiveHandler({channel:"slack",namespace:kO,handler:a(n=>this.
+handle(n),"handler")});queueMicrotask(()=>{void this.presentPendingApprovals()});this.mergeTimer=setInterval(()=>{void this.
+presentPendingApprovals()},5e3);this.mergeTimer.unref?.();const r=typeof e==="function"?e:e?.dispose?()=>e.dispose?.():()=>{};
+return()=>{if(this.mergeTimer)clearInterval(this.mergeTimer);r()}}async presentConfirmation(e,r){if(!this.enabled)return this.
+unavailable(e,this.availabilityCode);const n=this.service.runForInteraction(e);if(!n)return this.unavailable(e,"change_n\
+ot_found");const i=h5(r,n.requesterId,n.conversationId);if(!i)return this.unavailable(e,"slack_context_incomplete");this.
+storeBinding(e,i);return await this.present("confirm_change",e,i)}async presentMerge(e){const r=this.loadBinding(e);if(!r)
+return this.unavailable(e,"slack_binding_missing");return await this.present("merge_change",e,r)}diagnostic(e){return this.
+diagnostics.get(e)??(this.enabled?"not_presented":this.availabilityCode)}async presentPendingApprovals(){if(!this.enabled)
+return;const e=this.now();const r=this.db.prepare(`SELECT r.id,r.state
       FROM control_runs r
       JOIN control_interactive_bindings b ON b.run_id=r.id
       WHERE r.state IN ('awaiting_confirmation','pr_ready')
@@ -11805,26 +11811,30 @@ const e=this.now();const r=this.db.prepare(`SELECT r.id,r.state
             AND c.created_at>=?
         )`).all(e,e-6e4);for(const n of r){const i=this.loadBinding(n.id);if(!i)continue;try{await this.present(n.state===
 "pr_ready"?"merge_change":"confirm_change",n.id,i)}catch(s){this.api.logger.warn("[harness] interactive approval recover\
-y failed",{changeId:n.id,error:String(s)})}}}async present(e,r,n){if(!this.enabled||!this.api.sendMessage)return false;let i;
-try{i=this.service.attestationTarget(e,n.actorIdentity,n.authorityConversation,r)}catch{return false}let s;try{s=this.service.
-approvalReview(e,r)}catch{return false}const o=s?EO(e,s):void 0;if(!o)return false;const l=wO(24).toString("base64url");
-const c=SO(l);const u=this.now();this.db.exec("BEGIN IMMEDIATE");try{this.db.prepare(`UPDATE control_interactive_challen\
-ges SET claimed_at=?
+y failed",{changeId:n.id,error:String(s)})}}}async present(e,r,n){if(!this.enabled||!this.api.runtime?.gateway?.request)
+return this.unavailable(r,this.availabilityCode);let i;try{i=this.service.attestationTarget(e,n.actorIdentity,n.authorityConversation,
+r)}catch{return this.unavailable(r,"approval_target_unavailable")}let s;try{s=this.service.approvalReview(e,r)}catch{return this.
+unavailable(r,"approval_review_unavailable")}const o=s?EO(e,s):void 0;if(!o)return this.unavailable(r,"approval_review_t\
+oo_large");const l=wO(24).toString("base64url");const c=SO(l);const u=this.now();this.db.exec("BEGIN IMMEDIATE");try{this.
+db.prepare(`UPDATE control_interactive_challenges SET claimed_at=?
         WHERE run_id=? AND operation_kind=? AND claimed_at IS NULL`).run(u,r,e);this.db.prepare(`INSERT INTO control_int\
 eractive_challenges
         (token_hash,run_id,operation_kind,target_digest,expires_at,claimed_at,created_at)
         VALUES (?,?,?,?,?,NULL,?)`).run(c,r,e,i.targetDigest,i.expiresAt,u);this.db.exec("COMMIT")}catch(d){try{this.db.
-exec("ROLLBACK")}catch{}throw d}try{await this.api.sendMessage({channel:n.transportConversation,...n.threadId?{threadTs:n.
-threadId}:{},text:o.text,presentation:{title:e==="merge_change"?"Merge approval":"Execution approval",tone:"warning",blocks:[
-...o.blocks,{type:"buttons",buttons:[{label:e==="merge_change"?"Approve merge":"Approve and run",value:`${kO}:approve.${l}`,
-style:"success"}]}]}});return true}catch(d){this.db.prepare("UPDATE control_interactive_challenges SET claimed_at=? WHER\
-E token_hash=? AND claimed_at IS NULL").run(this.now(),c);this.api.logger.warn("[harness] could not present interactive \
-approval",{changeId:r,operation:e,error:String(d)});return false}}async handle(e){await e.respond.acknowledge();const r=a(
-async S=>{await e.respond.reply({text:S,responseType:"ephemeral"});return{handled:true}},"fail");const n=(e.senderId??"").
-trim();if(!e.auth?.isAuthorizedSender||!n||!this.authorisedUsers.includes(n)||e.interaction.kind!=="button"){return await r(
-"This approval is not authorized.")}const i=/^approve\.([A-Za-z0-9_-]{32,})$/.exec(e.interaction.payload)?.[1];if(!i)return await r(
-"This approval control is malformed or stale.");const s=SO(i);const o=this.now();this.db.exec("BEGIN IMMEDIATE");let l;try{
-l=this.db.prepare(`SELECT c.*,b.actor_identity,b.authority_conversation,b.channel,b.account_id,
+exec("ROLLBACK")}catch{}throw d}try{await this.api.runtime.gateway.request("message.action",{channel:"slack",action:"sen\
+d",accountId:n.accountId,requesterSenderId:n.actorIdentity,sessionKey:n.sessionKey,idempotencyKey:`oah-control:${e}:${r}\
+:${c}`,params:{target:n.transportConversation,message:o.text,...n.threadId?{threadId:n.threadId}:{},presentation:{title:e===
+"merge_change"?"Merge approval":"Execution approval",tone:"warning",blocks:[...o.blocks,{type:"buttons",buttons:[{label:e===
+"merge_change"?"Approve merge":"Approve and run",value:`${kO}:approve.${l}`,style:"success"}]}]}}});this.diagnostics.set(
+r,"presented");return true}catch(d){this.db.prepare("UPDATE control_interactive_challenges SET claimed_at=? WHERE token_\
+hash=? AND claimed_at IS NULL").run(this.now(),c);this.api.logger.warn("[harness] could not present interactive approval",
+{changeId:r,operation:e,error:String(d)});return this.unavailable(r,"outbound_delivery_failed")}}async handle(e){await e.
+respond.acknowledge();const r=a(async S=>{await e.respond.reply({text:S,responseType:"ephemeral"});return{handled:true}},
+"fail");const n=(e.senderId??"").trim();if(!e.auth?.isAuthorizedSender||!n||!this.authorisedUsers.includes(n)||e.interaction.
+kind!=="button"){return await r("This approval is not authorized.")}const i=/^approve\.([A-Za-z0-9_-]{32,})$/.exec(e.interaction.
+payload)?.[1];if(!i)return await r("This approval control is malformed or stale.");const s=SO(i);const o=this.now();this.
+db.exec("BEGIN IMMEDIATE");let l;try{l=this.db.prepare(`SELECT c.*,b.actor_identity,b.authority_conversation,b.channel,b\
+.account_id,
         b.transport_conversation,b.thread_id
         FROM control_interactive_challenges c
         JOIN control_interactive_bindings b ON b.run_id=c.run_id
@@ -11849,17 +11859,18 @@ trustedControlAttestation:v});await e.respond.editMessage({text:`${b.text}
 Approved by <@${n}>.`,blocks:[]});await e.respond.reply({text:String(S.summary??"Approval accepted."),responseType:"ephe\
 meral"});return{handled:true}}catch(S){const E=S instanceof De?S.message:"Approval failed safely.";return await r(E)}}storeBinding(e,r){
 const n=this.now();this.db.prepare(`INSERT INTO control_interactive_bindings
-      (run_id,actor_identity,authority_conversation,channel,account_id,transport_conversation,thread_id,created_at,updat\
-ed_at)
-      VALUES (?,?,?,?,?,?,?,?,?)
+      (run_id,actor_identity,authority_conversation,channel,account_id,transport_conversation,thread_id,session_key,crea\
+ted_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id) DO UPDATE SET actor_identity=excluded.actor_identity,
         authority_conversation=excluded.authority_conversation,channel=excluded.channel,
         account_id=excluded.account_id,transport_conversation=excluded.transport_conversation,
-        thread_id=excluded.thread_id,updated_at=excluded.updated_at`).run(e,r.actorIdentity,r.authorityConversation,r.channel,
-r.accountId,r.transportConversation,r.threadId,n,n)}loadBinding(e){const r=this.db.prepare("SELECT * FROM control_intera\
-ctive_bindings WHERE run_id=?").get(e);if(!r)return void 0;return Object.freeze({actorIdentity:String(r.actor_identity),
-authorityConversation:String(r.authority_conversation),channel:String(r.channel),accountId:String(r.account_id),transportConversation:String(
-r.transport_conversation),threadId:String(r.thread_id)})}};import{randomUUID as g5}from"node:crypto";var on=a((...t)=>Object.freeze(t),"states");var f5=Object.freeze({draft:on("awaiting_confirmation","cancelled"),awaiting_confirmation:on(
+        thread_id=excluded.thread_id,session_key=excluded.session_key,updated_at=excluded.updated_at`).run(e,r.actorIdentity,
+r.authorityConversation,r.channel,r.accountId,r.transportConversation,r.threadId,r.sessionKey,n,n)}loadBinding(e){const r=this.
+db.prepare("SELECT * FROM control_interactive_bindings WHERE run_id=?").get(e);if(!r)return void 0;return Object.freeze(
+{actorIdentity:String(r.actor_identity),authorityConversation:String(r.authority_conversation),channel:String(r.channel),
+accountId:String(r.account_id),transportConversation:String(r.transport_conversation),threadId:String(r.thread_id),sessionKey:String(
+r.session_key)})}unavailable(e,r){this.diagnostics.set(e,r);return false}};import{randomUUID as g5}from"node:crypto";var on=a((...t)=>Object.freeze(t),"states");var f5=Object.freeze({draft:on("awaiting_confirmation","cancelled"),awaiting_confirmation:on(
 "autonomous_run","failed","cancelled"),autonomous_run:on("pr_ready","failed","cancelled"),pr_ready:on("autonomous_run","\
 awaiting_merge","failed","cancelled"),awaiting_merge:on("done","failed","cancelled"),done:on(),failed:on(),cancelled:on()});
 var f_=class extends Error{static{a(this,"InvalidControlTransitionError")}from;to;constructor(e,r){super(`Invalid contro\

@@ -186,7 +186,13 @@ export interface HarnessPluginApi {
   pluginConfig?: unknown;
   workspaceDir?: string;
 
-  /** Optional -- for sending Slack messages. Different runtimes wire this differently. */
+  runtime?: {
+    gateway?: {
+      isAvailable?: () => Promise<boolean>;
+      request: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+    };
+  };
+  /** Legacy outbound seam retained for internal lifecycle notifications. */
   sendMessage?: (input: { channel: string; threadTs?: string; text: string; presentation?: unknown }) => Promise<{ ts: string }>;
 
   /**

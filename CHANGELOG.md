@@ -9,6 +9,10 @@
   recovery reuse that deadline and cannot renew it.
 - The earlier `/harness-answer` and phrase-parser approaches below are retained
   as incident history, not as the current public interaction contract.
+- Present approval messages through OpenClaw's supported trusted
+  `runtime.gateway.request("message.action", …)` pipeline instead of the
+  optional legacy `api.sendMessage` seam; return precise diagnostics when the
+  outbound gateway or interactive handler is unavailable.
 
 - Isolate OpenClaw activation behind a self-contained bundled entry so generation
   capture no longer mistakes virtiofs inode churn for an in-progress source edit.

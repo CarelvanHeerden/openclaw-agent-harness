@@ -97,8 +97,15 @@ const MUTATIONS = [
   {
     name: "control interaction: missing host interactive API fails closed",
     file: "dist/control/interactive-approval.js",
-    find: "        this.enabled = typeof api.sendMessage === \"function\" && typeof api.registerInteractiveHandler === \"function\";",
-    replace: "        this.enabled = true;",
+    find: "        if (!this.enabled || !this.api.runtime?.gateway?.request)",
+    replace: "        if (false)",
+    tests: ["tests/control-interactive-approval.test.mjs"],
+  },
+  {
+    name: "control interaction: proposal uses the supported gateway outbound path",
+    file: "dist/control/interactive-approval.js",
+    find: "await this.api.runtime.gateway.request(\"message.action\", {",
+    replace: "await this.api.runtime.gateway.request(\"send\", {",
     tests: ["tests/control-interactive-approval.test.mjs"],
   },
   {

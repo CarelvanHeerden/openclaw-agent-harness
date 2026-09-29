@@ -132,6 +132,7 @@ export function registerHarnessTools(api, runtime) {
                     approval: {
                         mode: presented ? "slack_interactive" : "unavailable",
                         required: true,
+                        diagnostic: rt.interactiveControlApprovals?.diagnostic(changeId) ?? "interactive_provider_missing",
                         summary: presented
                             ? "Review the structured proposal and use its Approve and run button."
                             : "Interactive approval could not be presented; execution remains paused.",

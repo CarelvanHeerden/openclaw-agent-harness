@@ -2,8 +2,9 @@
 
 Monitor `control_runs`, `control_dispatch_intents`, immutable `control_readiness_attestations`, and `control_engine_merge_intents`. A stale dispatch can be reclaimed only after its lease expires; every completion checks the current fence. A merge retry first inspects provider state and reconciles any prior side effect.
 
-The installed OpenClaw host must expose `registerInteractiveHandler` for Slack
-and must deliver Block Kit interactions to plugin handlers. The existing Slack
+The installed OpenClaw host must expose `registerInteractiveHandler` and the
+trusted `runtime.gateway.request("message.action", …)` outbound path for Slack.
+It must deliver rendered button interactions to plugin handlers. The existing Slack
 app must have interactivity enabled at its current callback/socket route. Do not
 replace the app manifest or widen its authorized users implicitly. If either
 `registerInteractiveHandler` or interactive message delivery is unavailable,

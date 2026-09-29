@@ -13,7 +13,8 @@ function normalizeConversation(value) {
 function bindingFromContext(context, actorIdentity, authorityConversation) {
     const channel = (context.messageChannel || context.deliveryContext?.channel || "").trim().toLowerCase();
     const transportConversation = (context.nativeChannelId || context.deliveryContext?.to || context.conversationId || "").trim();
-    if (channel !== "slack" || !actorIdentity || !authorityConversation || !transportConversation)
+    const sessionKey = (context.sessionKey || "").trim();
+    if (channel !== "slack" || !actorIdentity || !authorityConversation || !transportConversation || !sessionKey)
         return undefined;
     return Object.freeze({
         actorIdentity,
@@ -22,6 +23,7 @@ function bindingFromContext(context, actorIdentity, authorityConversation) {
         accountId: (context.agentAccountId || context.deliveryContext?.accountId || "default").trim().toLowerCase(),
         transportConversation,
         threadId: String(context.deliveryContext?.threadId ?? "").trim(),
+        sessionKey,
     });
 }
 function reviewMessage(operation, review) {
@@ -55,18 +57,27 @@ export class InteractiveControlApprovals {
     authorisedUsers;
     now;
     enabled;
+    availabilityCode;
     mergeTimer;
+    diagnostics = new Map();
     constructor(db, service, api, authorisedUsers, now = Date.now) {
         this.db = db;
         this.service = service;
         this.api = api;
         this.authorisedUsers = authorisedUsers;
         this.now = now;
-        this.enabled = typeof api.sendMessage === "function" && typeof api.registerInteractiveHandler === "function";
+        const hasHandler = typeof api.registerInteractiveHandler === "function";
+        const hasOutbound = typeof api.runtime?.gateway?.request === "function";
+        this.enabled = hasHandler && hasOutbound;
+        this.availabilityCode = !hasHandler
+            ? "host_interactive_handler_unavailable"
+            : !hasOutbound
+                ? "host_outbound_gateway_unavailable"
+                : "available";
     }
     register() {
         if (!this.enabled) {
-            this.api.logger.warn("[harness] Slack interactive approval API unavailable; execution and merge approvals remain fail-closed.");
+            this.api.logger.warn("[harness] Slack interactive approval API unavailable; execution and merge approvals remain fail-closed.", { diagnostic: this.availabilityCode });
             return () => { };
         }
         const registration = this.api.registerInteractiveHandler({
@@ -89,20 +100,25 @@ export class InteractiveControlApprovals {
         };
     }
     async presentConfirmation(changeId, context) {
+        if (!this.enabled)
+            return this.unavailable(changeId, this.availabilityCode);
         const run = this.service.runForInteraction(changeId);
         if (!run)
-            return false;
+            return this.unavailable(changeId, "change_not_found");
         const binding = bindingFromContext(context, run.requesterId, run.conversationId);
         if (!binding)
-            return false;
+            return this.unavailable(changeId, "slack_context_incomplete");
         this.storeBinding(changeId, binding);
         return await this.present("confirm_change", changeId, binding);
     }
     async presentMerge(changeId) {
         const binding = this.loadBinding(changeId);
         if (!binding)
-            return false;
+            return this.unavailable(changeId, "slack_binding_missing");
         return await this.present("merge_change", changeId, binding);
+    }
+    diagnostic(changeId) {
+        return this.diagnostics.get(changeId) ?? (this.enabled ? "not_presented" : this.availabilityCode);
     }
     async presentPendingApprovals() {
         if (!this.enabled)
@@ -137,25 +153,25 @@ export class InteractiveControlApprovals {
         }
     }
     async present(operation, changeId, binding) {
-        if (!this.enabled || !this.api.sendMessage)
-            return false;
+        if (!this.enabled || !this.api.runtime?.gateway?.request)
+            return this.unavailable(changeId, this.availabilityCode);
         let target;
         try {
             target = this.service.attestationTarget(operation, binding.actorIdentity, binding.authorityConversation, changeId);
         }
         catch {
-            return false;
+            return this.unavailable(changeId, "approval_target_unavailable");
         }
         let review;
         try {
             review = this.service.approvalReview(operation, changeId);
         }
         catch {
-            return false;
+            return this.unavailable(changeId, "approval_review_unavailable");
         }
         const message = review ? reviewMessage(operation, review) : undefined;
         if (!message)
-            return false;
+            return this.unavailable(changeId, "approval_review_too_large");
         const token = randomBytes(24).toString("base64url");
         const hash = tokenHash(token);
         const at = this.now();
@@ -176,33 +192,42 @@ export class InteractiveControlApprovals {
             throw error;
         }
         try {
-            await this.api.sendMessage({
-                channel: binding.transportConversation,
-                ...(binding.threadId ? { threadTs: binding.threadId } : {}),
-                text: message.text,
-                presentation: {
-                    title: operation === "merge_change" ? "Merge approval" : "Execution approval",
-                    tone: "warning",
-                    blocks: [
-                        ...message.blocks,
-                        {
-                            type: "buttons",
-                            buttons: [{
-                                    label: operation === "merge_change" ? "Approve merge" : "Approve and run",
-                                    value: `${CONTROL_INTERACTIVE_NAMESPACE}:approve.${token}`,
-                                    style: "success",
-                                }],
-                        },
-                    ],
+            await this.api.runtime.gateway.request("message.action", {
+                channel: "slack",
+                action: "send",
+                accountId: binding.accountId,
+                requesterSenderId: binding.actorIdentity,
+                sessionKey: binding.sessionKey,
+                idempotencyKey: `oah-control:${operation}:${changeId}:${hash}`,
+                params: {
+                    target: binding.transportConversation,
+                    message: message.text,
+                    ...(binding.threadId ? { threadId: binding.threadId } : {}),
+                    presentation: {
+                        title: operation === "merge_change" ? "Merge approval" : "Execution approval",
+                        tone: "warning",
+                        blocks: [
+                            ...message.blocks,
+                            {
+                                type: "buttons",
+                                buttons: [{
+                                        label: operation === "merge_change" ? "Approve merge" : "Approve and run",
+                                        value: `${CONTROL_INTERACTIVE_NAMESPACE}:approve.${token}`,
+                                        style: "success",
+                                    }],
+                            },
+                        ],
+                    },
                 },
             });
+            this.diagnostics.set(changeId, "presented");
             return true;
         }
         catch (error) {
             this.db.prepare("UPDATE control_interactive_challenges SET claimed_at=? WHERE token_hash=? AND claimed_at IS NULL")
                 .run(this.now(), hash);
             this.api.logger.warn("[harness] could not present interactive approval", { changeId, operation, error: String(error) });
-            return false;
+            return this.unavailable(changeId, "outbound_delivery_failed");
         }
     }
     async handle(context) {
@@ -306,13 +331,13 @@ export class InteractiveControlApprovals {
     storeBinding(runId, binding) {
         const at = this.now();
         this.db.prepare(`INSERT INTO control_interactive_bindings
-      (run_id,actor_identity,authority_conversation,channel,account_id,transport_conversation,thread_id,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?)
+      (run_id,actor_identity,authority_conversation,channel,account_id,transport_conversation,thread_id,session_key,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(run_id) DO UPDATE SET actor_identity=excluded.actor_identity,
         authority_conversation=excluded.authority_conversation,channel=excluded.channel,
         account_id=excluded.account_id,transport_conversation=excluded.transport_conversation,
-        thread_id=excluded.thread_id,updated_at=excluded.updated_at`)
-            .run(runId, binding.actorIdentity, binding.authorityConversation, binding.channel, binding.accountId, binding.transportConversation, binding.threadId, at, at);
+        thread_id=excluded.thread_id,session_key=excluded.session_key,updated_at=excluded.updated_at`)
+            .run(runId, binding.actorIdentity, binding.authorityConversation, binding.channel, binding.accountId, binding.transportConversation, binding.threadId, binding.sessionKey, at, at);
     }
     loadBinding(runId) {
         const row = this.db.prepare("SELECT * FROM control_interactive_bindings WHERE run_id=?").get(runId);
@@ -325,7 +350,12 @@ export class InteractiveControlApprovals {
             accountId: String(row.account_id),
             transportConversation: String(row.transport_conversation),
             threadId: String(row.thread_id),
+            sessionKey: String(row.session_key),
         });
+    }
+    unavailable(changeId, code) {
+        this.diagnostics.set(changeId, code);
+        return false;
     }
 }
 //# sourceMappingURL=interactive-approval.js.map
