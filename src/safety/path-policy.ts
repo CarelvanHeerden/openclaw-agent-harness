@@ -42,6 +42,7 @@
  */
 
 import { redactTokenShapes } from "../state/interaction-log.js";
+import { isAbsolute, relative, resolve } from "node:path";
 
 /** Canonical forms of one raw path, or a refusal that the caller must honour. */
 export interface PathResolution {
@@ -72,6 +73,66 @@ export interface ResolveOptions {
    * is a refusal, because "I could not tell what this points at" is not a pass.
    */
   realpath?: (p: string) => string;
+}
+
+export interface CanonicalRepoTarget {
+  path?: string;
+  refuse?: string;
+}
+
+/**
+ * Resolve one tool-supplied spelling to the repository-relative identity used
+ * by both scope and metadata reconciliation.
+ */
+export function canonicalRepoTarget(raw: string, opts: ResolveOptions = {}): CanonicalRepoTarget {
+  const resolution = resolvePathForPolicy(raw, opts);
+  if (resolution.refuse) return { refuse: resolution.refuse };
+  const value = (raw ?? "").trim().replaceAll("\\", "/");
+  if (!opts.repoRoot) {
+    const candidate = resolution.candidates.find((item) => !item.startsWith("/")) ?? resolution.candidates[0];
+    return candidate ? { path: candidate.replace(/^\.\//, "") } : { refuse: "path normalised to nothing" };
+  }
+
+  const lexicalRoot = resolve(opts.repoRoot);
+  let canonicalRoot = lexicalRoot;
+  if (opts.realpath) {
+    try {
+      canonicalRoot = resolve(opts.realpath(lexicalRoot));
+    } catch (error) {
+      return { refuse: `cannot resolve repository root safely: ${String(error)}` };
+    }
+  }
+  const lexicalTarget = isAbsolute(value) ? resolve(value) : resolve(lexicalRoot, value);
+  const lexicalRelative = relative(lexicalRoot, lexicalTarget).replaceAll("\\", "/");
+  if (!lexicalRelative || lexicalRelative === ".." || lexicalRelative.startsWith("../") || isAbsolute(lexicalRelative)) {
+    return { refuse: `path escapes repository root: ${raw}` };
+  }
+
+  const within = (candidate: string, root: string): string | undefined => {
+    const rel = relative(root, resolve(candidate)).replaceAll("\\", "/");
+    return rel && rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel) ? rel : undefined;
+  };
+  const physical = new Set<string>();
+  for (const candidate of resolution.candidates.filter((item) => item.startsWith("/"))) {
+    const rel = within(candidate, canonicalRoot) ?? within(candidate, lexicalRoot);
+    if (!rel) return { refuse: `resolved path escapes repository root: ${raw}` };
+    physical.add(rel);
+  }
+  if (opts.realpath) {
+    try {
+      const resolvedTarget = opts.realpath(lexicalTarget);
+      const rel = within(resolvedTarget, canonicalRoot);
+      if (!rel) return { refuse: `resolved path escapes repository root: ${raw}` };
+      physical.add(rel);
+    } catch (error) {
+      const code = (error as { code?: string } | null)?.code;
+      if (code !== "ENOENT" && code !== "ENOTDIR") return { refuse: `cannot resolve target safely: ${String(error)}` };
+    }
+  }
+  if (physical.size > 1) {
+    return { refuse: `path has conflicting repository identities: ${[...physical].join(", ")}` };
+  }
+  return { path: [...physical][0] ?? lexicalRelative };
 }
 
 /**

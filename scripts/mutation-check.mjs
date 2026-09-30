@@ -168,6 +168,13 @@ const MUTATIONS = [
     tests: ["tests/control-service.test.mjs"],
   },
   {
+    name: "rc.14 edit targets: reconcile against canonical worktree identity",
+    file: "dist/safety/bash-guard.js",
+    find: "const denyIfBlockedPaths = (call, label) => {\n        const evidence = acpTargetEvidenceFromToolCall(call, resolveOpts);",
+    replace: "const denyIfBlockedPaths = (call, label) => {\n        const evidence = acpTargetEvidenceFromToolCall(call);",
+    tests: ["tests/rc11/outcome-acp-authority.mjs"],
+  },
+  {
     // Repository hosts compare owner/repository identities case-insensitively.
     // Reverting the canonical comparison recreates the live control-plane
     // failure where a lower-cased request cannot match mixed-case config.

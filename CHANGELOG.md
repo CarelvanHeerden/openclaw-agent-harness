@@ -13,6 +13,11 @@
 - Keep the harness accessible only through OpenClaw: `message_received`
   contributes identity/provenance while OpenClaw supplies typed intent. Neither
   half can authorize execution by itself.
+- Canonicalize authoritative and advisory edit targets against the immutable
+  worktree root before reconciliation, so `README.md` and its absolute in-root
+  spelling identify the same file while traversal, other checkouts, escaping
+  symlinks, same-basename substitutions and changing identities still fail
+  closed.
 
 - Isolate OpenClaw activation behind a self-contained bundled entry so generation
   capture no longer mistakes virtiofs inode churn for an in-progress source edit.

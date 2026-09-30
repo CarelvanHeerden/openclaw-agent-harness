@@ -159,7 +159,10 @@ export declare function acpPathsFromToolCall(call: AcpToolCallForGuard): string[
  * Field names alone confer no authority. Patch and changes payloads must match
  * a recognized, complete schema; otherwise the call fails closed.
  */
-export declare function acpTargetEvidenceFromToolCall(call: AcpToolCallForGuard): AcpTargetEvidence;
+export declare function acpTargetEvidenceFromToolCall(call: AcpToolCallForGuard, resolveOpts?: {
+    repoRoot?: string;
+    realpath?: (p: string) => string;
+}): AcpTargetEvidence;
 /** The `apply_patch` body, when this call has one. Needed for the content check. */
 export declare function acpPatchTextFromToolCall(call: AcpToolCallForGuard): string | null;
 /**

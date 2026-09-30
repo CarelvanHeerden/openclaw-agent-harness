@@ -14,7 +14,7 @@
  * is rejected. If a legitimate command is rejected, add it to the whitelist
  * or split the operation into simpler steps.
  */
-import { parsePatchTargets, pathsFromPatchText, resolvePathForPolicy, scanPatchForSecrets, templateExceptionApplies, } from "./path-policy.js";
+import { canonicalRepoTarget, parsePatchTargets, pathsFromPatchText, resolvePathForPolicy, scanPatchForSecrets, templateExceptionApplies, } from "./path-policy.js";
 const NETWORK_COMMANDS = ["curl", "wget", "nc", "ncat", "ssh", "scp", "rsync"];
 const DENYLIST_TOKEN_DEFAULTS = [
     "sudo",
@@ -351,7 +351,7 @@ function rawPathFields(raw) {
  * Field names alone confer no authority. Patch and changes payloads must match
  * a recognized, complete schema; otherwise the call fails closed.
  */
-export function acpTargetEvidenceFromToolCall(call) {
+export function acpTargetEvidenceFromToolCall(call, resolveOpts = {}) {
     const advisoryPaths = [...new Set((call.locations ?? [])
             .map((location) => location?.path)
             .filter((path) => typeof path === "string" && path.trim().length > 0)
@@ -399,22 +399,33 @@ export function acpTargetEvidenceFromToolCall(call) {
         }
     }
     if (complete && authoritativePaths.length > 0) {
+        const canonicalAuthoritative = [];
+        for (const path of authoritativePaths) {
+            const canonical = canonicalRepoTarget(path, resolveOpts);
+            if (!canonical.path) {
+                conflict = canonical.refuse ?? `authoritative target cannot be resolved: ${path}`;
+                break;
+            }
+            canonicalAuthoritative.push(canonical.path);
+        }
         for (const display of advisoryPaths) {
+            if (conflict)
+                break;
             if (authoritativePaths.includes(display))
                 continue;
             if (display === authoritativePaths.join(", "))
                 continue;
-            const resolution = resolvePathForPolicy(display);
-            if (resolution.refuse) {
-                conflict = `advisory target summary does not exactly match authoritative targets: ${display}`;
+            const canonical = canonicalRepoTarget(display, resolveOpts);
+            if (!canonical.path) {
+                conflict = `advisory target cannot be resolved safely: ${canonical.refuse ?? display}`;
             }
-            else {
+            else if (!canonicalAuthoritative.includes(canonical.path)) {
                 conflict = `concrete advisory target is absent from authoritative targets: ${display}`;
             }
             break;
         }
         return {
-            authoritativePaths: [...new Set(authoritativePaths)],
+            authoritativePaths: [...new Set(canonicalAuthoritative)],
             advisoryPaths,
             schema,
             complete: !conflict,
@@ -542,7 +553,7 @@ export function buildAcpGuard(cfg) {
      * is a denial rather than a skipped check.
      */
     const denyIfBlockedPaths = (call, label) => {
-        const evidence = acpTargetEvidenceFromToolCall(call);
+        const evidence = acpTargetEvidenceFromToolCall(call, resolveOpts);
         if (!evidence.complete) {
             const joinedOnly = evidence.schema === "locations/v1" &&
                 evidence.advisoryPaths.some((path) => resolvePathForPolicy(path, resolveOpts).refuse?.includes("files rather than one"));
@@ -684,7 +695,7 @@ export function buildAcpGuard(cfg) {
             // learns this happened, because a control that has silently stopped
             // applying is worse than one that was never claimed.
             case "read": {
-                const evidence = acpTargetEvidenceFromToolCall(call);
+                const evidence = acpTargetEvidenceFromToolCall(call, resolveOpts);
                 if (evidence.conflict) {
                     return {
                         allow: false,

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -54,6 +54,84 @@ test("rc.11: a concrete additional location fails closed", async () => {
   assert.equal(verdict.allow, false);
   assert.equal(verdict.denial.code, "target_metadata_conflict");
   assert.match(verdict.reason, /absent from authoritative/i);
+});
+
+test("rc.14: repository-relative and absolute in-worktree targets reconcile", async () => {
+  const root = mkdtempSync(join(tmpdir(), "target-reconcile-"));
+  try {
+    writeFileSync(join(root, "README.md"), "existing\n");
+    mkdirSync(join(root, "docs"));
+    writeFileSync(join(root, "docs", "guide.md"), "guide\n");
+    for (const [target, advisory] of [
+      ["README.md", join(root, "README.md")],
+      ["docs/./guide.md", join(root, "docs", "guide.md")],
+    ]) {
+      const verdict = await guard({ repoRoot: root, realpath: realpathSync })({
+        kind: "edit",
+        locations: [{ path: advisory }],
+        rawInput: { patchText: patch([target]) },
+      });
+      assert.equal(verdict.allow, true, `${target} versus ${advisory}`);
+      assert.ok(verdict.checkedPaths.includes(target.replace("/./", "/")));
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("rc.14: absolute escape, symlink escape and same-basename substitution fail closed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "target-root-"));
+  const outside = mkdtempSync(join(tmpdir(), "target-outside-"));
+  try {
+    writeFileSync(join(root, "README.md"), "root\n");
+    mkdirSync(join(root, "docs"));
+    writeFileSync(join(root, "docs", "README.md"), "docs\n");
+    writeFileSync(join(outside, "README.md"), "outside\n");
+    symlinkSync(outside, join(root, "linked-outside"));
+    for (const [target, advisory] of [
+      ["README.md", join(outside, "README.md")],
+      ["linked-outside/README.md", join(root, "linked-outside", "README.md")],
+      ["docs/README.md", join(root, "README.md")],
+      ["README.md", join(root, "..", "other-checkout", "README.md")],
+    ]) {
+      const verdict = await guard({ repoRoot: root, realpath: realpathSync })({
+        kind: "edit",
+        locations: [{ path: advisory }],
+        rawInput: { patchText: patch([target]) },
+      });
+      assert.equal(verdict.allow, false, `${target} versus ${advisory}`);
+      assert.equal(verdict.denial.code, "target_metadata_conflict");
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("rc.14: target replacement during reconciliation fails closed", async () => {
+  const root = mkdtempSync(join(tmpdir(), "target-toctou-"));
+  try {
+    writeFileSync(join(root, "README.md"), "existing\n");
+    writeFileSync(join(root, "other.md"), "other\n");
+    let targetResolutions = 0;
+    const unstableRealpath = (value) => {
+      if (value === root) return root;
+      if (value.endsWith("/README.md")) {
+        targetResolutions += 1;
+        return targetResolutions < 2 ? join(root, "README.md") : join(root, "other.md");
+      }
+      return realpathSync(value);
+    };
+    const verdict = await guard({ repoRoot: root, realpath: unstableRealpath })({
+      kind: "edit",
+      locations: [{ path: join(root, "README.md") }],
+      rawInput: { patchText: patch(["README.md"]) },
+    });
+    assert.equal(verdict.allow, false);
+    assert.equal(verdict.denial.code, "target_metadata_conflict");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("rc.11: partial patch parsing and an omitted move destination fail closed", async () => {

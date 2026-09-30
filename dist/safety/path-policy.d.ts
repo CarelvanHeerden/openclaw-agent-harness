@@ -69,6 +69,15 @@ export interface ResolveOptions {
      */
     realpath?: (p: string) => string;
 }
+export interface CanonicalRepoTarget {
+    path?: string;
+    refuse?: string;
+}
+/**
+ * Resolve one tool-supplied spelling to the repository-relative identity used
+ * by both scope and metadata reconciliation.
+ */
+export declare function canonicalRepoTarget(raw: string, opts?: ResolveOptions): CanonicalRepoTarget;
 /**
  * Does this string plausibly encode more than one path?
  *
