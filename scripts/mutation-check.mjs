@@ -182,6 +182,18 @@ const MUTATIONS = [
     tests: ["tests/rc11/outcome-acp-authority.mjs"],
   },
   {
+    name: "rc.14 stable writes: hard-link aliases cannot carry mutations outside the worktree",
+    file: "dist/safety/stable-write.js",
+    find: "            renameSync(staged.path, armed.path);",
+    replace:
+      "            const direct = openSync(armed.path, constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW);\n" +
+      "            let directOffset = 0;\n" +
+      "            while (directOffset < bytes.length) directOffset += writeSync(direct, bytes, directOffset, bytes.length - directOffset, directOffset);\n" +
+      "            closeSync(direct);\n" +
+      "            unlinkSync(staged.path);",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
     // Repository hosts compare owner/repository identities case-insensitively.
     // Reverting the canonical comparison recreates the live control-plane
     // failure where a lower-cased request cannot match mixed-case config.
