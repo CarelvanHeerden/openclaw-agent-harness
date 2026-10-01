@@ -184,13 +184,72 @@ const MUTATIONS = [
   {
     name: "rc.14 stable writes: hard-link aliases cannot carry mutations outside the worktree",
     file: "dist/safety/stable-write.js",
-    find: "            renameSync(staged.path, armed.path);",
+    find: "            renameSync(armed.staged.path, armed.path);",
     replace:
+      "            const bytes = Buffer.from(armed.content, \"utf8\");\n" +
       "            const direct = openSync(armed.path, constants.O_WRONLY | constants.O_TRUNC | constants.O_NOFOLLOW);\n" +
       "            let directOffset = 0;\n" +
       "            while (directOffset < bytes.length) directOffset += writeSync(direct, bytes, directOffset, bytes.length - directOffset, directOffset);\n" +
       "            closeSync(direct);\n" +
-      "            unlinkSync(staged.path);",
+      "            unlinkSync(armed.staged.path);",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
+    name: "rc.14 stable writes: approved bytes are staged before permission returns",
+    file: "dist/safety/stable-write.js",
+    find: "                    while (offset < bytes.length)\n                        offset += writeSync(fd, bytes, offset, bytes.length - offset, offset);",
+    replace: "                    offset = bytes.length;",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
+    name: "rc.14 stable writes: a post-approval stage hard link refuses publication",
+    file: "dist/safety/stable-write.js",
+    find: "            opened.nlink !== 1 ||\n            opened.size !== armed.staged.size ||",
+    replace: "            false ||\n            opened.size !== armed.staged.size ||",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
+    name: "rc.14 stable writes: staged bytes remain bound to exact approved content",
+    file: "dist/safety/stable-write.js",
+    find: "            !this.readStage(armed.staged).equals(expected)) {",
+    replace: "            false) {",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
+    name: "rc.14 stable writes: staged bytes are synced before permission returns",
+    file: "dist/safety/stable-write.js",
+    find: "                    this.sync(fd);",
+    replace: "                    void fd;",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
+    name: "rc.14 stable writes: atomic publication syncs the parent directory",
+    file: "dist/safety/stable-write.js",
+    find: "            renameSync(armed.staged.path, armed.path);\n            this.sync(armed.parentFd);",
+    replace: "            renameSync(armed.staged.path, armed.path);",
+    tests: ["tests/rc14-stable-write.test.mjs"],
+  },
+  {
+    name: "rc.14 stable writes: publication remains bound to the approved parent identity",
+    file: "dist/safety/stable-write.js",
+    find:
+      "        try {\n" +
+      "            this.assertParentUnchanged(armed);\n" +
+      "            this.assertTargetUnchanged(armed);\n" +
+      "            this.assertStageUnchanged(armed);\n" +
+      "            this.assertParentUnchanged(armed);\n" +
+      "            this.assertTargetUnchanged(armed);\n" +
+      "            renameSync(armed.staged.path, armed.path);\n" +
+      "            this.sync(armed.parentFd);\n" +
+      "            const live = lstatSync(armed.path);",
+    replace:
+      "        try {\n" +
+      "            this.assertTargetUnchanged(armed);\n" +
+      "            this.assertStageUnchanged(armed);\n" +
+      "            this.assertTargetUnchanged(armed);\n" +
+      "            renameSync(armed.staged.path, armed.path);\n" +
+      "            this.sync(armed.parentFd);\n" +
+      "            const live = lstatSync(armed.path);",
     tests: ["tests/rc14-stable-write.test.mjs"],
   },
   {
