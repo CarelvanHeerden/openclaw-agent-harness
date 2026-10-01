@@ -58,6 +58,7 @@ export function executionAuthorityDigest(run: ControlRun): string | undefined {
 }
 
 function cleanPath(path: string): string | null {
+  if (/^[A-Za-z]:/.test(path) || /^(?:\\\\|\/\/)/.test(path)) return null;
   const replaced = path.replaceAll("\\", "/").replace(/^\.\//, "");
   const normalized = posix.normalize(replaced);
   if (!normalized || normalized === "." || normalized === ".." || normalized.startsWith("../") || normalized.startsWith("/")) return null;
@@ -69,6 +70,20 @@ function pathWithin(path: string, root: string): boolean {
   const scopeRoot = cleanPath(root)?.replace(/\/\*\*$/, "") ?? null;
   if (scopeRoot === "**" || scopeRoot === "*") return candidate !== null;
   return candidate !== null && scopeRoot !== null && (candidate === scopeRoot || candidate.startsWith(`${scopeRoot}/`));
+}
+
+function publicationDestination(value: string | undefined): string | null {
+  if (!value || value !== value.trim() || /[\s*?\[\]{}~^\\]/.test(value) || value.startsWith("+") || value.includes("..") || value.includes("@{")) return null;
+  const separator = value.indexOf(":");
+  let destination = value;
+  if (separator >= 0) {
+    const source = value.slice(0, separator);
+    destination = value.slice(separator + 1);
+    if (source !== "HEAD" || !destination) return null;
+  }
+  destination = destination.replace(/^refs\/heads\//, "");
+  if (!destination || destination.startsWith("/") || destination.endsWith("/") || destination.includes("//") || destination.endsWith(".") || destination.endsWith(".lock")) return null;
+  return destination;
 }
 
 function terminate(reason: Exclude<AuthorityDecision, { outcome: "approve" }>["reason"]): AuthorityDecision {
@@ -83,6 +98,7 @@ export function createAuthorityEnvelope(input: AuthorityEnvelope): AuthorityEnve
   if (!digestPattern.test(input.briefDigest) || !digestPattern.test(input.policyDigest)) throw new Error("Authority digests must be lowercase SHA-256 values");
   if (input.expiresAt <= input.issuedAt) throw new Error("Authority envelope expiry must follow issuance");
   if (input.scope.paths.length === 0 || input.scope.paths.some((path) => cleanPath(path) === null)) throw new Error("Authority scope paths must be relative and non-empty");
+  const portablePaths=input.scope.paths.map((path)=>cleanPath(path)!);if(new Set(portablePaths.map((path)=>path.toLowerCase())).size!==new Set(portablePaths).size)throw new Error("Authority scope paths are case-ambiguous");
   if (input.allowedActions.length === 0 || input.allowedActions.some((action) => !SAFE_AUTHORITY_ACTIONS.includes(action) || prohibitedActions.has(action))) throw new Error("Authority envelope contains an unsafe action");
   const limits = input.limits;
   if (![limits.budgetUsd, limits.activeTimeMs, limits.cycles, limits.retries].every(Number.isFinite) || limits.budgetUsd < 0 || limits.activeTimeMs < 0 || limits.cycles < 0 || limits.retries < 0) throw new Error("Authority limits must be finite and non-negative");
@@ -108,7 +124,12 @@ export function evaluateAuthority(envelope: AuthorityEnvelope, request: Authorit
   if (request.credentialChange) return terminate("credential_change");
   if (request.irreversibleSideEffect) return terminate("irreversible_side_effect");
   if (request.action === "deploy" && !request.deploymentDeclared) return terminate("undeclared_deployment");
-  if (request.action === "push_feature_branch" && (!request.targetRef || request.targetRef === envelope.baseRef)) return terminate("default_branch_push");
+  if (request.action === "push_feature_branch") {
+    const destination = publicationDestination(request.targetRef);
+    const allocated = publicationDestination(request.allocatedFeatureRef);
+    const base = publicationDestination(envelope.baseRef);
+    if (!destination || !allocated || destination === base || destination !== allocated) return terminate("default_branch_push");
+  }
   if (!envelope.allowedActions.includes(request.action as never) || prohibitedActions.has(request.action)) return terminate("action_not_allowed");
   if ((request.paths ?? []).some((path) => !envelope.scope.paths.some((root) => pathWithin(path, root)))) return terminate("path_out_of_scope");
   if (request.projectedBudgetUsd > envelope.limits.budgetUsd) return terminate("budget_expansion");

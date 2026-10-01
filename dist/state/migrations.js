@@ -445,6 +445,21 @@ UPDATE control_host_attestation_capabilities
 UPDATE control_metadata SET value='10',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
     }),
+    Object.freeze({
+        id: "20261001_011_read_only_monitor_capabilities",
+        sql: `
+CREATE TABLE control_monitor_capabilities (
+  token_digest TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE REFERENCES control_runs(id) ON DELETE CASCADE,
+  actor_identity TEXT NOT NULL,
+  conversation_identity TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX idx_control_monitor_capability_run
+  ON control_monitor_capabilities(run_id);
+UPDATE control_metadata SET value='11',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+    }),
 ]);
 function terminaliseLegacyControlChanges(db) {
     const present = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_changes'").get();

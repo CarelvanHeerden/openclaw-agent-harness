@@ -770,6 +770,7 @@ interface ConfirmedControlAuthorityCheck {
     kind: "implementation_choice" | "replan" | "retry" | "repair" | "verification_retry" | "review_repair";
     action: "implement" | "retry" | "repair" | "test" | "commit" | "push_feature_branch" | "open_pull_request" | "update_pull_request" | "deploy";
     paths?: readonly string[];
+    targetRef?: string;
     projectedBudgetUsd: number;
     projectedActiveTimeMs: number;
     projectedCycles: number;

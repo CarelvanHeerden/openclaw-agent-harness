@@ -55,6 +55,7 @@ setting it REPLACES the default rather than extending it.
 
 - **`control.lease_ttl_ms`** — `integer`, default `120000`. Durable autonomous executor lease TTL. Every state write is fenced by the acquired lease generation.
 - **`control.authority_ttl_seconds`** — `integer`, default `7200`. Validity window for the immutable confirmation authority envelope.
+- **`control.proposal_ttl_seconds`** — `integer`, no default; unset unless you set it. Optional prepared-proposal lifetime. Omit to disable age-only expiry; confirmation always revalidates repository, revision, policy, credentials, and security classification.
 - **`control.readiness_timeout_seconds`** — `integer`, default `1800`. Maximum exact-head readiness observation window before indeterminate evidence fails terminally.
 
 #### `slack`

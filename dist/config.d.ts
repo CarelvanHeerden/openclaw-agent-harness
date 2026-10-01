@@ -63,6 +63,8 @@ export interface ControlConfig {
     lease_ttl_ms: number;
     /** Confirmation authority validity window. */
     authority_ttl_seconds: number;
+    /** Optional prepared-proposal lifetime. Omitted means no age-only expiry; confirmation still revalidates every bound fact. */
+    proposal_ttl_seconds?: number;
     /** Exact-head CI must reach a determinate result inside this window. */
     readiness_timeout_seconds: number;
 }

@@ -116,6 +116,13 @@ test("rc.9 probe: individually-represented paths still behave exactly as before"
   assert.equal((await g(edit("README.md"))).allow, true);
 });
 
+test("path policy rejects platform-ambiguous Windows roots and normalises relative separators", () => {
+  for (const path of ["C:/repo/file.txt", "C:\\repo\\file.txt", "C:file.txt", "\\\\server\\share\\file.txt", "//server/share/file.txt"]) {
+    assert.match(resolvePathForPolicy(path).refuse ?? "", /Windows drive.*UNC paths are unsupported/);
+  }
+  assert.deepEqual(resolvePathForPolicy("src\\control\\authority.ts").candidates, ["src/control/authority.ts"]);
+});
+
 /* ------------------------------------------------------------------ *
  * 1. The authorised template
  * ------------------------------------------------------------------ */

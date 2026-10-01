@@ -69,6 +69,8 @@ export interface ControlConfig {
   lease_ttl_ms: number;
   /** Confirmation authority validity window. */
   authority_ttl_seconds: number;
+  /** Optional prepared-proposal lifetime. Omitted means no age-only expiry; confirmation still revalidates every bound fact. */
+  proposal_ttl_seconds?: number;
   /** Exact-head CI must reach a determinate result inside this window. */
   readiness_timeout_seconds: number;
 }
@@ -2007,6 +2009,9 @@ export function parseHarnessConfig(input: unknown): HarnessConfig {
   }
   if (merged.repos.allowed.length === 0) {
     throw new Error("harness.repos.allowed must list at least one owner or owner/repo glob");
+  }
+  if (merged.control.proposal_ttl_seconds!==undefined&&(!Number.isSafeInteger(merged.control.proposal_ttl_seconds)||merged.control.proposal_ttl_seconds<60||merged.control.proposal_ttl_seconds>2_592_000)) {
+    throw new Error("harness.control.proposal_ttl_seconds must be an integer between 60 and 2592000 when configured");
   }
   // beta.63 (Part A): clamp the stall watchdog window to a sane range. It must
   // be larger than the longest legit phase (adversary review + push) so a

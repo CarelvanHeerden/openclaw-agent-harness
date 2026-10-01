@@ -25,6 +25,8 @@ function exactSet(left, right) {
 }
 function cleanPath(path) { return path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""); }
 function within(path, root) {
+    if (/^[A-Za-z]:/.test(path) || /^(?:\\\\|\/\/)/.test(path))
+        return false;
     const candidate = cleanPath(path);
     const allowed = cleanPath(root).replace(/\/\*\*$/, "");
     return allowed === "**" || allowed === "**/*" || candidate === allowed || candidate.startsWith(`${allowed}/`);

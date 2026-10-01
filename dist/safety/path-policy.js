@@ -158,9 +158,13 @@ function lexicalNormalise(p) {
  * which the guard turns into a denial.
  */
 export function resolvePathForPolicy(raw, opts = {}) {
-    const trimmed = (raw ?? "").trim();
-    if (!trimmed)
+    const supplied = (raw ?? "").trim();
+    if (!supplied)
         return { raw, candidates: [], refuse: "empty path" };
+    if (/^[A-Za-z]:/.test(supplied) || /^(?:\\\\|\/\/)/.test(supplied)) {
+        return { raw, candidates: [], refuse: "Windows drive, device, and UNC paths are unsupported; use an unambiguous repository-relative POSIX path" };
+    }
+    const trimmed = supplied.replaceAll("\\", "/");
     if (looksLikeMultiplePaths(trimmed)) {
         const n = trimmed.split(", ").filter((s) => s.trim()).length;
         return {

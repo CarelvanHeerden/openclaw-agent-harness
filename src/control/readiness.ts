@@ -72,6 +72,7 @@ function exactSet(left: readonly string[], right: readonly string[]): boolean {
 }
 function cleanPath(path: string): string { return path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/$/, ""); }
 function within(path: string, root: string): boolean {
+  if (/^[A-Za-z]:/.test(path) || /^(?:\\\\|\/\/)/.test(path)) return false;
   const candidate = cleanPath(path); const allowed = cleanPath(root).replace(/\/\*\*$/, "");
   return allowed === "**" || allowed === "**/*" || candidate === allowed || candidate.startsWith(`${allowed}/`);
 }

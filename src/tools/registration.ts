@@ -36,6 +36,16 @@ const CHANGE_ID_SCHEMA = {
   properties: { changeId: { type: "string", pattern: "^chg_[A-Za-z0-9_-]{12,}$" } },
 } as const;
 
+const CHANGE_RESULT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["changeId"],
+  properties: {
+    changeId: { type: "string", pattern: "^chg_[A-Za-z0-9_-]{12,}$" },
+    monitorToken: { type: "string", minLength: 32, maxLength: 128, description: "Opaque read-only capability returned with the prepared change. Use it for detached monitoring; it grants no execution or merge authority." },
+  },
+} as const;
+
 const PREPARE_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -129,7 +139,8 @@ function tool(
             : undefined,
         } satisfies TrustedControlContext;
         const actor = trusted.requesterSenderId?.trim() ?? "";
-        if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
+        const delegatedResultRead=name==="harness_change_result"&&typeof call.input.monitorToken==="string"&&call.input.monitorToken.length>=32;
+        if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)&&!delegatedResultRead) {
           throw new ControlError("unauthorised_requester", "This requester is not authorised to use the change service.");
         }
         return await run(serviceFor(runtime), call.input, trusted);
@@ -176,10 +187,10 @@ export function registerHarnessTools(api: HarnessPluginApi, runtime: ControlRunt
     )],
     ["harness_change_result", (context) => tool(
       "harness_change_result",
-      "Read the safe current or final outcome of a change.",
-      CHANGE_ID_SCHEMA,
+      "Read the safe current or final outcome of a change. For detached monitoring, preserve and supply the opaque read-only token returned by prepare.",
+      CHANGE_RESULT_SCHEMA,
       context,
-      (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted),
+      (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted, typeof input.monitorToken==="string"?input.monitorToken:undefined),
       rt,
     )],
     ["harness_merge_change", (context) => tool(

@@ -30,9 +30,11 @@
  *     rather than a silent hole.
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { AcpGuardVerdict, AcpTargetEvidence, AcpToolCallForGuard, GuardDenial } from "../safety/bash-guard.js";
+import { StableWriteBroker } from "../safety/stable-write.js";
+import { canonicalRepoTarget } from "../safety/path-policy.js";
 import { redactSecrets } from "./git-worktree.js";
 import { buildAgentEnv } from "./shared/env.js";
 import { runStructuredLadder } from "./shared/structured.js";
@@ -543,6 +545,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
   let tokensOut = 0;
   let tokensCached = 0;
   let sawTokenSplit = false;
+  const stableWrites = new StableWriteBroker(worktreePath);
 
   const recordPromptUsage = (u: AcpPromptUsage): void => {
     const n = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0);
@@ -832,27 +835,31 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
             });
           }
         }
+        const delegated = (call as AcpToolCallForGuard & { content?: Array<{ type?: string; path?: string; newText?: string }> }).content;
+        if (call.kind === "edit" && Array.isArray(delegated) && delegated.length === 1 && typeof delegated[0]?.path === "string" && typeof delegated[0]?.newText === "string") {
+          try {
+            const delegatedTarget=canonicalRepoTarget(delegated[0].path,{repoRoot:worktreePath,realpath:realpathSync});
+            const checked=new Set((verdict.checkedPaths??[]).map((path)=>canonicalRepoTarget(path,{repoRoot:worktreePath,realpath:realpathSync}).path).filter((path):path is string=>!!path));
+            if(!delegatedTarget.path||delegatedTarget.refuse||!checked.has(delegatedTarget.path))throw new Error("delegated write target differs from the guard-approved target");
+            stableWrites.arm(delegated[0].path, delegated[0].newText);
+          } catch (error) {
+            const reason=`stable mutation target refused: ${String(error)}`;
+            denied.push({kind:call.kind,title:typeof call.title==="string"?call.title:undefined,reason});
+            pushLog(`[guard] DENIED edit: ${reason}`);
+            const reject=options.find((o)=>o.kind==="reject_once")??options.find((o)=>o.kind==="reject_always");
+            return reject?.optionId?{outcome:{outcome:"selected",optionId:reject.optionId}}:{outcome:{outcome:"cancelled"}};
+          }
+        }
         allowedToolCalls += 1;
         const allow = options.find((o) => o.kind === "allow_once") ?? options[0];
         return { outcome: { outcome: "selected", optionId: allow?.optionId } };
       }
-      // We advertise `fs: {readTextFile: false, writeTextFile: false}`, so
-      // neither of these should arrive. The captured OpenCode 1.18.11 sessions
-      // in `probe/runs/` show it sending `fs/write_text_file` regardless, right
-      // after the `session/request_permission` for the same edit — it asks us
-      // for approval, then asks us to perform the write.
-      //
-      // Answering must not deadlock the agent, but it must also not LIE. The
-      // previous `return {}` read as success on a write that never happened,
-      // so a worker delegating its edits to the client silently lost all of
-      // them and then reported the sub-task complete. An error is the honest
-      // answer and it is also the useful one: the agent falls back to its own
-      // file tooling, which routes through `bash`/`edit` and therefore through
-      // the permission round-trip and the guard.
       if (method === "fs/write_text_file") {
-        const p = rpcParams as { path?: string };
-        pushLog(`[acp] refused client-side write to ${String(p?.path ?? "?")}: fs capability is not offered`);
-        throw new AcpClientCapabilityError("fs/write_text_file");
+        const p = rpcParams as { path?: string; content?: string };
+        if(typeof p.path!=="string"||typeof p.content!=="string")throw new Error("delegated write omitted its exact path or content");
+        stableWrites.commit(p.path,p.content);
+        pushLog(`[acp] applied one descriptor-bound client write`);
+        return {};
       }
       if (method === "fs/read_text_file") {
         throw new AcpClientCapabilityError("fs/read_text_file");
@@ -880,7 +887,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
   try {
     const initResult = (await conn.request("initialize", {
       protocolVersion: 1,
-      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: true }, terminal: false },
     })) as { agentInfo?: { name?: string; version?: string } } | undefined;
 
     // M9: record what actually launched. Warn-on-mismatch rather than refuse —
@@ -1018,6 +1025,7 @@ export async function runWorkerAcp(params: RunWorkerAcpParams): Promise<RunWorke
     pushLog(`[acp] ${scrub(String(err))}`);
   } finally {
     for (const t of timers) clearTimeout(t as NodeJS.Timeout);
+    stableWrites.close();
     reap();
   }
   if (abortReason) stopReason = abortReason;

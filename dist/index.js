@@ -1696,6 +1696,7 @@ function bootstrapHarnessSync(api) {
         maximumTimeSeconds: config.loop?.session_hard_timeout_seconds,
         maximumCycles: config.loop?.max_cycles,
         maximumRetries: Math.max(1, config.loop?.worker_protocol_max_attempts ?? 1) + (config.loop?.worker_timeout_retry_enabled === false ? 0 : 1),
+        confirmationTtlMs: config.control.proposal_ttl_seconds === undefined ? undefined : config.control.proposal_ttl_seconds * 1000,
         resolveRepository: async ({ repository, baseRef, actorIdentity }) => {
             const ref = baseRef?.trim() || config.repos?.default_base_branch || "main";
             assertControlRepoAllowed(repository);
@@ -1772,6 +1773,8 @@ function bootstrapHarnessSync(api) {
                         nonce: controlRun.authorityEnvelope.nonce,
                         action: check.action,
                         paths: check.paths ?? [],
+                        targetRef: check.targetRef,
+                        allocatedFeatureRef: String(state.db.prepare(`SELECT branch FROM sessions WHERE id=?`).get(change.changeId)?.branch ?? ""),
                         projectedBudgetUsd: check.projectedBudgetUsd,
                         projectedActiveTimeMs: check.projectedActiveTimeMs,
                         projectedCycles: check.projectedCycles,
@@ -1783,8 +1786,8 @@ function bootstrapHarnessSync(api) {
                 if (decision.outcome === "terminate")
                     throw new Error(decision.code);
             };
-            const boundProviderCredential = async (action, kind = "verification_retry") => {
-                authorize({ kind, action, paths: [], projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
+            const boundProviderCredential = async (action, kind = "verification_retry", targetRef) => {
+                authorize({ kind, action, paths: [], targetRef, projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
                 const boundRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
                 if (controlCredentialRouteDigest(boundRoute) !== change.credentialRouteDigest)
                     throw new Error("credential_escalation");
@@ -1803,7 +1806,8 @@ function bootstrapHarnessSync(api) {
             const outcome = terminalLegacyPublication
                 ? { status: "shipped", sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
                 : await loop.runConfirmedControl(change.changeId, controlledBrief, createInternalConfirmedControlAuthorityGuard(authorize), async (action) => {
-                    authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
+                    const branch = String(state.db.prepare(`SELECT branch FROM sessions WHERE id=?`).get(change.changeId)?.branch ?? "");
+                    authorize({ kind: "implementation_choice", action, paths: [], targetRef: action === "push_feature_branch" ? branch : undefined, projectedBudgetUsd: Number(state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number(state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId)?.cycles_ran ?? 0), projectedRetries: 0 });
                     const freshRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0], repoFullName: change.repositoryIdentity });
                     if (controlCredentialRouteDigest(freshRoute) !== change.credentialRouteDigest)
                         throw new Error("credential_escalation");

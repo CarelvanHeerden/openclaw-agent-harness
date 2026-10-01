@@ -125,13 +125,13 @@ test("the write is delegated AFTER the permission round-trip, not instead of it"
 // The adapter's answer
 // ---------------------------------------------------------------------------
 
-test("the adapter refuses a capability it declined, rather than falsely reporting success", () => {
+test("the adapter advertises only descriptor-bound writes and still refuses client reads", () => {
   const src = readFileSync(resolve(root, "src/adapters/acp.ts"), "utf8");
 
-  // It must not silently succeed.
   assert.match(src, /AcpClientCapabilityError/, "there is no distinct capability-refusal error");
-  assert.match(src, /if \(method === "fs\/write_text_file"\)[\s\S]{0,600}throw new AcpClientCapabilityError/,
-    "fs/write_text_file no longer refuses");
+  assert.match(src, /writeTextFile:\s*true/);
+  assert.match(src, /if \(method === "fs\/write_text_file"\)[\s\S]{0,600}stableWrites\.commit/,
+    "fs/write_text_file is not routed through the stable descriptor broker");
   assert.match(src, /if \(method === "fs\/read_text_file"\)[\s\S]{0,200}throw new AcpClientCapabilityError/,
     "fs/read_text_file no longer refuses");
 
@@ -228,8 +228,8 @@ test("the agent is told the delegated write FAILED, not that it succeeded", asyn
   assert.ok(write, "the agent never received an answer to fs/write_text_file");
   assert.equal(write.ok, false,
     "the agent was told its delegated write SUCCEEDED; it never happened, and the worker's edits are gone");
-  assert.equal(write.errorCode, -32601,
-    "a declined capability was not reported as method-not-found, so the agent may retry rather than fall back");
+  assert.equal(write.errorCode, -32603,
+    "an unbound delegated mutation was not reported as a guarded execution failure");
 });
 
 test("permission requests are still answered successfully, so the refusal is targeted", () => {

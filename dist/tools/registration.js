@@ -27,6 +27,15 @@ const CHANGE_ID_SCHEMA = {
     required: ["changeId"],
     properties: { changeId: { type: "string", pattern: "^chg_[A-Za-z0-9_-]{12,}$" } },
 };
+const CHANGE_RESULT_SCHEMA = {
+    type: "object",
+    additionalProperties: false,
+    required: ["changeId"],
+    properties: {
+        changeId: { type: "string", pattern: "^chg_[A-Za-z0-9_-]{12,}$" },
+        monitorToken: { type: "string", minLength: 32, maxLength: 128, description: "Opaque read-only capability returned with the prepared change. Use it for detached monitoring; it grants no execution or merge authority." },
+    },
+};
 const PREPARE_SCHEMA = {
     type: "object",
     additionalProperties: false,
@@ -104,7 +113,8 @@ function tool(name, description, parameters, context, run, runtime, attestedOper
                         : undefined,
                 };
                 const actor = trusted.requesterSenderId?.trim() ?? "";
-                if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor)) {
+                const delegatedResultRead = name === "harness_change_result" && typeof call.input.monitorToken === "string" && call.input.monitorToken.length >= 32;
+                if (runtime.authorisedUsers && !runtime.authorisedUsers.includes(actor) && !delegatedResultRead) {
                     throw new ControlError("unauthorised_requester", "This requester is not authorised to use the change service.");
                 }
                 return await run(serviceFor(runtime), call.input, trusted);
@@ -133,7 +143,7 @@ export function registerHarnessTools(api, runtime) {
                 },
             }), rt)],
         ["harness_confirm_change", (context) => tool("harness_confirm_change", "Use only when the current authenticated user turn clearly approves the exact prepared proposal. OpenClaw interprets the user's ordinary language; this tool cannot run without that fresh host-observed turn.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.confirm(String(input.changeId ?? ""), trusted), rt, "confirm_change")],
-        ["harness_change_result", (context) => tool("harness_change_result", "Read the safe current or final outcome of a change.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted), rt)],
+        ["harness_change_result", (context) => tool("harness_change_result", "Read the safe current or final outcome of a change. For detached monitoring, preserve and supply the opaque read-only token returned by prepare.", CHANGE_RESULT_SCHEMA, context, (service, input, trusted) => service.result(String(input.changeId ?? ""), trusted, typeof input.monitorToken === "string" ? input.monitorToken : undefined), rt)],
         ["harness_merge_change", (context) => tool("harness_merge_change", "Use only when the current authenticated user turn clearly authorizes merging the exact ready pull request. This requires a separate fresh host-observed turn.", CHANGE_ID_SCHEMA, context, (service, input, trusted) => service.merge(String(input.changeId ?? ""), trusted), rt, "merge_change")],
     ];
     for (const [name, build] of definitions) {

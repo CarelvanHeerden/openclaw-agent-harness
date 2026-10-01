@@ -168,6 +168,13 @@ const MUTATIONS = [
     tests: ["tests/control-service.test.mjs"],
   },
   {
+    name: "control authority: feature push is bound to the allocated run branch",
+    file: "dist/control/authority.js",
+    find: "if (!destination || !allocated || destination === base || destination !== allocated)",
+    replace: "if (!destination || !allocated || destination === base)",
+    tests: ["tests/control-foundation.test.mjs"],
+  },
+  {
     name: "rc.14 edit targets: reconcile against canonical worktree identity",
     file: "dist/safety/bash-guard.js",
     find: "const denyIfBlockedPaths = (call, label) => {\n        const evidence = acpTargetEvidenceFromToolCall(call, resolveOpts);",

@@ -39,6 +39,12 @@
             "default": 7200,
             "description": "Validity window for the immutable confirmation authority envelope."
           },
+          "proposal_ttl_seconds": {
+            "type": "integer",
+            "minimum": 60,
+            "maximum": 2592000,
+            "description": "Optional prepared-proposal lifetime. Omit to disable age-only expiry; confirmation always revalidates repository, revision, policy, credentials, and security classification."
+          },
           "readiness_timeout_seconds": {
             "type": "integer",
             "minimum": 30,

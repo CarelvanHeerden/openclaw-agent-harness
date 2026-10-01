@@ -5704,6 +5704,7 @@ export class OrchestratorLoop {
                             kind: "implementation_choice",
                             action: "push_feature_branch",
                             paths: [],
+                            targetRef: plan.branch,
                             projectedCycles: cycle,
                             projectedRetries: 0,
                         });
@@ -9134,6 +9135,7 @@ export class OrchestratorLoop {
                     kind: "implementation_choice",
                     action: "push_feature_branch",
                     paths: [],
+                    targetRef: plan.branch,
                     projectedCycles: cycle,
                     projectedRetries: 0,
                 });

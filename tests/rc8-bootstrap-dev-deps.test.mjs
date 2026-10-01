@@ -127,6 +127,8 @@ function npm(cwd, args, root) {
 function prodEnv(root) {
   return {
     NODE_ENV: "production",
+    NPM_CONFIG_PRODUCTION: "true",
+    NPM_CONFIG_OMIT: "dev",
     npm_config_userconfig: join(root, "user-npmrc"),
     npm_config_globalconfig: join(root, "global-npmrc"),
     npm_config_cache: join(root, "npm-cache"),
@@ -263,11 +265,11 @@ test("rc.8: a complete node_modules is still left alone", async () => {
 
 test("rc.8: the harness fixes this in its own command, not in npm's configuration", () => {
   const src = S("src/adapters/git-worktree.ts");
-  // Setting NODE_ENV or writing an .npmrc would fix the symptom by mutating
-  // state the harness does not own -- the host workaround, moved into code.
+  // Writing an .npmrc would mutate state the harness does not own. The child
+  // install may remove inherited production/omit flags from its private env.
   assert.doesNotMatch(src, /npmrc/i);
   assert.doesNotMatch(src, /process\.env\.NODE_ENV\s*=/);
-  assert.doesNotMatch(src, /npm_config_/i);
+  assert.match(src, /NPM_CONFIG_OMIT/);
   // One expression, so the two branches cannot diverge again.
   assert.match(src, /hasLock \? "ci" : "install", "--include=dev"/);
 });

@@ -1819,7 +1819,12 @@ esac
      */
     runCmd(cmd, args, cwd, timeoutMs) {
         return new Promise((resolveP, rejectP) => {
-            const proc = spawn(cmd, args, { cwd, env: { ...process.env } });
+            const env = { ...process.env };
+            if (cmd === "npm") {
+                for (const key of ["NODE_ENV", "NPM_CONFIG_PRODUCTION", "npm_config_production", "NPM_CONFIG_OMIT", "npm_config_omit"])
+                    delete env[key];
+            }
+            const proc = spawn(cmd, args, { cwd, env });
             let out = "";
             let err = "";
             let settled = false;

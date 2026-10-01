@@ -113,12 +113,13 @@ export declare class ControlPlaneService {
     private readonly dispatchLeaseMs;
     private readonly recoveryTimer;
     constructor(deps: ControlServiceDeps);
+    private proposalExpiry;
     dispose(): void;
     runForInteraction(changeId: string): ControlRun | null;
     approvalReview(operation: ControlOperation, changeId: string): Record<string, unknown> | null;
     prepare(input: PrepareChangeInput, context: TrustedControlContext): Promise<Record<string, unknown>>;
     confirm(changeId: string, context: TrustedControlContext): Promise<Record<string, unknown>>;
-    result(changeId: string, context: TrustedControlContext): Record<string, unknown>;
+    result(changeId: string, context: TrustedControlContext, monitorToken?: string): Record<string, unknown>;
     /** Resolve one exact pending state for a host-observed human intent. */
     attestationTarget(operation: ControlOperation, actorIdentity: string, conversationIdentity: string, requestedChangeId?: string): AttestationTarget;
     /**

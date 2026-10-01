@@ -73,12 +73,15 @@ export class ControlPlaneService {
     constructor(deps) {
         this.deps = deps;
         this.now = deps.now ?? Date.now;
-        this.ttl = deps.confirmationTtlMs ?? 900_000;
+        this.ttl = deps.confirmationTtlMs === undefined ? null : deps.confirmationTtlMs;
+        if (this.ttl !== null && (!Number.isSafeInteger(this.ttl) || this.ttl <= 0))
+            throw new Error("confirmationTtlMs must be a positive safe integer when configured");
         this.dispatchLeaseMs = deps.dispatchLeaseMs ?? 300_000;
         queueMicrotask(() => { void this.recoverDispatches(); void this.deps.mergeService.recoverPending(); });
         this.recoveryTimer = setInterval(() => { void this.recoverDispatches(); void this.deps.mergeService.recoverPending(); }, Math.max(10, Math.min(30_000, Math.floor(this.dispatchLeaseMs / 3))));
         this.recoveryTimer.unref?.();
     }
+    proposalExpiry(now) { return this.ttl === null ? 8_640_000_000_000_000 : now + this.ttl; }
     dispose() { clearInterval(this.recoveryTimer); }
     runForInteraction(changeId) { return this.deps.repository.getRun(changeId); }
     approvalReview(operation, changeId) {
@@ -88,7 +91,7 @@ export class ControlPlaneService {
         if (operation === "merge_change") {
             return { operation, changeId, repository: run.repository, baseRef: run.baseRef, pullRequest: { number: p.pr_number, url: p.pr_url, headSha: p.published_sha }, readinessDigest: p.readiness_digest };
         }
-        return { operation, changeId, repository: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), allowedActions: [...run.authorityEnvelope.allowedActions], limits: { budgetUsd: run.authorityEnvelope.limits.budgetUsd, activeTimeMs: run.authorityEnvelope.limits.activeTimeMs, cycles: run.authorityEnvelope.limits.cycles, retries: run.authorityEnvelope.limits.retries }, risk: p.security_class, assumptions: JSON.parse(p.assumptions_json), proposalExpiresAt: p.proposal_expires_at };
+        return { operation, changeId, repository: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), allowedActions: [...run.authorityEnvelope.allowedActions], limits: { budgetUsd: run.authorityEnvelope.limits.budgetUsd, activeTimeMs: run.authorityEnvelope.limits.activeTimeMs, cycles: run.authorityEnvelope.limits.cycles, retries: run.authorityEnvelope.limits.retries }, risk: p.security_class, assumptions: JSON.parse(p.assumptions_json), ...(this.ttl === null ? {} : { proposalExpiresAt: p.proposal_expires_at }) };
     }
     async prepare(input, context) {
         const { actor, conversation } = contextIdentity(context);
@@ -111,8 +114,10 @@ export class ControlPlaneService {
         if (scope.length === 0)
             throw new ControlError("invalid_scope", "At least one explicit repository-relative scope path is required.");
         const excluded = [...new Set(input.excludedScope === undefined ? brief.outOfScope : validateScope(input.excludedScope, "excludedScope"))];
-        if ([...scope, ...excluded].some(p => p.startsWith("/") || p.includes("\\") || p.split("/").includes("..")))
-            throw new ControlError("path_violation", "Scope paths must be repository-relative.");
+        if ([...scope, ...excluded].some(p => p.startsWith("/") || p.startsWith("//") || /^[A-Za-z]:/.test(p) || p.includes("\\") || p.split("/").includes("..")))
+            throw new ControlError("path_violation", "Scope paths must be unambiguous repository-relative POSIX paths.");
+        if (new Set([...scope, ...excluded].map((path) => path.toLowerCase())).size !== new Set([...scope, ...excluded]).size)
+            throw new ControlError("path_violation", "Scope paths must not differ only by letter case.");
         const maxBudget = this.deps.maximumBudgetUsd ?? 50;
         const budget = Math.min(input.budgetUsd ?? Math.min(12, maxBudget), maxBudget);
         if (!Number.isFinite(budget) || budget <= 0)
@@ -125,13 +130,16 @@ export class ControlPlaneService {
         const id = `chg_${randomBytes(18).toString("base64url")}`;
         const briefDigest = digest(brief);
         const credentialRouteDigest = digest(resolved.credentialRoute);
+        const monitorToken = randomBytes(32).toString("base64url");
         const cycles = Math.max(1, Math.floor(this.deps.maximumCycles ?? 3));
         const retries = Math.max(0, Math.floor(this.deps.maximumRetries ?? 10));
-        const authority = createAuthorityEnvelope({ version: 1, requesterId: actor, conversationId: conversation, repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, briefDigest, policyDigest: resolved.policyDigest, scope: { paths: scope }, allowedActions: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"], limits: { budgetUsd: budget, activeTimeMs: time * 1000, cycles, retries }, issuedAt: now, expiresAt: now + this.ttl, nonce: randomBytes(18).toString("base64url") });
+        const proposalExpiresAt = this.proposalExpiry(now);
+        const authority = createAuthorityEnvelope({ version: 1, requesterId: actor, conversationId: conversation, repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, briefDigest, policyDigest: resolved.policyDigest, scope: { paths: scope }, allowedActions: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"], limits: { budgetUsd: budget, activeTimeMs: time * 1000, cycles, retries }, issuedAt: now, expiresAt: proposalExpiresAt, nonce: randomBytes(18).toString("base64url") });
         let run = this.deps.repository.createRun({ id, authority, createdAt: now });
         run = this.deps.repository.transition({ runId: id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "control_service", reason: "prepared", at: now });
-        this.deps.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,policy_version,minimum_runtime_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, 1, 1, resolved.baseRevision, JSON.stringify(brief), JSON.stringify(scope), JSON.stringify(excluded), credentialRouteDigest, resolved.securityClass, JSON.stringify(assumptions), now + this.ttl, CONTROL_PLANE_CONTRACT_VERSION, this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14", now, now);
-        return { ok: true, changeId: id, state: "prepared", confirmable: true, summary: brief.title, brief: structuredClone(brief), repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, baseRevision: resolved.baseRevision, scope, excludedScope: excluded, allowedActions: [...authority.allowedActions], budget: { currency: "USD", maximum: budget.toFixed(2) }, timeLimitSeconds: time, limits: { cycles, retries }, risk: resolved.securityClass, assumptions, contract: { policyVersion: CONTROL_PLANE_CONTRACT_VERSION, minimumRuntimeVersion: this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14" }, confirmation: { expiresAt: new Date(now + this.ttl).toISOString(), reviewDigest: this.confirmBindingDigest(id) } };
+        this.deps.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,policy_version,minimum_runtime_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, 1, 1, resolved.baseRevision, JSON.stringify(brief), JSON.stringify(scope), JSON.stringify(excluded), credentialRouteDigest, resolved.securityClass, JSON.stringify(assumptions), proposalExpiresAt, CONTROL_PLANE_CONTRACT_VERSION, this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14", now, now);
+        this.deps.db.prepare(`INSERT INTO control_monitor_capabilities (token_digest,run_id,actor_identity,conversation_identity,created_at) VALUES (?,?,?,?,?)`).run(digest(monitorToken), id, actor, conversation, now);
+        return { ok: true, changeId: id, state: "prepared", confirmable: true, summary: brief.title, brief: structuredClone(brief), repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, baseRevision: resolved.baseRevision, scope, excludedScope: excluded, allowedActions: [...authority.allowedActions], budget: { currency: "USD", maximum: budget.toFixed(2) }, timeLimitSeconds: time, limits: { cycles, retries }, risk: resolved.securityClass, assumptions, contract: { policyVersion: CONTROL_PLANE_CONTRACT_VERSION, minimumRuntimeVersion: this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14" }, monitoring: { token: monitorToken, readOnly: true, changeId: id }, confirmation: { ...(this.ttl === null ? {} : { expiresAt: new Date(proposalExpiresAt).toISOString() }), reviewDigest: this.confirmBindingDigest(id) } };
     }
     async confirm(changeId, context) {
         const { actor, conversation } = contextIdentity(context);
@@ -146,6 +154,18 @@ export class ControlPlaneService {
             throw new ControlError("wrong_actor", "The confirmation must come from the preparing requester.");
         if (conversation !== run.conversationId || att.conversationIdentity !== run.conversationId)
             throw new ControlError("wrong_conversation", "The confirmation must come from the preparing conversation.");
+        const liveResolution = await this.deps.resolveRepository({ repository: run.repository, baseRef: run.baseRef, actorIdentity: actor });
+        const resolutionChecks = [
+            [liveResolution.repositoryIdentity === run.repository, "repository_identity_changed", "The repository identity changed after review."],
+            [liveResolution.baseRef === run.baseRef, "base_ref_changed", "The base branch changed after review."],
+            [liveResolution.baseRevision === proposal.base_revision, "base_revision_changed", "The base revision changed after review."],
+            [liveResolution.policyDigest === run.policyDigest, "policy_changed", "The repository policy changed after review."],
+            [digest(liveResolution.credentialRoute) === proposal.credential_route_digest, "credential_route_changed", "The credential route changed after review."],
+            [liveResolution.securityClass === proposal.security_class, "security_class_changed", "The repository security classification changed after review."],
+        ];
+        const mismatch = resolutionChecks.find(([matches]) => !matches);
+        if (mismatch)
+            throw new ControlError(mismatch[1], mismatch[2]);
         const now = this.now();
         if (proposal.confirmable !== 1 || att.issuedAt <= proposal.created_at || att.expiresAt < now || att.issuedAt > now || proposal.proposal_expires_at < now)
             throw new ControlError("stale_confirmation", "The proposal expired or is no longer confirmable.");
@@ -201,7 +221,7 @@ export class ControlPlaneService {
         void this.dispatch(changeId);
         return { ok: true, changeId, state: "running", summary: "Change confirmed and running autonomously.", activatedAt: new Date(now).toISOString(), executionExpiresAt: new Date(now + run.authorityEnvelope.limits.activeTimeMs).toISOString() };
     }
-    result(changeId, context) { const { actor, conversation } = contextIdentity(context); const run = this.deps.repository.getRun(changeId); const p = this.proposal(changeId); if (!run || !p || run.requesterId !== actor || run.conversationId !== conversation)
+    result(changeId, context, monitorToken) { const actor = (context.requesterSenderId ?? "").trim(), conversation = (context.conversationId ?? "").trim(); const run = this.deps.repository.getRun(changeId); const p = this.proposal(changeId); const directlyBound = !!run && run.requesterId === actor && run.conversationId === conversation; const delegated = typeof monitorToken === "string" && monitorToken.length >= 32 && !!this.deps.db.prepare(`SELECT 1 AS allowed FROM control_monitor_capabilities WHERE run_id=? AND token_digest=?`).get(changeId, digest(monitorToken)); if (!run || !p || (!directlyBound && !delegated))
         throw new ControlError("change_not_found", "The change was not found."); const publicState = run.state === "awaiting_confirmation" ? "prepared" : run.state === "autonomous_run" ? "running" : run.state === "awaiting_merge" ? "merging" : run.state === "done" ? "merged" : run.state === "failed" && run.terminalCode === "merge_failed" ? "merge_failed" : run.state; const result = { ok: true, changeId, state: publicState, summary: p.terminal_summary ?? this.summary(run.state), createdAt: new Date(run.createdAt).toISOString(), updatedAt: new Date(run.updatedAt).toISOString(), ...(run.executionActivation ? { execution: { activatedAt: new Date(run.executionActivation.activatedAt).toISOString(), expiresAt: new Date(run.executionActivation.executionExpiresAt).toISOString() } } : {}) }; if (run.state === "pr_ready" && p.pr_url)
         result.pullRequest = { url: p.pr_url }; if (run.state === "failed")
         result.code = run.terminalCode ?? "execution_failed"; return result; }
@@ -223,7 +243,7 @@ export class ControlPlaneService {
             throw new ControlError("stale_confirmation", "The pending state changed.");
         const scope = parseList(p.scope_json), excludedScope = parseList(p.excluded_scope_json);
         const targetDigest = operation === "confirm_change" ? this.confirmBindingDigest(changeId) : controlDigest(MERGE_DOMAIN, { changeId, version: run.version, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, publishedSha: p.published_sha, readinessDigest: p.readiness_digest });
-        return { changeId, targetDigest, updatedAt: run.updatedAt, expiresAt: operation === "confirm_change" ? p.proposal_expires_at : this.now() + this.ttl, budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope, excludedScope };
+        return { changeId, targetDigest, updatedAt: run.updatedAt, expiresAt: operation === "confirm_change" ? p.proposal_expires_at : this.proposalExpiry(this.now()), budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope, excludedScope };
     }
     /**
      * Bind an unqualified raw-user intent to the latest uniquely-created pending

@@ -133,6 +133,24 @@ test("authority terminates deterministic binding, expansion, and prohibited-acti
   }
 });
 
+test("authority binds feature publication to the allocated run branch", () => {
+  const branch = "harness/readme-smoke-test-chg85dfm";
+  for (const targetRef of [branch, `refs/heads/${branch}`, `HEAD:${branch}`, `HEAD:refs/heads/${branch}`]) {
+    assert.deepEqual(
+      authority.evaluateAuthority(makeEnvelope(), makeRequest({ action: "push_feature_branch", targetRef, allocatedFeatureRef: branch })),
+      { outcome: "approve", reason: "in_envelope" },
+      targetRef,
+    );
+  }
+  for (const targetRef of ["main", "HEAD:main", "refs/heads/main", "other", "+HEAD:harness/forced", ":harness/deleted", "HEAD:harness/*"]) {
+    assert.deepEqual(
+      authority.evaluateAuthority(makeEnvelope(), makeRequest({ action: "push_feature_branch", targetRef, allocatedFeatureRef: branch })),
+      { outcome: "terminate", reason: "default_branch_push" },
+      targetRef,
+    );
+  }
+});
+
 test("authority nonce consumption is single-use and replay safe", () => withStore(({ db }) => {
   const repo = new ControlRepository(db);
   const envelope = makeEnvelope();

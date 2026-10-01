@@ -79,6 +79,7 @@ export interface AuthorityRequest {
     readonly action: AuthorityAction | string;
     readonly paths?: readonly string[];
     readonly targetRef?: string;
+    readonly allocatedFeatureRef?: string;
     readonly projectedBudgetUsd: number;
     readonly projectedActiveTimeMs: number;
     readonly projectedCycles: number;

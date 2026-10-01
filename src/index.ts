@@ -27,7 +27,7 @@ import { OrchestratorLoop, createInternalConfirmedControlAuthorityGuard } from "
 type ControlAuthorityCheck = {
   kind: "implementation_choice" | "replan" | "retry" | "repair" | "verification_retry" | "review_repair";
   action: "implement" | "retry" | "repair" | "test" | "commit" | "push_feature_branch" | "open_pull_request" | "update_pull_request" | "deploy";
-  paths?: readonly string[]; projectedBudgetUsd:number; projectedActiveTimeMs:number; projectedCycles:number; projectedRetries:number;
+  paths?: readonly string[]; targetRef?: string; projectedBudgetUsd:number; projectedActiveTimeMs:number; projectedCycles:number; projectedRetries:number;
 };
 import { runningSessionIds } from "./orchestrator/loop.js";
 import { resolveContractPath } from "./orchestrator/path-match.js";
@@ -2093,6 +2093,7 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
     maximumTimeSeconds: config.loop?.session_hard_timeout_seconds,
     maximumCycles: config.loop?.max_cycles,
     maximumRetries: Math.max(1, config.loop?.worker_protocol_max_attempts ?? 1) + (config.loop?.worker_timeout_retry_enabled === false ? 0 : 1),
+    confirmationTtlMs: config.control.proposal_ttl_seconds===undefined?undefined:config.control.proposal_ttl_seconds*1000,
     resolveRepository: async ({ repository, baseRef, actorIdentity }) => {
       const ref = baseRef?.trim() || config.repos?.default_base_branch || "main";
       assertControlRepoAllowed(repository);
@@ -2164,6 +2165,8 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
             nonce: controlRun.authorityEnvelope.nonce,
             action: check.action,
             paths: check.paths ?? [],
+            targetRef: check.targetRef,
+            allocatedFeatureRef: String((state.db.prepare(`SELECT branch FROM sessions WHERE id=?`).get(change.changeId) as {branch?:string}|undefined)?.branch ?? ""),
             projectedBudgetUsd: check.projectedBudgetUsd,
             projectedActiveTimeMs: check.projectedActiveTimeMs,
             projectedCycles: check.projectedCycles,
@@ -2174,8 +2177,8 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         });
         if (decision.outcome === "terminate") throw new Error(decision.code);
       };
-      const boundProviderCredential = async (action: "test"|"push_feature_branch"|"open_pull_request"|"update_pull_request", kind: ControlAuthorityCheck["kind"] = "verification_retry") => {
-        authorize({ kind, action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
+      const boundProviderCredential = async (action: "test"|"push_feature_branch"|"open_pull_request"|"update_pull_request", kind: ControlAuthorityCheck["kind"] = "verification_retry", targetRef?: string) => {
+        authorize({ kind, action, paths: [], targetRef, projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
         const boundRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
         if (controlCredentialRouteDigest(boundRoute) !== change.credentialRouteDigest) throw new Error("credential_escalation");
         route = boundRoute;
@@ -2194,7 +2197,8 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       const outcome = terminalLegacyPublication
         ? { status: "shipped" as const, sessionId: change.changeId, prUrl: existingSession.final_pr_url ?? undefined, cycles: 0, totalCostUsd: 0 }
         : await (loop as unknown as { runConfirmedControl(id:string, brief:CrystallisedBrief, guard:(check:ControlAuthorityCheck)=>void, credentials:(action:"push_feature_branch"|"open_pull_request"|"update_pull_request")=>Promise<{provider:string;apiBase?:string;token:string}>):Promise<import("./orchestrator/legacy-loop.js").LoopOutcome> }).runConfirmedControl(change.changeId, controlledBrief, createInternalConfirmedControlAuthorityGuard(authorize), async (action) => {
-          authorize({ kind: "implementation_choice", action, paths: [], projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
+          const branch = String((state.db.prepare(`SELECT branch FROM sessions WHERE id=?`).get(change.changeId) as {branch?:string}|undefined)?.branch ?? "");
+          authorize({ kind: "implementation_choice", action, paths: [], targetRef: action === "push_feature_branch" ? branch : undefined, projectedBudgetUsd: Number((state.db.prepare(`SELECT cost_usd FROM sessions WHERE id=?`).get(change.changeId) as {cost_usd?:number}|undefined)?.cost_usd ?? 0), projectedActiveTimeMs: projectedActiveTimeMs(), projectedCycles: Number((state.db.prepare(`SELECT cycles_ran FROM sessions WHERE id=?`).get(change.changeId) as {cycles_ran?:number}|undefined)?.cycles_ran ?? 0), projectedRetries: 0 });
           const freshRoute = pat.resolve({ slackUserId: change.actorIdentity, gitHubUser: change.repositoryIdentity.split("/")[0]!, repoFullName: change.repositoryIdentity });
           if (controlCredentialRouteDigest(freshRoute) !== change.credentialRouteDigest) throw new Error("credential_escalation");
           return { provider: freshRoute.provider, apiBase: freshRoute.apiBase, token: await resolveGitToken(freshRoute) };
