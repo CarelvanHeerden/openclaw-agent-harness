@@ -118,6 +118,13 @@ export interface ReviewFinding {
      * it must stop a merge, and no code change can repair a missing binary.
      */
     source?: "ci" | "harness_env" | "deterministic_scope";
+    /** Deterministic local verifier evidence; only `unavailable` may be reconciled by trusted equivalent remote CI. */
+    localVerification?: {
+        kind: "typecheck";
+        state: "unavailable" | "failed";
+        exitCode: number | null;
+        reason: string;
+    };
     dimension: "spec" | "fit" | "quality" | "security" | "runtime";
     /**
      * rc.3: `"unknown"` is a real value here, not a defect. The adversary's JSON

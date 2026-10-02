@@ -1,5 +1,7 @@
-export declare const READINESS_POLICY_VERSION = "strict-readiness/v3";
-export declare const READINESS_FAILURE_CODES: readonly ["review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "blocking_findings", "review_crash", "missing_probes", "stale_publication", "pr_identity_mismatch", "required_ci_unregistered", "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed", "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded", "scope_exceeded", "operation_not_authorized", "credential_route_changed", "secret_exposure", "spend_exceeded"];
+import { type VerificationResolutionEvidence } from "./verification-reconciliation.js";
+import type { ReviewFinding } from "../orchestrator/adversary.js";
+export declare const READINESS_POLICY_VERSION = "strict-readiness/v4";
+export declare const READINESS_FAILURE_CODES: readonly ["review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "verification_resolution_invalid", "blocking_findings", "review_crash", "missing_probes", "stale_publication", "pr_identity_mismatch", "required_ci_unregistered", "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed", "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded", "scope_exceeded", "operation_not_authorized", "credential_route_changed", "secret_exposure", "spend_exceeded"];
 export type ReadinessFailureCode = (typeof READINESS_FAILURE_CODES)[number];
 export interface ExactShaEvidence {
     readonly sha: string;
@@ -49,7 +51,13 @@ export interface BoundReviewEvidence {
 export interface PrReadinessInput {
     readonly finalVerdict: "pass" | "revise" | "block" | "crashed" | "indeterminate";
     readonly blockingFindings: number;
+    readonly reviewBlockingFindings: number;
+    readonly findingClassificationContext: Readonly<{
+        repoHasTestScript: boolean;
+        hasDeclaredGenerators: boolean;
+    }>;
     readonly reviewCompleted: boolean;
+    readonly reviewFindings: readonly ReviewFinding[];
     readonly verificationProbes: Readonly<{
         completed: number;
         required: number;
@@ -88,6 +96,7 @@ export interface PrReadinessInput {
     readonly spendUsd: number;
     readonly budgetUsd: number;
     readonly reviewEvidence: BoundReviewEvidence;
+    readonly verificationResolutions?: readonly VerificationResolutionEvidence[];
 }
 export type PrReadinessResult = Readonly<{
     ready: true;

@@ -358,7 +358,7 @@ export async function getRequiredChecksPolicy(input) {
     }
 }
 async function readGraphqlCheckRollup(input) {
-    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], bindings: [], reason: "" };
+    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], successfulNames: [], bindings: [], successfulBindings: [], reason: "" };
     const [owner, name] = input.repoFullName.split("/");
     if (!owner || !name)
         return { ...miss, reason: "invalid repository identity for GraphQL check rollup" };
@@ -389,6 +389,10 @@ async function readGraphqlCheckRollup(input) {
             context: run.name?.trim() ?? "",
             ...(Number.isSafeInteger(run.checkSuite?.app?.databaseId) && run.checkSuite.app.databaseId > 0 ? { appId: run.checkSuite.app.databaseId } : {}),
         })).filter((binding) => binding.context);
+        const successfulBindings = runs.filter((run) => run.status?.toLowerCase() === "completed" && run.conclusion?.toLowerCase() === "success").map((run) => ({
+            context: run.name?.trim() ?? "",
+            ...(Number.isSafeInteger(run.checkSuite?.app?.databaseId) && run.checkSuite.app.databaseId > 0 ? { appId: run.checkSuite.app.databaseId } : {}),
+        })).filter((binding) => binding.context);
         return {
             ok: true,
             total: runs.length,
@@ -396,7 +400,9 @@ async function readGraphqlCheckRollup(input) {
             failed: runs.filter((run) => FAILED_CONCLUSIONS.includes(run.conclusion?.toLowerCase() ?? "")).length,
             passed: runs.filter((run) => run.status?.toLowerCase() === "completed" && PASSING_CONCLUSIONS.includes(run.conclusion?.toLowerCase() ?? "")).length,
             names: [...new Set(bindings.map((binding) => binding.context))],
+            successfulNames: [...new Set(runs.filter((run) => run.status?.toLowerCase() === "completed" && run.conclusion?.toLowerCase() === "success").map((run) => run.name?.trim() ?? "").filter(Boolean))],
             bindings,
+            successfulBindings,
             reason: "",
         };
     }
@@ -418,7 +424,7 @@ async function readGraphqlCheckRollup(input) {
  * where its answer came from.
  */
 async function readWorkflowRuns(input) {
-    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], bindings: [], reason: "" };
+    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], successfulNames: [], bindings: [], successfulBindings: [], reason: "" };
     try {
         const res = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`, { headers: GH_HEADERS(input.ghToken), signal: input.signal });
         if (!res.ok)
@@ -430,6 +436,7 @@ async function readWorkflowRuns(input) {
             return { ...miss, reason: `workflow-runs truncated (${body.total_count} total, ${runs.length} read)` };
         }
         const jobBindings = [];
+        const successfulJobNames = [];
         const jobReadFailures = [];
         for (const run of runs) {
             if (!Number.isSafeInteger(run.id))
@@ -448,8 +455,11 @@ async function readWorkflowRuns(input) {
                 }
                 for (const job of jobs) {
                     const context = job.name?.trim() ?? "";
-                    if (context)
+                    if (context) {
                         jobBindings.push({ context, appId: GITHUB_ACTIONS_APP_ID });
+                        if (job.status?.toLowerCase() === "completed" && job.conclusion?.toLowerCase() === "success")
+                            successfulJobNames.push(context);
+                    }
                 }
             }
             catch (error) {
@@ -458,6 +468,14 @@ async function readWorkflowRuns(input) {
         }
         const workflowBindings = runs.map((run) => ({ context: run.name?.trim() ?? "", appId: GITHUB_ACTIONS_APP_ID })).filter((binding) => binding.context);
         const bindings = [...workflowBindings, ...jobBindings];
+        const successfulNames = [
+            ...runs.filter((run) => run.conclusion?.toLowerCase() === "success").map((run) => run.name?.trim() ?? ""),
+            ...successfulJobNames,
+        ].filter(Boolean);
+        const successfulBindings = [
+            ...runs.filter((run) => run.status === "completed" && run.conclusion?.toLowerCase() === "success").map((run) => ({ context: run.name?.trim() ?? "", appId: GITHUB_ACTIONS_APP_ID })),
+            ...successfulJobNames.map((context) => ({ context, appId: GITHUB_ACTIONS_APP_ID })),
+        ].filter((binding) => binding.context);
         return {
             ok: true,
             total: runs.length,
@@ -465,7 +483,9 @@ async function readWorkflowRuns(input) {
             failed: runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length,
             passed: runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length,
             names: [...new Set(bindings.map((binding) => binding.context))],
+            successfulNames: [...new Set(successfulNames)],
             bindings,
+            successfulBindings,
             reason: jobReadFailures.length > 0 ? `workflow jobs partially unreadable (${jobReadFailures.join(", ")})` : "",
         };
     }
@@ -497,7 +517,7 @@ export async function getCiSnapshot(input) {
     const base = input.apiBase ?? "https://api.github.com";
     const snap = {
         state: "unknown", statusReadable: false, checksReadable: false,
-        statusState: "", statusCount: 0, statusNames: [], statusBindings: [], checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, checkNames: [], checkBindings: [], reason: "",
+        statusState: "", statusCount: 0, statusNames: [], statusBindings: [], checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, checkNames: [], checkBindings: [], successfulCheckNames: [], successfulCheckBindings: [], reason: "",
         permanentDenial: "",
         checksSource: "",
     };
@@ -513,6 +533,8 @@ export async function getCiSnapshot(input) {
             snap.statusCount = sj.total_count ?? 0;
             snap.statusNames = (sj.statuses ?? []).map((status) => status.context?.trim() ?? "").filter(Boolean);
             snap.statusBindings = snap.statusNames.map((context) => ({ context }));
+            snap.successfulCheckNames.push(...(sj.statuses ?? []).filter((status) => status.state?.toLowerCase() === "success").map((status) => status.context?.trim() ?? "").filter(Boolean));
+            snap.successfulCheckBindings.push(...(sj.statuses ?? []).filter((status) => status.state?.toLowerCase() === "success").map((status) => ({ context: status.context?.trim() ?? "" })).filter((binding) => binding.context));
         }
         else {
             snap.reason = `statuses API HTTP ${sRes.status}`;
@@ -538,6 +560,8 @@ export async function getCiSnapshot(input) {
             snap.checkPassed = runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length;
             snap.checkNames = runs.map((r) => r.name ?? "").filter(Boolean);
             snap.checkBindings = runs.map((run) => ({ context: run.name?.trim() ?? "", ...(Number.isSafeInteger(run.app?.id) && run.app.id > 0 ? { appId: run.app.id } : {}) })).filter((binding) => binding.context);
+            snap.successfulCheckNames.push(...runs.filter((run) => run.conclusion?.toLowerCase() === "success").map((run) => run.name?.trim() ?? "").filter(Boolean));
+            snap.successfulCheckBindings.push(...runs.filter((run) => run.conclusion?.toLowerCase() === "success").map((run) => ({ context: run.name?.trim() ?? "", ...(Number.isSafeInteger(run.app?.id) && run.app.id > 0 ? { appId: run.app.id } : {}) })).filter((binding) => binding.context));
             // The list is capped at 100 per page. A commit with more checks than that
             // would silently look complete, so refuse to judge it rather than guess.
             if ((cj.total_count ?? runs.length) > runs.length) {
@@ -572,6 +596,8 @@ export async function getCiSnapshot(input) {
             snap.checkPassed = graphql.passed;
             snap.checkNames = graphql.names;
             snap.checkBindings = graphql.bindings;
+            snap.successfulCheckNames.push(...graphql.successfulNames);
+            snap.successfulCheckBindings.push(...graphql.successfulBindings);
             snap.reason = `${snap.reason}; read ${graphql.total} check run(s) through GraphQL`;
         }
         else if (graphql.reason) {
@@ -599,6 +625,8 @@ export async function getCiSnapshot(input) {
             snap.checkPassed = wf.passed;
             snap.checkNames = wf.names;
             snap.checkBindings = wf.bindings;
+            snap.successfulCheckNames.push(...wf.successfulNames);
+            snap.successfulCheckBindings.push(...wf.successfulBindings);
             snap.reason = `${snap.reason}; read ${wf.total} Actions workflow run(s) instead${wf.reason ? `; ${wf.reason}` : ""}`;
         }
         else if (wf.reason) {

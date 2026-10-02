@@ -16,7 +16,7 @@ const { transitionToAutonomous } = await import("./helpers/control-activation.mj
 const sha = (c, n = 40) => c.repeat(n);
 const repository = "acme/repo";
 const readiness = (head) => ({
-  finalVerdict: "pass", blockingFindings: 0, reviewCompleted: true,
+  finalVerdict: "pass", blockingFindings:0,reviewBlockingFindings:0,findingClassificationContext:{repoHasTestScript:true,hasDeclaredGenerators:false}, reviewCompleted:true,reviewFindings:[],
   verificationProbes: { completed: 1, required: 1, indeterminate: 0 }, candidateSha:head,reviewEvidence:testReviewEvidence(head),
   publication: { sha: head, observedAt: 20 },
   pullRequest: { repository, baseRef: "main", headSha: head, open: true, number: 9, url: "https://example/pr/9" },

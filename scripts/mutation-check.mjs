@@ -350,6 +350,133 @@ const MUTATIONS = [
     tests: ["tests/rc14-ci-authority.test.mjs"],
   },
   {
+    name: "rc.14 typecheck reconciliation: only unavailable local verification can resolve remotely",
+    file: "dist/control/verification-reconciliation.js",
+    find: "            finding.localVerification.state === \"unavailable\";",
+    replace: "            true;",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: remote evidence is bound to the exact candidate SHA",
+    file: "dist/control/verification-reconciliation.js",
+    find: "input.candidateSha === input.ciSha",
+    replace: "true",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: repository policy must be readable",
+    file: "dist/control/verification-reconciliation.js",
+    find: "input.policyStatus === \"readable\"",
+    replace: "true",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: generic green CI is not an equivalent typecheck",
+    file: "dist/control/verification-reconciliation.js",
+    find: "return canonical === \"typescriptcheck\" || canonical === \"typecheck\" || canonical === \"tsc\";",
+    replace: "return true;",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: resolved findings leave the merge-blocking set",
+    file: "dist/index.js",
+    find: "            const blockingFindings = unresolvedFindings.filter((finding) =>",
+    replace: "            const blockingFindings = findings.filter((finding) =>",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: resolution attestations remain candidate-bound",
+    file: "dist/control/readiness.js",
+    find: "            resolution.candidateSha === input.candidateSha &&",
+    replace: "            true &&",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: null exit status is unavailable, not a compiler failure",
+    file: "dist/orchestrator/typecheck-gate.js",
+    find: "    return result.exitCode === null || result.unrunnable === true || !result.ran;",
+    replace: "    return false;",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: skipped and neutral checks cannot resolve findings",
+    file: "dist/orchestrator/ci-authority.js",
+    find:
+      "    return [...new Set(trustedSuccessfulChecks.filter((check) => {\n" +
+      "            if (!exact.has(check))\n" +
+      "                return false;\n" +
+      "            const requirements = requiredBindings.filter((binding) => binding.context === check);\n" +
+      "            if (requirements.length === 0)\n" +
+      "                return false;\n" +
+      "            return requirements.every((required) => exactSuccessBindings.some((observed) => observed.context === required.context && (required.appId === undefined || observed.appId === required.appId)));\n" +
+      "        }))];",
+    replace: "    return [...trustedSuccessfulChecks];",
+    tests: ["tests/rc14-ci-authority.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: reviewed blocker reductions require matching resolutions",
+    file: "dist/control/readiness.js",
+    find: "        input.reviewBlockingFindings - input.blockingFindings !== resolutionCount ||",
+    replace: "        false ||",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: resolution evidence is bound to the reviewed record",
+    file: "dist/control/readiness.js",
+    find: "            resolution.reviewDigest === input.reviewEvidence?.recordDigest &&",
+    replace: "            true &&",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: resolution fingerprints must exist in reviewed findings",
+    file: "dist/control/readiness.js",
+    find: "        (input.verificationResolutions ?? []).some((resolution) => !unavailableReviewFingerprints.has(resolution.findingFingerprint)))",
+    replace: "        false)",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: durable lifecycle records remote CI resolution",
+    file: "dist/control/verification-reconciliation.js",
+    find: "UPDATE findings SET state='resolved_by_remote_ci'",
+    replace: "UPDATE findings SET state='environment_blocked'",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: resolved lifecycle state is nonblocking",
+    file: "dist/orchestrator/finding-classify.js",
+    find: " || s === \"resolved_by_remote_ci\"",
+    replace: "",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: stale reviews cannot persist resolutions",
+    file: "dist/control/verification-reconciliation.js",
+    find: "    return reviewBound\n        ? reconcileLocalVerificationWithRemoteCi(input)",
+    replace: "    return true\n        ? reconcileLocalVerificationWithRemoteCi(input)",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: exact success preserves required producer identity",
+    file: "dist/orchestrator/ci-authority.js",
+    find: "return requirements.every((required) => exactSuccessBindings.some((observed) => observed.context === required.context && (required.appId === undefined || observed.appId === required.appId)));",
+    replace: "return requirements.every((required) => exactSuccessBindings.some((observed) => observed.context === required.context));",
+    tests: ["tests/rc14-ci-authority.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: repeated evidence refreshes durable resolution",
+    file: "dist/control/verification-reconciliation.js",
+    find: "ON CONFLICT(session_id,finding_fingerprint,candidate_sha) DO UPDATE SET evidence_digest=excluded.evidence_digest,evidence_json=excluded.evidence_json,created_at=excluded.created_at",
+    replace: "ON CONFLICT(session_id,finding_fingerprint,candidate_sha) DO NOTHING",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
+    name: "rc.14 typecheck reconciliation: original blocker count is derived from reviewed findings",
+    file: "dist/control/readiness.js",
+    find: "        input.reviewBlockingFindings !== computedReviewBlockingFindings ||",
+    replace: "        false ||",
+    tests: ["tests/rc14-typecheck-ci-reconciliation.test.mjs"],
+  },
+  {
     name: "rc.14 edit targets: reconcile against canonical worktree identity",
     file: "dist/safety/bash-guard.js",
     find: "const denyIfBlockedPaths = (call, label) => {\n        const evidence = acpTargetEvidenceFromToolCall(call, resolveOpts);",

@@ -18,13 +18,14 @@ export async function getGitLabMergeRequest(input: { repoFullName: string; prNum
 
 export async function getGitLabCiSnapshot(input: { repoFullName:string; sha:string; token:string; apiBase:string; signal?:AbortSignal }): Promise<import("./github.js").CiSnapshot> {
   const res = await fetch(`${input.apiBase}/projects/${project(input.repoFullName)}/pipelines?sha=${encodeURIComponent(input.sha)}&per_page=100`, { headers:headers(input.token), signal:input.signal });
-  if (!res.ok) return { state:"unknown" as const,statusReadable:false,checksReadable:false,statusState:"",statusCount:0,statusNames:[],statusBindings:[],checkTotal:0,checkIncomplete:0,checkFailed:0,checkPassed:0,checkNames:[],checkBindings:[],reason:`gitlab pipelines HTTP ${res.status}`,permanentDenial:[401,403,404].includes(res.status)?`GitLab pipelines API denied access (HTTP ${res.status}).`:"",checksSource:"" as const };
+  if (!res.ok) return { state:"unknown" as const,statusReadable:false,checksReadable:false,statusState:"",statusCount:0,statusNames:[],statusBindings:[],checkTotal:0,checkIncomplete:0,checkFailed:0,checkPassed:0,checkNames:[],checkBindings:[],successfulCheckNames:[],successfulCheckBindings:[],reason:`gitlab pipelines HTTP ${res.status}`,permanentDenial:[401,403,404].includes(res.status)?`GitLab pipelines API denied access (HTTP ${res.status}).`:"",checksSource:"" as const };
   const rows = await res.json() as Array<{id?:number;status?:string;ref?:string}>;
   const failed=new Set(["failed","canceled","skipped","manual"]), pending=new Set(["created","waiting_for_resource","preparing","pending","running","scheduled"]);
   const checkFailed=rows.filter(r=>failed.has(r.status??"")).length, checkIncomplete=rows.filter(r=>pending.has(r.status??"")).length, checkPassed=rows.filter(r=>r.status==="success").length;
   const state: import("./github.js").CiState = checkFailed ? "failure" : checkIncomplete ? "pending" : checkPassed && checkPassed===rows.length ? "success" : rows.length ? "unknown" : "none";
   const checkNames=rows.map(r=>`pipeline:${r.id??"unknown"}`);
-  return {state,statusReadable:true,checksReadable:true,statusState:state,statusCount:rows.length,statusNames:[],statusBindings:[],checkTotal:rows.length,checkIncomplete,checkFailed,checkPassed,checkNames,checkBindings:checkNames.map(context=>({context})),reason:"gitlab pipelines",permanentDenial:"",checksSource:"workflow_runs" as const};
+  const successfulCheckNames=rows.filter(r=>r.status==="success").map(r=>`pipeline:${r.id??"unknown"}`);
+  return {state,statusReadable:true,checksReadable:true,statusState:state,statusCount:rows.length,statusNames:[],statusBindings:[],checkTotal:rows.length,checkIncomplete,checkFailed,checkPassed,checkNames,checkBindings:checkNames.map(context=>({context})),successfulCheckNames,successfulCheckBindings:successfulCheckNames.map(context=>({context})),reason:"gitlab pipelines",permanentDenial:"",checksSource:"workflow_runs" as const};
 }
 
 export async function getGitLabMergeRequestFiles(input:{repoFullName:string;prNumber:number;token:string;apiBase:string;signal?:AbortSignal}) {

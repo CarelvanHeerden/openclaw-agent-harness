@@ -221,7 +221,7 @@ import { findPlanPolicyConflicts, describePlanPolicyConflicts } from "./plan-pol
 import { redactTokenShapes } from "../state/interaction-log.js";
 import { pathMatches, resolveContractPath } from "./path-match.js";
 import { autoResolveContract, buildContractClarification } from "./contract-clarify.js";
-import { diagnosticsFrom, errorsInChangedFiles, buildTypecheckFinding } from "./typecheck-gate.js";
+import { diagnosticsFrom, errorsInChangedFiles, buildTypecheckFinding, buildTypecheckUnavailableFinding, buildUnparsedTypecheckFailure, typecheckExecutionIsUnavailable } from "./typecheck-gate.js";
 import { buildLedgerIntegrityReport, describeLedgerIntegrityFailure, mergeLedgerCommits } from "./ledger-integrity.js";
 import { extractStatedReason } from "./worker-reason.js";
 import { findSuspectPlanPaths, describeSuspectPlanPaths } from "./plan-path-validate.js";
@@ -7905,23 +7905,12 @@ export class OrchestratorLoop {
                 const diagnosis = this.deps.diagnoseCheckEnv?.(worktree);
                 this.deps.state.audit("loop.typecheck_gate_unavailable", { sessionId, cycle, script: scriptLabel, reason: firstReason, diagnosis, durationMs: Date.now() - startedAt }, sessionId);
                 this.deps.logger.warn("[loop] beta.115 typecheck gate could not run by any route", { sessionId, cycle, script: scriptLabel, diagnosis });
-                return [
-                    {
-                        title: "Typecheck gate could not run: the branch is unverified, not verified",
-                        detail: `The TypeScript compiler (\`${scriptLabel}\`) could not be executed in the review worktree ` +
-                            `(${firstReason}), and invoking the compiler directly did not work either. ` +
-                            `No type errors were found because nothing looked for them -- do not read this as a clean branch. ` +
-                            `Diagnosis: ${JSON.stringify(diagnosis ?? {})}. ` +
-                            `This is worktree/tooling breakage (missing binary, command not found), not a defect in the diff, ` +
-                            `so it cannot be fixed by changing code; a human should run the typecheck before merging.`,
-                        severity: "high",
-                        dimension: "runtime",
-                        // rc.3: the harness authored this about its own tooling. Marked so
-                        // the classifier files it as `env` structurally rather than by
-                        // matching "command not found" in the prose above.
-                        source: "harness_env",
-                    },
-                ];
+                return [buildTypecheckUnavailableFinding({
+                        script: scriptLabel,
+                        exitCode: r?.exitCode ?? null,
+                        reason: firstReason,
+                        detail: `Diagnosis: ${JSON.stringify(diagnosis ?? {})}.`,
+                    })];
             }
         }
         if (r.exitCode === 0) {
@@ -7958,14 +7947,14 @@ export class OrchestratorLoop {
             }
             if (all.length === 0) {
                 this.deps.state.audit("loop.typecheck_gate_unparsed", { sessionId, cycle, script: scriptLabel, exitCode: r.exitCode, oom: !!r.oom, outputTail: r.outputTail, durationMs }, sessionId);
-                return [{
-                        source: "harness_env",
-                        dimension: "runtime",
-                        severity: "high",
-                        title: "Typecheck failed without parseable compiler diagnostics",
-                        detail: `The typecheck exited ${r.exitCode ?? "without a status"}, but its output contained no parseable TypeScript diagnostics. ` +
-                            `The branch is unverified, not clean. Output tail:\n${r.outputTail.slice(-4000)}`,
-                    }];
+                return typecheckExecutionIsUnavailable(r)
+                    ? [buildTypecheckUnavailableFinding({
+                            script: scriptLabel,
+                            exitCode: r.exitCode,
+                            reason: r.skippedReason ?? "no_trustworthy_exit_or_diagnostics",
+                            detail: r.outputTail ? `Output tail:\n${r.outputTail.slice(-4000)}` : undefined,
+                        })]
+                    : [buildUnparsedTypecheckFailure({ script: scriptLabel, exitCode: r.exitCode, outputTail: r.outputTail })];
             }
         }
         let committed;

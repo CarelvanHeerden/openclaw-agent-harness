@@ -331,7 +331,7 @@ export function isBlockingFinding(f: ReviewFinding, cls: FindingClass): boolean 
  */
 export function isSettledLifecycleState(f: ReviewFinding): boolean {
   const s = f.lifecycleState;
-  return s === "resolved" || s === "stale" || s === "accepted" || s === "dispositioned";
+  return s === "resolved" || s === "stale" || s === "accepted" || s === "dispositioned" || s === "resolved_by_remote_ci";
 }
 
 /**

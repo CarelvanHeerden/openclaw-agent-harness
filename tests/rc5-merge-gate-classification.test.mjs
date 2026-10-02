@@ -116,7 +116,7 @@ test("a caller's classified zero is authoritative -- severity cannot override it
         { severity: "high", dimension: "runtime", title: "no preview deploy" },
       ],
     },
-    blockingFindings: 0,
+    blockingFindings:0,reviewBlockingFindings:0,findingClassificationContext:{repoHasTestScript:true,hasDeclaredGenerators:false},
     mergeBlockingFindings: 0,
     reachedCleanPass: true,
     ciStatus: "success",

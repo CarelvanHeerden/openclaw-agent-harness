@@ -213,6 +213,7 @@ test("beta115: the diagnosis survives JSON, since it goes into the audit log", (
 
 test("beta115: an unavailable gate blocks the merge but does not drive revise cycles", async () => {
   const { classifyFinding, isBlockingFinding } = await import("../dist/orchestrator/finding-classify.js");
+  const { buildTypecheckUnavailableFinding } = await import("../dist/orchestrator/typecheck-gate.js");
   // The finding the gate emits when nothing can run. Its two required
   // properties pull in opposite directions and both matter:
   //   - it must STOP a merge recommendation (>= medium severity), and
@@ -225,21 +226,12 @@ test("beta115: an unavailable gate blocks the merge but does not drive revise cy
   // one, and it is deliberately high (to stop the merge) AND deliberately
   // non-blocking (no code change repairs a missing binary). The marker states
   // that directly instead of relying on the wording.
-  const f = {
-    title: "Typecheck gate could not run: the branch is unverified, not verified",
-    detail: "The repo declares a `typecheck` script but it could not be executed (exit 127 / command not found) and invoking the compiler directly did not work either.",
-    severity: "high",
-    dimension: "runtime",
-    source: "harness_env",
-  };
+  const f = buildTypecheckUnavailableFinding({script:"typecheck",exitCode:null,reason:"command not found"});
   const cls = classifyFinding(f);
   assert.equal(cls, "env", "env/tooling breakage, not a diff defect");
 
-  // The marker is what the loop actually emits, not just what this test passes.
-  const { readFileSync } = await import("node:fs");
-  const loopSrc = readFileSync(new URL("../src/orchestrator/legacy-loop.ts", import.meta.url), "utf8");
-  const emitted = loopSrc.slice(loopSrc.indexOf("Typecheck gate could not run"));
-  assert.match(emitted.slice(0, 1200), /source: "harness_env"/);
+  assert.equal(f.source,"harness_env");
+  assert.equal(f.localVerification.state,"unavailable");
   assert.equal(isBlockingFinding(f, cls), false, "a worker cannot fix a missing binary, so this must not cycle");
 
   const { deriveMergeRecommendation } = await import("../dist/orchestrator/merge-recommendation.js");
@@ -254,5 +246,7 @@ test("beta115: the gate's own source keeps the unavailable path loud", async () 
   const body = gate.slice(0, gate.indexOf("\n  private ", 10));
   assert.match(body, /typecheck_gate_unavailable/, "the no-route case must be its own audit event, not a generic skip");
   assert.match(body, /runTypecheckDirect/, "the skip path must attempt the direct route before giving up");
-  assert.match(body, /severity:\s*"high"/, "an unverifiable branch is a high-severity fact about the review");
+  assert.match(body, /buildTypecheckUnavailableFinding/, "the gate must emit typed unavailable evidence");
+  const helper = readFileSync(new URL("../src/orchestrator/typecheck-gate.ts", import.meta.url), "utf8");
+  assert.match(helper, /severity:"high"/, "an unverifiable branch is a high-severity fact about the review");
 });

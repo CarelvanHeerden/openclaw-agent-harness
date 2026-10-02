@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
-export const READINESS_POLICY_VERSION = "strict-readiness/v3";
+import { isTypecheckEquivalentCheck, verificationResolutionDigest } from "./verification-reconciliation.js";
+import { reviewFindingsDigest } from "./review-evidence.js";
+import { blocksMerge, classifyFinding } from "../orchestrator/finding-classify.js";
+export const READINESS_POLICY_VERSION = "strict-readiness/v4";
 export const READINESS_FAILURE_CODES = [
-    "review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "blocking_findings", "review_crash", "missing_probes",
+    "review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "verification_resolution_invalid", "blocking_findings", "review_crash", "missing_probes",
     "stale_publication", "pr_identity_mismatch", "required_ci_unregistered",
     "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed",
     "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded",
@@ -49,6 +52,7 @@ export function evaluatePrReadiness(input, checkedAt = Date.now()) {
             reviewEvidence.expectedCandidateSha === input.candidateSha &&
             /^[a-f0-9]{64}$/.test(reviewEvidence.findingsDigest) &&
             reviewEvidence.findingsDigest === reviewEvidence.computedFindingsDigest &&
+            reviewEvidence.findingsDigest === reviewFindingsDigest(JSON.stringify(input.reviewFindings)) &&
             /^[a-f0-9]{64}$/.test(reviewEvidence.recordDigest) &&
             reviewEvidence.recordDigest === reviewEvidence.computedRecordDigest;
         if (!bound)
@@ -62,6 +66,42 @@ export function evaluatePrReadiness(input, checkedAt = Date.now()) {
     }
     if (!input.reviewCompleted || authoritativeVerdict !== "pass")
         failures.push("review_not_passed");
+    for (const resolution of input.verificationResolutions ?? []) {
+        const { evidenceDigest, ...unsigned } = resolution;
+        const valid = resolution.kind === "resolved_by_remote_ci" &&
+            resolution.repository === input.expectedRepository &&
+            resolution.findingFingerprint.trim().length > 0 &&
+            resolution.reviewDigest === input.reviewEvidence?.recordDigest &&
+            resolution.pullRequestNumber === input.pullRequest.number &&
+            resolution.candidateSha === input.candidateSha &&
+            isTypecheckEquivalentCheck(resolution.remoteCheck) &&
+            input.requiredCi.requiredChecks.includes(resolution.remoteCheck) &&
+            input.requiredCi.successfulChecks.includes(resolution.remoteCheck) &&
+            resolution.conclusion === "success" &&
+            Number.isFinite(resolution.observedAt) &&
+            resolution.observedAt >= (input.publication?.observedAt ?? Number.POSITIVE_INFINITY) &&
+            resolution.observedAt <= checkedAt &&
+            /^[a-f0-9]{64}$/.test(evidenceDigest) &&
+            evidenceDigest === verificationResolutionDigest(unsigned);
+        if (!valid)
+            failures.push("verification_resolution_invalid");
+    }
+    const resolutionCount = (input.verificationResolutions ?? []).length;
+    const unavailableReviewedFindings = input.reviewFindings.filter((finding) => finding.source === "harness_env" &&
+        finding.localVerification?.kind === "typecheck" &&
+        finding.localVerification.state === "unavailable" &&
+        !["resolved", "stale", "accepted", "dispositioned", "resolved_by_remote_ci"].includes(finding.lifecycleState ?? ""));
+    const unavailableReviewFingerprints = new Set(unavailableReviewedFindings.map((finding) => finding.fingerprint).filter((fingerprint) => !!fingerprint));
+    const unavailableReviewBlockers = unavailableReviewedFindings.length;
+    const computedReviewBlockingFindings = input.reviewFindings.filter((finding) => blocksMerge(finding, classifyFinding(finding, input.findingClassificationContext))).length;
+    if (!Number.isSafeInteger(input.reviewBlockingFindings) ||
+        input.reviewBlockingFindings !== computedReviewBlockingFindings ||
+        input.reviewBlockingFindings < unavailableReviewBlockers ||
+        input.reviewBlockingFindings < input.blockingFindings ||
+        input.reviewBlockingFindings - input.blockingFindings !== resolutionCount ||
+        new Set((input.verificationResolutions ?? []).map((resolution) => resolution.findingFingerprint)).size !== resolutionCount ||
+        (input.verificationResolutions ?? []).some((resolution) => !unavailableReviewFingerprints.has(resolution.findingFingerprint)))
+        failures.push("verification_resolution_invalid");
     if (authoritativeVerdict === "crashed")
         failures.push("review_crash");
     if (!Number.isSafeInteger(input.blockingFindings) || input.blockingFindings !== 0)

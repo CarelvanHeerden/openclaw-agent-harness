@@ -285,6 +285,8 @@ The terminal result states what failed, whether any PR/branch exists, whether re
 11. Credential usage matches the confirmed credential route and no secret exposure is detected.
 12. The readiness record itself is versioned, content-addressed, and stored atomically with `pr_ready`.
 
+An unavailable local verifier is not a code failure and is not a pass. It remains merge-blocking until an equivalent repository-required check reports an exact `success` conclusion on the published candidate SHA from the required provider/app identity. Real compiler diagnostics and definite nonzero compiler exits are never reconciled away by generic green CI. Any reconciliation preserves the original finding, persists a `resolved_by_remote_ci` lifecycle record and digest-bound evidence, and is validated against the reviewed finding set before blocker counts are reduced.
+
 Any uncertainty is non-readiness. A recommendation, existing PR URL, local commit, successful push call, stale CI result, or human willingness to merge is not a substitute for evidence.
 
 Immediately before merge, all mutable predicates—especially current PR head, PR open state, required CI, runtime evidence freshness, and policy—are re-read. A changed head invalidates readiness and yields `merge_failed`; it is never silently accepted.

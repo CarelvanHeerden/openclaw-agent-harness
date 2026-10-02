@@ -27,7 +27,7 @@ function reviewEvidence({verdict="pass",findings=[],cycle=1,reviewSha=candidate,
 
 function ready(over={}){
   return {
-    finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,reviewEvidence:reviewEvidence(),
+    finalVerdict:"pass",blockingFindings:0,reviewBlockingFindings:0,findingClassificationContext:{repoHasTestScript:true,hasDeclaredGenerators:false},reviewCompleted:true,reviewFindings:[],reviewEvidence:reviewEvidence(),
     verificationProbes:{completed:1,required:1,indeterminate:0},
     candidateSha:candidate,publication:{sha:candidate,observedAt:100},
     pullRequest:{repository:"o/r",baseRef:"main",headSha:candidate,open:true,number:7,url:"https://example/pr/7"},
@@ -43,9 +43,9 @@ function ready(over={}){
 
 test("passing exact-SHA review remains pass after late CI success regardless of the earlier recommendation",()=>{
   const review={verdict:"pass",findings:[]};
-  const before=deriveMergeRecommendation({review,reachedCleanPass:true,blockingFindings:0,ciStatus:"pending"});
+  const before=deriveMergeRecommendation({review,reachedCleanPass:true,blockingFindings:0,reviewBlockingFindings:0,findingClassificationContext:{repoHasTestScript:true,hasDeclaredGenerators:false},ciStatus:"pending"});
   assert.equal(before.recommendation,"do_not_merge");
-  const after=deriveMergeRecommendation({review,reachedCleanPass:true,blockingFindings:0,ciStatus:"success"});
+  const after=deriveMergeRecommendation({review,reachedCleanPass:true,blockingFindings:0,reviewBlockingFindings:0,findingClassificationContext:{repoHasTestScript:true,hasDeclaredGenerators:false},ciStatus:"success"});
   assert.equal(after.recommendation,"merge");
   assert.equal(evaluatePrReadiness(ready(),120).ready,true);
 });

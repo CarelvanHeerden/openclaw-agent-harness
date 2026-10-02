@@ -41,4 +41,15 @@ export function resolveTrustedCiEvidence(input) {
         status,
     };
 }
+export function exactSuccessfulRequiredChecks(trustedSuccessfulChecks, exactSuccessConclusions, requiredBindings = trustedSuccessfulChecks.map((context) => ({ context })), exactSuccessBindings = exactSuccessConclusions.map((context) => ({ context }))) {
+    const exact = new Set(exactSuccessConclusions);
+    return [...new Set(trustedSuccessfulChecks.filter((check) => {
+            if (!exact.has(check))
+                return false;
+            const requirements = requiredBindings.filter((binding) => binding.context === check);
+            if (requirements.length === 0)
+                return false;
+            return requirements.every((required) => exactSuccessBindings.some((observed) => observed.context === required.context && (required.appId === undefined || observed.appId === required.appId)));
+        }))];
+}
 //# sourceMappingURL=ci-authority.js.map

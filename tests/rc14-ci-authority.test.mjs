@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { getCiSnapshot, getRequiredChecksPolicy } from "../dist/adapters/github.js";
-import { plannerCiDiagnostics, resolveTrustedCiEvidence } from "../dist/orchestrator/ci-authority.js";
+import { exactSuccessfulRequiredChecks, plannerCiDiagnostics, resolveTrustedCiEvidence } from "../dist/orchestrator/ci-authority.js";
 
 const observed=["Secret Scan","CI","Code Quality: PR #1289"];
 
@@ -128,6 +128,38 @@ test("legacy status contexts and workflow/check names share canonical observed e
     assert.deepEqual(snapshot.statusNames,["Secret Scan"]);
     assert.deepEqual(snapshot.checkNames,["CI"]);
   }finally{globalThis.fetch=original}
+});
+
+test("neutral or skipped checks are not exact successful conclusions",async()=>{
+  const original=globalThis.fetch;
+  try{
+    globalThis.fetch=async(url)=>{
+      const value=String(url);
+      if(value.includes("/status"))return new Response(JSON.stringify({state:"success",total_count:0,statuses:[]}),{status:200,headers:{"content-type":"application/json"}});
+      if(value.includes("/check-runs"))return new Response(JSON.stringify({total_count:2,check_runs:[
+        {name:"TypeScript Check",status:"completed",conclusion:"neutral"},
+        {name:"CI",status:"completed",conclusion:"success"},
+      ]}),{status:200,headers:{"content-type":"application/json"}});
+      throw new Error(value);
+    };
+    const snapshot=await getCiSnapshot({repoFullName:"o/r",sha:"a".repeat(40),ghToken:"t"});
+    assert.equal(snapshot.state,"success");
+    assert.deepEqual(snapshot.successfulCheckNames,["CI"]);
+    assert.deepEqual(exactSuccessfulRequiredChecks(["TypeScript Check","CI"],snapshot.successfulCheckNames),["CI"]);
+  }finally{globalThis.fetch=original}
+});
+
+test("same-name success from the wrong App cannot satisfy an exact required producer",()=>{
+  assert.deepEqual(exactSuccessfulRequiredChecks(
+    ["TypeScript Check"],["TypeScript Check"],
+    [{context:"TypeScript Check",appId:42}],
+    [{context:"TypeScript Check",appId:99}],
+  ),[]);
+  assert.deepEqual(exactSuccessfulRequiredChecks(
+    ["TypeScript Check"],["TypeScript Check"],
+    [{context:"TypeScript Check",appId:42}],
+    [{context:"TypeScript Check",appId:42}],
+  ),["TypeScript Check"]);
 });
 
 test("workflow-runs fallback resolves repository job names and app identity",async()=>{

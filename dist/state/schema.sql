@@ -349,6 +349,18 @@ CREATE TABLE IF NOT EXISTS findings (
 
 CREATE INDEX IF NOT EXISTS idx_findings_session_state ON findings (session_id, state);
 
+CREATE TABLE IF NOT EXISTS verification_resolutions (
+  evidence_digest TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  finding_fingerprint TEXT NOT NULL,
+  candidate_sha TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE(session_id, finding_fingerprint, candidate_sha)
+);
+CREATE INDEX IF NOT EXISTS idx_verification_resolutions_session
+  ON verification_resolutions(session_id, candidate_sha);
+
 CREATE TABLE IF NOT EXISTS budgets_daily (
   day           TEXT NOT NULL,
   user          TEXT NOT NULL,

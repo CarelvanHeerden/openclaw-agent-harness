@@ -67,3 +67,20 @@ export function resolveTrustedCiEvidence(input: {
     status,
   };
 }
+
+export function exactSuccessfulRequiredChecks(
+  trustedSuccessfulChecks:readonly string[],
+  exactSuccessConclusions:readonly string[],
+  requiredBindings:readonly {context:string;appId?:number}[]=trustedSuccessfulChecks.map((context)=>({context})),
+  exactSuccessBindings:readonly {context:string;appId?:number}[]=exactSuccessConclusions.map((context)=>({context})),
+):string[] {
+  const exact=new Set(exactSuccessConclusions);
+  return [...new Set(trustedSuccessfulChecks.filter((check)=>{
+    if(!exact.has(check))return false;
+    const requirements=requiredBindings.filter((binding)=>binding.context===check);
+    if(requirements.length===0)return false;
+    return requirements.every((required)=>exactSuccessBindings.some((observed)=>
+      observed.context===required.context&&(required.appId===undefined||observed.appId===required.appId)
+    ));
+  }))];
+}

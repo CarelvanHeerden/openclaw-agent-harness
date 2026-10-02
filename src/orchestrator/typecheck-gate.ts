@@ -84,6 +84,37 @@ export function errorsInChangedFiles(errors: TscError[], changedFiles: string[])
   return errors.filter((e) => changedFiles.some((c) => pathMatches(c, e.file)));
 }
 
+export function buildTypecheckUnavailableFinding(input:{
+  script:string;
+  exitCode:number|null;
+  reason:string;
+  detail?:string;
+}):ReviewFinding {
+  return {
+    source:"harness_env",
+    dimension:"runtime",
+    severity:"high",
+    title:"Local typecheck unavailable",
+    detail:`Local typecheck unavailable: process produced no trustworthy exit status or diagnostics. Awaiting equivalent exact-SHA repository CI evidence. ${input.detail??""}`.trim(),
+    localVerification:{kind:"typecheck",state:"unavailable",exitCode:input.exitCode,reason:input.reason},
+  };
+}
+
+export function buildUnparsedTypecheckFailure(input:{script:string;exitCode:number;outputTail:string}):ReviewFinding {
+  return {
+    source:"harness_env",
+    dimension:"quality",
+    severity:"high",
+    title:`Typecheck exited ${input.exitCode} without parseable compiler diagnostics`,
+    detail:`The local \`${input.script}\` process returned a definite nonzero exit (${input.exitCode}), so this remains a check failure. Output tail:\n${input.outputTail.slice(-4000)}`,
+    localVerification:{kind:"typecheck",state:"failed",exitCode:input.exitCode,reason:"definite_nonzero_exit_without_parseable_diagnostics"},
+  };
+}
+
+export function typecheckExecutionIsUnavailable(result:{exitCode:number|null;unrunnable?:boolean;ran:boolean}):boolean {
+  return result.exitCode===null||result.unrunnable===true||!result.ran;
+}
+
 /**
  * `high`, not `medium`. A branch that does not compile is not mergeable on
  * anybody's reading, and `high` is in merge-recommendation's blocking set, so

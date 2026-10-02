@@ -243,7 +243,7 @@ export function isBlockingFinding(f, cls) {
  */
 export function isSettledLifecycleState(f) {
     const s = f.lifecycleState;
-    return s === "resolved" || s === "stale" || s === "accepted" || s === "dispositioned";
+    return s === "resolved" || s === "stale" || s === "accepted" || s === "dispositioned" || s === "resolved_by_remote_ci";
 }
 /**
  * rc.5: whether a finding should stop a MERGE. A different question from

@@ -46,7 +46,7 @@ function autonomous(repo, id = "r1") {
 function readyInput(overrides = {}) {
   const head = sha("c", 40);
   return {
-    finalVerdict: "pass", blockingFindings: 0, reviewCompleted: true,
+    finalVerdict: "pass", blockingFindings:0,reviewBlockingFindings:0,findingClassificationContext:{repoHasTestScript:true,hasDeclaredGenerators:false}, reviewCompleted:true,reviewFindings:[],
     verificationProbes: { completed: 3, required: 3, indeterminate: 0 }, candidateSha:head,reviewEvidence:testReviewEvidence(head),
     publication: { sha: head, observedAt: 50 },
     pullRequest: { repository: "acme/repo", baseRef: "main", headSha: head, open: true },

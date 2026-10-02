@@ -34,7 +34,7 @@ import { resolveContractPath } from "./orchestrator/path-match.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, isAtLeastMedium, normaliseSeverity } from "./orchestrator/finding-classify.js";
 import { deriveMergeRecommendation } from "./orchestrator/merge-recommendation.js";
-import { resolveTrustedCiEvidence } from "./orchestrator/ci-authority.js";
+import { exactSuccessfulRequiredChecks, resolveTrustedCiEvidence } from "./orchestrator/ci-authority.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import type { DatabaseSync } from "node:sqlite";
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
@@ -50,6 +50,7 @@ import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
 import { createControlMergeProvider } from "./control/github-merge-provider.js";
 import { isExactReviewedPublishedHead, reviewFindingsDigest, reviewRecordDigest } from "./control/review-evidence.js";
+import { persistVerificationResolutions, reconcileBoundLocalVerificationWithRemoteCi } from "./control/verification-reconciliation.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV, type CredentialRecord } from "./adapters/credential-vault.js";
@@ -2336,12 +2337,6 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       let runtimeEvidence: import("./control/readiness.js").DeterminateEvidence = { status: config.vercel?.enabled ? "indeterminate" : "not_required" };
       if (config.vercel?.enabled && runtimeReceipt) { try { const measured=JSON.parse(runtimeReceipt.payload) as {headSha?:string;status?:string}; runtimeEvidence=measured.status==="ok"&&measured.headSha===String(row.published_sha)?{status:"pass",sha:measured.headSha,observedAt:runtimeReceipt.created_at}:{status:measured.status==="build_failed"?"fail":"indeterminate",sha:measured.headSha,observedAt:runtimeReceipt.created_at}; } catch { runtimeEvidence={status:"indeterminate"}; } }
       const operationsPerformed = operationReceipts.map((receipt)=>receipt.operation);
-      const blockingFindings = findings.filter((finding) =>
-        blocksMerge(finding, classifyFinding(finding, {
-          repoHasTestScript: true,
-          hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
-        })),
-      ).length;
       const observedChecks=[...new Set([...((ci as {statusNames?:string[]}).statusNames??[]),...ci.checkNames])];
       const observedBindings=[
         ...((ci as {statusBindings?:Array<{context:string;appId?:number}>}).statusBindings??[]),
@@ -2356,8 +2351,41 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
         explicitChecks:change.requiredRemoteChecks,
         providerState:ci.state==="success"?"success":ci.state==="failure"?"failure":ci.state==="pending"?"pending":"indeterminate",
       });
+      const reconciliationObservedAt=Date.now();
+      const verificationReconciliation=reconcileBoundLocalVerificationWithRemoteCi(reviewBound,{
+            findings,
+            repository:change.repositoryIdentity,
+            pullRequestNumber:Number(row.pr_number),
+            candidateSha:String(row.published_sha),
+            ciSha:pr.headSha,
+            policyStatus:ciPolicy.status,
+            policyChecks:ciPolicy.requiredChecks,
+            successfulChecks:exactSuccessfulRequiredChecks(
+              trustedCi.successfulChecks,
+              (ci as {successfulCheckNames?:string[]}).successfulCheckNames??[],
+              ciPolicy.requiredCheckBindings,
+              (ci as {successfulCheckBindings?:Array<{context:string;appId?:number}>}).successfulCheckBindings??[],
+            ),
+            observedAt:reconciliationObservedAt,
+            reviewDigest:review?.review_digest??"",
+          });
+      const unresolvedFindings=verificationReconciliation.unresolvedFindings;
+      const findingClassifyContext={
+        repoHasTestScript:true,
+        hasDeclaredGenerators:!resolveGenerators(config.verify?.generators).empty,
+      };
+      const reviewBlockingFindings=findings.filter((finding)=>
+        blocksMerge(finding,classifyFinding(finding,findingClassifyContext)),
+      ).length;
+      const blockingFindings = unresolvedFindings.filter((finding) =>
+        blocksMerge(finding,classifyFinding(finding,findingClassifyContext)),
+      ).length;
+      if(verificationReconciliation.resolutions.length>0){
+        persistVerificationResolutions(state.db,change.changeId,verificationReconciliation.resolutions);
+        for(const resolution of verificationReconciliation.resolutions)state.audit("control.local_verification_reconciled",resolution,change.changeId);
+      }
       const refreshedRecommendation = deriveMergeRecommendation({
-        review: reviewBound ? { verdict: reviewVerdict, findings } : undefined,
+        review: reviewBound ? { verdict: reviewVerdict, findings:unresolvedFindings } : undefined,
         reachedCleanPass: reviewBound && reviewVerdict === "pass" && blockingFindings === 0,
         blockingFindings,
         ciStatus:trustedCi.status==="indeterminate"?undefined:trustedCi.status,
@@ -2376,7 +2404,11 @@ function bootstrapHarnessSync(api: HarnessPluginApi): HarnessRuntime {
       return {
         finalVerdict: reviewVerdict,
         blockingFindings,
+        reviewBlockingFindings,
+        findingClassificationContext:findingClassifyContext,
+        verificationResolutions:verificationReconciliation.resolutions,
         reviewCompleted: review?.completed === 1,
+        reviewFindings:findings,
         reviewEvidence: {
           recordId:review?.id??"",
           expectedRecordId:`${change.changeId}-r${Number(review?.cycle??-1)}`,

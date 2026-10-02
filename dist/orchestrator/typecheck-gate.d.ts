@@ -55,6 +55,22 @@ export declare function diagnosticsFrom(result: {
  * committed-file list, the same way every other per-file check does.
  */
 export declare function errorsInChangedFiles(errors: TscError[], changedFiles: string[]): TscError[];
+export declare function buildTypecheckUnavailableFinding(input: {
+    script: string;
+    exitCode: number | null;
+    reason: string;
+    detail?: string;
+}): ReviewFinding;
+export declare function buildUnparsedTypecheckFailure(input: {
+    script: string;
+    exitCode: number;
+    outputTail: string;
+}): ReviewFinding;
+export declare function typecheckExecutionIsUnavailable(result: {
+    exitCode: number | null;
+    unrunnable?: boolean;
+    ran: boolean;
+}): boolean;
 /**
  * `high`, not `medium`. A branch that does not compile is not mergeable on
  * anybody's reading, and `high` is in merge-recommendation's blocking set, so

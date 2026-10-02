@@ -43,8 +43,9 @@ import type { ReviewFinding } from "./adversary.js";
  *  - `accepted`           a human decided to ship with it
  *  - `dispositioned`      answered some other way (skipped sub-task, scope call)
  *  - `environment_blocked` nothing a worker can edit will fix it
+ *  - `resolved_by_remote_ci` exact-SHA repository CI proved an unavailable local verifier's equivalent check
  */
-export type FindingLifecycleState = "open" | "resolved" | "stale" | "accepted" | "dispositioned" | "environment_blocked" | "late_discovery";
+export type FindingLifecycleState = "open" | "resolved" | "stale" | "accepted" | "dispositioned" | "environment_blocked" | "resolved_by_remote_ci" | "late_discovery";
 /** States in which a finding still argues for another repair cycle. */
 export declare const CYCLE_DRIVING_STATES: ReadonlySet<FindingLifecycleState>;
 export interface FindingRecord {

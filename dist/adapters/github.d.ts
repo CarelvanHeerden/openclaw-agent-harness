@@ -175,6 +175,12 @@ export interface CiSnapshot {
         context: string;
         appId?: number;
     }>;
+    /** Checks with an exact successful conclusion; excludes skipped/neutral. */
+    successfulCheckNames: string[];
+    successfulCheckBindings: Array<{
+        context: string;
+        appId?: number;
+    }>;
     /** Which rule produced `state`, for the audit trail. */
     reason: string;
     /**

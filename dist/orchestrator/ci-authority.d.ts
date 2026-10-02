@@ -32,4 +32,11 @@ export declare function resolveTrustedCiEvidence(input: {
     successfulChecks: string[];
     status: "success" | "failure" | "pending" | "indeterminate";
 };
+export declare function exactSuccessfulRequiredChecks(trustedSuccessfulChecks: readonly string[], exactSuccessConclusions: readonly string[], requiredBindings?: readonly {
+    context: string;
+    appId?: number;
+}[], exactSuccessBindings?: readonly {
+    context: string;
+    appId?: number;
+}[]): string[];
 //# sourceMappingURL=ci-authority.d.ts.map
