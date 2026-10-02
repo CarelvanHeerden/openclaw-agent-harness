@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 
-export const READINESS_POLICY_VERSION = "strict-readiness/v2";
+export const READINESS_POLICY_VERSION = "strict-readiness/v3";
 
 export const READINESS_FAILURE_CODES = [
-  "review_not_passed", "blocking_findings", "review_crash", "missing_probes",
+  "review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "blocking_findings", "review_crash", "missing_probes",
   "stale_publication", "pr_identity_mismatch", "required_ci_unregistered",
   "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed",
   "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded",
@@ -22,6 +22,24 @@ export interface RequiredCiEvidence {
 }
 export interface DeterminateEvidence { readonly status: "pass" | "fail" | "not_required" | "indeterminate"; readonly detail?: string; readonly sha?: string; readonly observedAt?: number }
 export interface OperationReceipt { readonly operation: string; readonly observedAt: number; readonly sha?: string; readonly source: string }
+export interface BoundReviewEvidence {
+  readonly recordId: string;
+  readonly expectedRecordId: string;
+  readonly runId: string;
+  readonly expectedRunId: string;
+  readonly cycle: number;
+  readonly expectedCycle: number;
+  readonly baseSha: string;
+  readonly expectedBaseSha: string;
+  readonly candidateSha: string;
+  readonly expectedCandidateSha: string;
+  readonly completed: boolean;
+  readonly verdict: PrReadinessInput["finalVerdict"];
+  readonly findingsDigest: string;
+  readonly computedFindingsDigest: string;
+  readonly recordDigest: string;
+  readonly computedRecordDigest: string;
+}
 
 export interface PrReadinessInput {
   readonly finalVerdict: "pass" | "revise" | "block" | "crashed" | "indeterminate";
@@ -50,6 +68,7 @@ export interface PrReadinessInput {
   readonly secretExposure: Readonly<{ detected: boolean; evidence: "pass" | "fail" | "indeterminate" }>;
   readonly spendUsd: number;
   readonly budgetUsd: number;
+  readonly reviewEvidence: BoundReviewEvidence;
 }
 
 export type PrReadinessResult = Readonly<
@@ -79,8 +98,35 @@ function within(path: string, root: string): boolean {
 
 export function evaluatePrReadiness(input: PrReadinessInput, checkedAt = Date.now()): PrReadinessResult {
   const failures: ReadinessFailureCode[] = [];
-  if (!input.reviewCompleted || input.finalVerdict !== "pass") failures.push("review_not_passed");
-  if (input.finalVerdict === "crashed") failures.push("review_crash");
+  const reviewEvidence = input.reviewEvidence;
+  let authoritativeVerdict = input.finalVerdict;
+  if (!reviewEvidence) {
+    failures.push("review_evidence_stale");
+  } else {
+    const bound =
+      reviewEvidence.completed &&
+      reviewEvidence.recordId === reviewEvidence.expectedRecordId &&
+      reviewEvidence.runId === reviewEvidence.expectedRunId &&
+      Number.isSafeInteger(reviewEvidence.cycle) &&
+      reviewEvidence.cycle === reviewEvidence.expectedCycle &&
+      reviewEvidence.baseSha === reviewEvidence.expectedBaseSha &&
+      reviewEvidence.candidateSha === reviewEvidence.expectedCandidateSha &&
+      reviewEvidence.expectedCandidateSha === input.candidateSha &&
+      /^[a-f0-9]{64}$/.test(reviewEvidence.findingsDigest) &&
+      reviewEvidence.findingsDigest === reviewEvidence.computedFindingsDigest &&
+      /^[a-f0-9]{64}$/.test(reviewEvidence.recordDigest) &&
+      reviewEvidence.recordDigest === reviewEvidence.computedRecordDigest;
+    if (!bound) failures.push("review_evidence_stale");
+    else {
+      authoritativeVerdict = reviewEvidence.verdict;
+      if (
+        input.finalVerdict !== reviewEvidence.verdict ||
+        (reviewEvidence.verdict === "pass" && input.blockingFindings !== 0)
+      ) failures.push("review_verdict_inconsistent");
+    }
+  }
+  if (!input.reviewCompleted || authoritativeVerdict !== "pass") failures.push("review_not_passed");
+  if (authoritativeVerdict === "crashed") failures.push("review_crash");
   if (!Number.isSafeInteger(input.blockingFindings) || input.blockingFindings !== 0) failures.push("blocking_findings");
   const probes = input.verificationProbes;
   if (![probes.completed, probes.required, probes.indeterminate].every(Number.isSafeInteger) || probes.required < 1 || probes.completed !== probes.required || probes.indeterminate !== 0) failures.push("missing_probes");

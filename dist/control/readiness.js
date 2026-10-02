@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-export const READINESS_POLICY_VERSION = "strict-readiness/v2";
+export const READINESS_POLICY_VERSION = "strict-readiness/v3";
 export const READINESS_FAILURE_CODES = [
-    "review_not_passed", "blocking_findings", "review_crash", "missing_probes",
+    "review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "blocking_findings", "review_crash", "missing_probes",
     "stale_publication", "pr_identity_mismatch", "required_ci_unregistered",
     "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed",
     "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded",
@@ -33,9 +33,36 @@ function within(path, root) {
 }
 export function evaluatePrReadiness(input, checkedAt = Date.now()) {
     const failures = [];
-    if (!input.reviewCompleted || input.finalVerdict !== "pass")
+    const reviewEvidence = input.reviewEvidence;
+    let authoritativeVerdict = input.finalVerdict;
+    if (!reviewEvidence) {
+        failures.push("review_evidence_stale");
+    }
+    else {
+        const bound = reviewEvidence.completed &&
+            reviewEvidence.recordId === reviewEvidence.expectedRecordId &&
+            reviewEvidence.runId === reviewEvidence.expectedRunId &&
+            Number.isSafeInteger(reviewEvidence.cycle) &&
+            reviewEvidence.cycle === reviewEvidence.expectedCycle &&
+            reviewEvidence.baseSha === reviewEvidence.expectedBaseSha &&
+            reviewEvidence.candidateSha === reviewEvidence.expectedCandidateSha &&
+            reviewEvidence.expectedCandidateSha === input.candidateSha &&
+            /^[a-f0-9]{64}$/.test(reviewEvidence.findingsDigest) &&
+            reviewEvidence.findingsDigest === reviewEvidence.computedFindingsDigest &&
+            /^[a-f0-9]{64}$/.test(reviewEvidence.recordDigest) &&
+            reviewEvidence.recordDigest === reviewEvidence.computedRecordDigest;
+        if (!bound)
+            failures.push("review_evidence_stale");
+        else {
+            authoritativeVerdict = reviewEvidence.verdict;
+            if (input.finalVerdict !== reviewEvidence.verdict ||
+                (reviewEvidence.verdict === "pass" && input.blockingFindings !== 0))
+                failures.push("review_verdict_inconsistent");
+        }
+    }
+    if (!input.reviewCompleted || authoritativeVerdict !== "pass")
         failures.push("review_not_passed");
-    if (input.finalVerdict === "crashed")
+    if (authoritativeVerdict === "crashed")
         failures.push("review_crash");
     if (!Number.isSafeInteger(input.blockingFindings) || input.blockingFindings !== 0)
         failures.push("blocking_findings");

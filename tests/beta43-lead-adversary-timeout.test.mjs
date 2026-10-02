@@ -1,12 +1,13 @@
+import { testReviewEvidence } from "./helpers/review-evidence.mjs";
 // beta.43 restored: every indeterminate structured signal is a strict terminal readiness failure.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { evaluatePrReadiness } from "../dist/control/readiness.js";
 const sha=(c,n=64)=>c.repeat(n);
-const base={ finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:2,required:2,indeterminate:0},candidateSha:sha("c",40),publication:{sha:sha("c",40),observedAt:1},pullRequest:{repository:"a/r",baseRef:"main",headSha:sha("c",40),open:true},expectedRepository:"a/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:sha("c",40),status:"success"},runtimeEvidence:{status:"pass",sha:sha("c",40),observedAt:1},securityEvidence:{status:"pass",sha:sha("c",40),observedAt:1},elapsedTimeMs:10,timeLimitMs:100,changedPaths:["src/x"],allowedScope:["src"],excludedScope:[],operationsPerformed:["test"],operationReceipts:[{operation:"test",observedAt:1,source:"test-fixture"}],allowedOperations:["test"],credentialRouteDigest:sha("d"),expectedCredentialRouteDigest:sha("d"),secretExposure:{detected:false,evidence:"pass"},spendUsd:1,budgetUsd:2 };
+const base={ finalVerdict:"pass",blockingFindings:0,reviewCompleted:true,verificationProbes:{completed:2,required:2,indeterminate:0},candidateSha:sha("c",40),reviewEvidence:testReviewEvidence(sha("c",40)),publication:{sha:sha("c",40),observedAt:1},pullRequest:{repository:"a/r",baseRef:"main",headSha:sha("c",40),open:true},expectedRepository:"a/r",expectedBaseRef:"main",requiredCi:{registered:true,requiredChecks:["test"],successfulChecks:["test"],sha:sha("c",40),status:"success"},runtimeEvidence:{status:"pass",sha:sha("c",40),observedAt:1},securityEvidence:{status:"pass",sha:sha("c",40),observedAt:1},elapsedTimeMs:10,timeLimitMs:100,changedPaths:["src/x"],allowedScope:["src"],excludedScope:[],operationsPerformed:["test"],operationReceipts:[{operation:"test",observedAt:1,source:"test-fixture"}],allowedOperations:["test"],credentialRouteDigest:sha("d"),expectedCredentialRouteDigest:sha("d"),secretExposure:{detected:false,evidence:"pass"},spendUsd:1,budgetUsd:2 };
 
 test("beta43: a crashed or incomplete review cannot become ready",()=>{
-  const out=evaluatePrReadiness({...base,finalVerdict:"crashed",reviewCompleted:false});
+  const out=evaluatePrReadiness({...base,finalVerdict:"crashed",reviewEvidence:testReviewEvidence(sha("c",40),"crashed"),reviewCompleted:false});
   assert.equal(out.ready,false); assert.ok(out.failures.includes("review_crash")); assert.ok(out.failures.includes("review_not_passed"));
 });
 

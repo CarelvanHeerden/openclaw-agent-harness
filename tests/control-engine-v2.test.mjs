@@ -1,3 +1,4 @@
+import { testReviewEvidence } from "./helpers/review-evidence.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -46,7 +47,7 @@ function readyInput(overrides = {}) {
   const head = sha("c", 40);
   return {
     finalVerdict: "pass", blockingFindings: 0, reviewCompleted: true,
-    verificationProbes: { completed: 3, required: 3, indeterminate: 0 }, candidateSha: head,
+    verificationProbes: { completed: 3, required: 3, indeterminate: 0 }, candidateSha:head,reviewEvidence:testReviewEvidence(head),
     publication: { sha: head, observedAt: 50 },
     pullRequest: { repository: "acme/repo", baseRef: "main", headSha: head, open: true },
     expectedRepository: "acme/repo", expectedBaseRef: "main",
@@ -85,7 +86,7 @@ test("autonomous authority continues safe choices and terminally maps expansion"
 test("strict readiness rejects every indeterminate or stale signal", () => {
   assert.equal(evaluatePrReadiness(readyInput(), 99).ready, true);
   const bad = evaluatePrReadiness(readyInput({
-    finalVerdict: "crashed", blockingFindings: 1, reviewCompleted: false,
+    finalVerdict: "crashed", reviewEvidence:testReviewEvidence(sha("c",40),"crashed"), blockingFindings: 1, reviewCompleted: false,
     publication: { sha: sha("d", 40), observedAt: 50 },
     requiredCi: { registered: false, requiredChecks: [], successfulChecks: [], sha: sha("d", 40), status: "pending" },
     runtimeEvidence: { status: "indeterminate" }, securityEvidence: { status: "fail" }, spendUsd: 21,

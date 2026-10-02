@@ -24,6 +24,7 @@ import { OrchestratorLoop, createInternalConfirmedControlAuthorityGuard } from "
 import { runningSessionIds } from "./orchestrator/loop.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, normaliseSeverity } from "./orchestrator/finding-classify.js";
+import { deriveMergeRecommendation } from "./orchestrator/merge-recommendation.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
@@ -37,6 +38,7 @@ import { ControlRepository } from "./control/repository.js";
 import { AutonomousControlEngine } from "./control/engine.js";
 import { InternalMergeService } from "./control/merge.js";
 import { createControlMergeProvider } from "./control/github-merge-provider.js";
+import { isExactReviewedPublishedHead, reviewFindingsDigest, reviewRecordDigest } from "./control/review-evidence.js";
 import { setCurrentRuntime } from "./runtime-registry.js";
 import { CredentialAdapter } from "./adapters/credentials.js";
 import { CredentialVault, VAULT_KEY_ENV } from "./adapters/credential-vault.js";
@@ -1816,8 +1818,8 @@ function bootstrapHarnessSync(api) {
             change.assertCurrent();
             if (outcome.status !== "shipped")
                 throw new Error(`autonomous_terminal:${outcome.status}`);
-            const row = state.db.prepare(`SELECT pr_number,final_pr_url,published_sha,published_at,cost_usd,created_at,updated_at,merge_recommendation,deploy_status FROM sessions WHERE id=?`).get(change.changeId);
-            const review = state.db.prepare(`SELECT verdict,findings FROM reviews WHERE session_id=? ORDER BY cycle DESC LIMIT 1`).get(change.changeId);
+            const row = state.db.prepare(`SELECT pr_number,final_pr_url,published_sha,published_at,cost_usd,created_at,updated_at,final_review_cycle,merge_recommendation,deploy_status FROM sessions WHERE id=?`).get(change.changeId);
+            const review = state.db.prepare(`SELECT id,session_id,cycle,verdict,findings,base_sha,candidate_sha,findings_digest,review_digest,completed FROM reviews WHERE session_id=? ORDER BY cycle DESC,created_at DESC LIMIT 1`).get(change.changeId);
             if (!row.pr_number || !row.published_sha)
                 throw new Error("publication_evidence_missing");
             authorize({
@@ -1837,7 +1839,30 @@ function bootstrapHarnessSync(api) {
             const ci = ciCredential.route.provider === "gitlab"
                 ? await getGitLabCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, token: ciCredential.token, apiBase: ciCredential.route.apiBase })
                 : await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
-            const findings = review?.findings ? JSON.parse(review.findings) : [];
+            const findingsJson = review?.findings ?? "[]";
+            const findings = JSON.parse(findingsJson);
+            const reviewVerdict = review?.verdict === "pass" || review?.verdict === "revise" || review?.verdict === "block"
+                ? review.verdict
+                : "indeterminate";
+            const computedFindingsDigest = reviewFindingsDigest(findingsJson);
+            const computedReviewDigest = reviewRecordDigest({
+                runId: review?.session_id ?? "",
+                cycle: Number(review?.cycle ?? -1),
+                baseSha: review?.base_sha ?? "",
+                candidateSha: review?.candidate_sha ?? "",
+                verdict: review?.verdict ?? "",
+                findingsDigest: review?.findings_digest ?? "",
+                completed: review?.completed === 1,
+            });
+            const reviewBound = review?.completed === 1 &&
+                review.id === `${change.changeId}-r${review.cycle}` &&
+                review.session_id === change.changeId &&
+                Number.isSafeInteger(review.cycle) &&
+                review.cycle === Number(row.final_review_cycle) &&
+                review.base_sha === change.baseRevision &&
+                isExactReviewedPublishedHead(review.candidate_sha ?? "", String(row.published_sha), pr.headSha) &&
+                review.findings_digest === computedFindingsDigest &&
+                review.review_digest === computedReviewDigest;
             const pullRequestFiles = [];
             const filesCredential = await boundProviderCredential("test");
             if (filesCredential.route.provider === "gitlab") {
@@ -1907,10 +1932,50 @@ function bootstrapHarnessSync(api) {
                 }
             }
             const operationsPerformed = operationReceipts.map((receipt) => receipt.operation);
+            const blockingFindings = findings.filter((finding) => blocksMerge(finding, classifyFinding(finding, {
+                repoHasTestScript: true,
+                hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
+            }))).length;
+            const ciStatus = ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : undefined;
+            const refreshedRecommendation = deriveMergeRecommendation({
+                review: reviewBound ? { verdict: reviewVerdict, findings } : undefined,
+                reachedCleanPass: reviewBound && reviewVerdict === "pass" && blockingFindings === 0,
+                blockingFindings,
+                ciStatus,
+            });
+            state.db.prepare(`UPDATE sessions SET merge_recommendation=?,merge_recommendation_reason=?,updated_at=? WHERE id=?`)
+                .run(refreshedRecommendation.recommendation, refreshedRecommendation.reason, Date.now(), change.changeId);
+            state.audit("control.merge_recommendation_refreshed", {
+                sessionId: change.changeId,
+                candidateSha: String(row.published_sha),
+                reviewVerdict,
+                reviewBound,
+                ciStatus: ciStatus ?? "indeterminate",
+                recommendation: refreshedRecommendation.recommendation,
+                reason: refreshedRecommendation.reason,
+            }, change.changeId);
             return {
-                finalVerdict: review?.verdict === "pass" && row.merge_recommendation === "merge" ? "pass" : review?.verdict === "block" ? "block" : "revise",
-                blockingFindings: findings.filter((f) => blocksMerge(f, classifyFinding(f, { repoHasTestScript: true, hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty }))).length,
-                reviewCompleted: !!review,
+                finalVerdict: reviewVerdict,
+                blockingFindings,
+                reviewCompleted: review?.completed === 1,
+                reviewEvidence: {
+                    recordId: review?.id ?? "",
+                    expectedRecordId: `${change.changeId}-r${Number(review?.cycle ?? -1)}`,
+                    runId: review?.session_id ?? "",
+                    expectedRunId: change.changeId,
+                    cycle: Number(review?.cycle ?? -1),
+                    expectedCycle: Number(row.final_review_cycle ?? -1),
+                    baseSha: review?.base_sha ?? "",
+                    expectedBaseSha: change.baseRevision,
+                    candidateSha: review?.candidate_sha ?? "",
+                    expectedCandidateSha: String(row.published_sha),
+                    completed: review?.completed === 1,
+                    verdict: reviewVerdict,
+                    findingsDigest: review?.findings_digest ?? "",
+                    computedFindingsDigest,
+                    recordDigest: review?.review_digest ?? "",
+                    computedRecordDigest: computedReviewDigest,
+                },
                 verificationProbes: { completed: completedProbes, required: probeRows.length, indeterminate: indeterminateProbes },
                 candidateSha: String(row.published_sha), publication: { sha: String(row.published_sha), observedAt: publicationObservedAt },
                 pullRequest: { repository: change.repositoryIdentity, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: Number(row.pr_number), url: String(row.final_pr_url) },
@@ -1918,7 +1983,7 @@ function bootstrapHarnessSync(api) {
                 requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
                     status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
                 runtimeEvidence,
-                securityEvidence: { status: !securityReceiptExact || !secretScanComplete ? "indeterminate" : review?.verdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail", sha: String(row.published_sha), ...(securityReceiptExact ? { observedAt: securityReceipt.observed_at } : {}) }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000, readinessTimeoutMs: config.control.readiness_timeout_seconds * 1000,
+                securityEvidence: { status: !securityReceiptExact || !secretScanComplete ? "indeterminate" : reviewBound && reviewVerdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail", sha: String(row.published_sha), ...(securityReceiptExact ? { observedAt: securityReceipt.observed_at } : {}) }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000, readinessTimeoutMs: config.control.readiness_timeout_seconds * 1000,
                 changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,
                 operationsPerformed, operationReceipts, allowedOperations: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
                 credentialRouteDigest: controlCredentialRouteDigest(route), expectedCredentialRouteDigest: change.credentialRouteDigest,

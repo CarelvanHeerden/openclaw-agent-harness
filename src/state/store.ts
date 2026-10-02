@@ -82,6 +82,7 @@ export function openStateStoreSync(pathHint: string): StateStore {
     { table: "sessions", column: "pr_number",                     type: "INTEGER" }, // GitHub PR number
     { table: "sessions", column: "merge_recommendation",         type: "TEXT" },    // 'merge' | 'do_not_merge' | 'needs_human_review'
     { table: "sessions", column: "merge_recommendation_reason",  type: "TEXT" },    // human-readable reasoning
+    { table: "sessions", column: "final_review_cycle",           type: "INTEGER" }, // review selected for the terminal candidate
     { table: "sessions", column: "deploy_status",                type: "TEXT" },    // 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
     { table: "sessions", column: "deploy_detail",                type: "TEXT" },    // logs excerpt / url / error
     { table: "sessions", column: "deploy_repair_attempt",        type: "INTEGER" }, // beta.36: post-merge deploy-repair attempt count
@@ -188,6 +189,11 @@ export function openStateStoreSync(pathHint: string): StateStore {
     { table: "sessions", column: "terminal_cause",                type: "TEXT" },
     { table: "sessions", column: "terminal_classification",       type: "TEXT" },
     { table: "sessions", column: "accounting_state",              type: "TEXT" },
+    { table: "reviews", column: "base_sha",                       type: "TEXT" },
+    { table: "reviews", column: "candidate_sha",                  type: "TEXT" },
+    { table: "reviews", column: "findings_digest",                type: "TEXT" },
+    { table: "reviews", column: "review_digest",                  type: "TEXT" },
+    { table: "reviews", column: "completed",                      type: "INTEGER NOT NULL DEFAULT 0" },
     { table: "sub_task_attempts", column: "worker_status",        type: "TEXT" },
     { table: "sub_task_attempts", column: "verification_status",  type: "TEXT" },
     { table: "sub_task_attempts", column: "verification_json",    type: "TEXT" },

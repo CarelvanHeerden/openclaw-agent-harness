@@ -261,8 +261,8 @@ test("beta62: MergeRecommendation type includes needs_human_review (source)", ()
 
 test("beta62: crashed or incomplete review can never pass canonical readiness", () => {
   const src = S("src/control/readiness.ts");
-  assert.match(src, /input\.finalVerdict !== "pass"/);
-  assert.match(src, /input\.finalVerdict === "crashed"/);
+  assert.match(src, /authoritativeVerdict !== "pass"/);
+  assert.match(src, /authoritativeVerdict === "crashed"/);
   assert.match(src, /review_not_passed/);
   assert.match(src, /review_crash/);
 });
@@ -279,7 +279,7 @@ test("beta62: loop wires review_failed telemetry + folds post-review persist int
   assert.match(tryBlock, /report = await this\.runAccountedProvider\(/);
   assert.doesNotMatch(tryBlock, /budget\.recordSpend/);
   assert.ok(
-    tryBlock.indexOf("conventionFindings.length > 0") < tryBlock.indexOf("this.saveReview(sessionId, cycle, report)"),
+    tryBlock.indexOf("conventionFindings.length > 0") < tryBlock.indexOf("await this.saveReview(sessionId, cycle, report, plan.worktreePath)"),
     "the effective post-gate review must be the persisted review",
   );
   assert.match(tryBlock, /\} catch/);

@@ -304,7 +304,7 @@ test("environment findings have no merge override or CI deferral", () => {
   const src = S("src/index.ts");
   const readiness = S("src/control/readiness.ts");
   assert.doesNotMatch(src, /deferToCi|env_block_cleared_by_green_ci|vercel_revise_override/);
-  assert.match(readiness, /input\.finalVerdict !== "pass"/);
+  assert.match(readiness, /authoritativeVerdict !== "pass"/);
   assert.match(readiness, /ci\.status !== "success"/);
 });
 

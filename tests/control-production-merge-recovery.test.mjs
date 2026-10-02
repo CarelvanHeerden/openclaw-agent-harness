@@ -1,3 +1,4 @@
+import { testReviewEvidence } from "./helpers/review-evidence.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -16,7 +17,7 @@ const sha = (c, n = 40) => c.repeat(n);
 const repository = "acme/repo";
 const readiness = (head) => ({
   finalVerdict: "pass", blockingFindings: 0, reviewCompleted: true,
-  verificationProbes: { completed: 1, required: 1, indeterminate: 0 }, candidateSha: head,
+  verificationProbes: { completed: 1, required: 1, indeterminate: 0 }, candidateSha:head,reviewEvidence:testReviewEvidence(head),
   publication: { sha: head, observedAt: 20 },
   pullRequest: { repository, baseRef: "main", headSha: head, open: true, number: 9, url: "https://example/pr/9" },
   expectedRepository: repository, expectedBaseRef: "main",

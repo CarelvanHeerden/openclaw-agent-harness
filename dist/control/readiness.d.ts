@@ -1,5 +1,5 @@
-export declare const READINESS_POLICY_VERSION = "strict-readiness/v2";
-export declare const READINESS_FAILURE_CODES: readonly ["review_not_passed", "blocking_findings", "review_crash", "missing_probes", "stale_publication", "pr_identity_mismatch", "required_ci_unregistered", "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed", "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded", "scope_exceeded", "operation_not_authorized", "credential_route_changed", "secret_exposure", "spend_exceeded"];
+export declare const READINESS_POLICY_VERSION = "strict-readiness/v3";
+export declare const READINESS_FAILURE_CODES: readonly ["review_not_passed", "review_verdict_inconsistent", "review_evidence_stale", "blocking_findings", "review_crash", "missing_probes", "stale_publication", "pr_identity_mismatch", "required_ci_unregistered", "required_ci_not_green", "runtime_evidence_indeterminate", "runtime_evidence_failed", "security_evidence_indeterminate", "security_evidence_failed", "elapsed_time_exceeded", "scope_exceeded", "operation_not_authorized", "credential_route_changed", "secret_exposure", "spend_exceeded"];
 export type ReadinessFailureCode = (typeof READINESS_FAILURE_CODES)[number];
 export interface ExactShaEvidence {
     readonly sha: string;
@@ -23,6 +23,24 @@ export interface OperationReceipt {
     readonly observedAt: number;
     readonly sha?: string;
     readonly source: string;
+}
+export interface BoundReviewEvidence {
+    readonly recordId: string;
+    readonly expectedRecordId: string;
+    readonly runId: string;
+    readonly expectedRunId: string;
+    readonly cycle: number;
+    readonly expectedCycle: number;
+    readonly baseSha: string;
+    readonly expectedBaseSha: string;
+    readonly candidateSha: string;
+    readonly expectedCandidateSha: string;
+    readonly completed: boolean;
+    readonly verdict: PrReadinessInput["finalVerdict"];
+    readonly findingsDigest: string;
+    readonly computedFindingsDigest: string;
+    readonly recordDigest: string;
+    readonly computedRecordDigest: string;
 }
 export interface PrReadinessInput {
     readonly finalVerdict: "pass" | "revise" | "block" | "crashed" | "indeterminate";
@@ -65,6 +83,7 @@ export interface PrReadinessInput {
     }>;
     readonly spendUsd: number;
     readonly budgetUsd: number;
+    readonly reviewEvidence: BoundReviewEvidence;
 }
 export type PrReadinessResult = Readonly<{
     ready: true;

@@ -20,7 +20,7 @@
 // called".
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { runScenario, makeWorld, makeConfig, scenarioAvailable, git, IDENT } from "./helpers/scenario.mjs";
@@ -329,7 +329,7 @@ test("rc5 #2: a PASS whose exact SHA was preview-pushed opens the PR without a s
 // 3. HEAD moving after publication invalidates the evidence.
 // ---------------------------------------------------------------------------
 
-test("rc5 #3: a commit made AFTER the preview push cannot inherit its publication", { skip }, async () => {
+test("rc5 #3: harness-authored CI is committed before preview and cannot move the reviewed head later", { skip }, async () => {
   const remote = fakeRemote();
   let previewSha = "";
   const s = await runScenario({
@@ -344,23 +344,14 @@ test("rc5 #3: a commit made AFTER the preview push cannot inherit its publicatio
         return { remoteSha: commitSha };
       },
       fetchRuntime: async () => ({ provider: "vercel", status: "ok", deploymentUrl: "https://preview.example" }),
-      // The real commit-producing finalisation step: authoring a CI workflow
-      // moves HEAD after the preview push has already happened. The loop tries
-      // this once before the preview push and again at finalisation; here the
-      // first attempt finds nothing to author and the second one commits,
-      // which is precisely the ordering that strands the preview's evidence.
-      ciAuthorWorkflow: (() => {
-        let calls = 0;
-        return async ({ worktreePath }) => {
-          if (++calls === 1) return null;
-          const rel = ".github/workflows/ci.yml";
-          mkdirSync(join(worktreePath, ".github", "workflows"), { recursive: true });
-          writeFileSync(join(worktreePath, rel), "name: ci\non: [push]\n");
-          git(["add", "-A"], worktreePath);
-          git(["-c", `user.name=${IDENT.name}`, "-c", `user.email=${IDENT.email}`, "commit", "-m", "ci: author workflow"], worktreePath);
-          return { path: rel, scripts: ["test"] };
-        };
-      })(),
+      ciAuthorWorkflow: async ({ worktreePath }) => {
+        const rel = ".github/workflows/ci.yml";
+        mkdirSync(join(worktreePath, ".github", "workflows"), { recursive: true });
+        writeFileSync(join(worktreePath, rel), "name: ci\non: [push]\n");
+        git(["add", "-A"], worktreePath);
+        git(["-c", `user.name=${IDENT.name}`, "-c", `user.email=${IDENT.email}`, "commit", "-m", "ci: author workflow"], worktreePath);
+        return { path: rel, scripts: ["test"] };
+      },
       openPullRequest: remote.prOnly,
       pushBranchAndOpenPr: remote.pushAndOpen(headOfWorktree),
       remoteBranchSha: remote.read,
@@ -369,16 +360,18 @@ test("rc5 #3: a commit made AFTER the preview push cannot inherit its publicatio
   });
 
   const head = git(["rev-parse", "HEAD"], s.worktree());
-  assert.notEqual(head, previewSha, "the fixture must actually move HEAD, or it proves nothing");
-  assert.equal(remote.state.pushes, 2, "the workflow commit is a NEW candidate and has to be published");
+  assert.equal(existsSync(join(s.worktree(),".github/workflows/ci.yml")),true);
+  assert.equal(head, previewSha, "finalization must not move HEAD after exact-SHA review and preview");
+  assert.equal(remote.state.pushes, 1, "the already-published reviewed candidate is reused");
   assert.equal(remote.state.tip, head);
 
   const invalidated = s.events("loop.publication_evidence_invalidated");
-  assert.equal(invalidated.length, 1);
-  assert.equal(invalidated[0].payload.publishedSha, previewSha);
-  assert.equal(invalidated[0].payload.candidateSha, head);
-  assert.equal(invalidated[0].payload.reason, "head_moved_after_publication");
+  assert.equal(invalidated.length, 0);
   assert.equal(s.session().published_sha, head, "evidence must name the commit that actually shipped");
+  const review=s.db.prepare("SELECT cycle,candidate_sha,completed FROM reviews WHERE session_id='S1' ORDER BY cycle DESC LIMIT 1").get();
+  assert.equal(review.candidate_sha,head,"the completed adversary review must bind the authored workflow commit");
+  assert.equal(review.completed,1);
+  assert.equal(s.session().final_review_cycle,review.cycle,"terminal state must select the persisted review cycle");
 });
 
 // ---------------------------------------------------------------------------

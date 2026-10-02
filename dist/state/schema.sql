@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   pr_number                INTEGER,          -- GitHub PR number used by the control merge operation
   merge_recommendation     TEXT,             -- 'merge' | 'do_not_merge' | 'needs_human_review'
   merge_recommendation_reason TEXT,          -- human-readable reasoning
+  final_review_cycle       INTEGER,          -- review row selected for the terminal candidate
   deploy_status            TEXT,             -- 'ready'|'error'|'pending'|'unavailable'|'reverted'|'repair_budget_paused'|NULL
   deploy_detail            TEXT,             -- logs excerpt / deployment url / error
   deploy_repair_attempt    INTEGER,          -- beta.36: post-merge deploy-repair attempt count
@@ -311,6 +312,11 @@ CREATE TABLE IF NOT EXISTS reviews (
   summary      TEXT,
   cost_usd     REAL NOT NULL DEFAULT 0,
   sdk_session_id TEXT,
+  base_sha     TEXT,
+  candidate_sha TEXT,
+  findings_digest TEXT,
+  review_digest TEXT,
+  completed    INTEGER NOT NULL DEFAULT 0,
   created_at   INTEGER NOT NULL
 );
 

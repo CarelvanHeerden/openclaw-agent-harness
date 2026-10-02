@@ -27,6 +27,7 @@ import { elideFinalScopeSubTask, validatePlan } from "./lead.js";
 import { buildPolicyDenialClarification, classifyWorkerOutcome, policyDenialFrom, correctFalseUserRejection, buildProtocolRetryHint, describeContractForRetry, observeReportIsNarration, observeEvidenceVerdict, buildObserveEvidenceHint, buildClarificationResumeHint, } from "./worker-outcome.js";
 import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
+import { reviewFindingsDigest, reviewRecordDigest } from "../control/review-evidence.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -1614,18 +1615,41 @@ export class OrchestratorLoop {
             .prepare(`UPDATE sessions SET cost_usd = cost_usd + ?, updated_at = ? WHERE id = ?`)
             .run(amount, Date.now(), sessionId);
     }
-    saveReview(sessionId, cycle, report) {
+    async saveReview(sessionId, cycle, report, worktreePath) {
+        const session = this.deps.state.db
+            .prepare(`SELECT plan_base_sha FROM sessions WHERE id=?`)
+            .get(sessionId);
+        const baseSha = session?.plan_base_sha ?? "";
+        const candidateSha = this.deps.worktreeHeadSha
+            ? await this.deps.worktreeHeadSha(worktreePath).catch(() => "")
+            : "";
+        const findingsJson = JSON.stringify(report.findings);
+        const findingsDigest = reviewFindingsDigest(findingsJson);
+        const reviewDigest = reviewRecordDigest({
+            runId: sessionId,
+            cycle,
+            baseSha,
+            candidateSha,
+            verdict: report.verdict,
+            findingsDigest,
+            completed: true,
+        });
         this.deps.state.db
-            .prepare(`INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            .prepare(`INSERT INTO reviews (id, session_id, cycle, verdict, findings, summary, cost_usd, sdk_session_id, base_sha, candidate_sha, findings_digest, review_digest, completed, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
          ON CONFLICT(id) DO UPDATE SET
            verdict = excluded.verdict,
            findings = excluded.findings,
            summary = excluded.summary,
            cost_usd = excluded.cost_usd,
            sdk_session_id = excluded.sdk_session_id,
+           base_sha = excluded.base_sha,
+           candidate_sha = excluded.candidate_sha,
+           findings_digest = excluded.findings_digest,
+           review_digest = excluded.review_digest,
+           completed = excluded.completed,
            created_at = excluded.created_at`)
-            .run(`${sessionId}-r${cycle}`, sessionId, cycle, report.verdict, JSON.stringify(report.findings), report.summary, report.costUsd, report.sdkSessionId ?? null, Date.now());
+            .run(`${sessionId}-r${cycle}`, sessionId, cycle, report.verdict, findingsJson, report.summary, report.costUsd, report.sdkSessionId ?? null, baseSha || null, candidateSha || null, findingsDigest, reviewDigest, Date.now());
     }
     /** rc.3: every finding this session has ever established, with its state. */
     loadFindingRecords(sessionId) {
@@ -2459,6 +2483,7 @@ export class OrchestratorLoop {
         // reading a number that excluded the most expensive model in the run.
         let totalCost = row.cost_usd + leadPlanningCostUsd;
         let lastReview;
+        let lastReviewCycle = 0;
         // beta.97 (Fix #7): per-cycle adversary finding counts, in cycle order, so
         // the max-cycles terminal path can distinguish CONVERGING (findings
         // trending down -> a clean pass is plausibly one more cycle away, so SURFACE
@@ -2548,6 +2573,7 @@ export class OrchestratorLoop {
         // it breaks after one pass and the flow is exactly what b126 did.
         let prUrl;
         let ciOverride = null;
+        let finalCiStatus;
         let ciNeverRegisteredCaveat = null;
         let ciRepairCyclesGranted = 0;
         let lastCiFindings = [];
@@ -2574,6 +2600,7 @@ export class OrchestratorLoop {
         let shipPhaseStart = shipStart;
         shipAttempts: for (;;) {
             let authoredWorkflowThisCycle = false;
+            let ciWorkflowAuthoringAttemptedThisCycle = false;
             //
             // beta.124: the bound includes `cycleExtensionsGranted`, and that is the
             // whole reason b119's extension does anything at all. `advance()` decided
@@ -5386,6 +5413,31 @@ export class OrchestratorLoop {
                 this.emitPhaseTiming(sessionId, "executing", cycle, executeStart, {
                     subTasks: plan.subTasks.length,
                 });
+                // Any harness-authored workflow is part of the candidate and must exist
+                // before the adversary binds its verdict to HEAD. Authoring during
+                // finalization used to move HEAD after review, making an exact-SHA review
+                // either stale or falsely transferable to unreviewed workflow bytes.
+                if (this.deps.ciAuthorWorkflow && !ciWorkflowAuthoringAttemptedThisCycle) {
+                    ciWorkflowAuthoringAttemptedThisCycle = true;
+                    try {
+                        const authored = await this.deps.ciAuthorWorkflow({
+                            worktreePath: plan.worktreePath,
+                            assertMutationAuthorized: (mutation, path) => this.assertConfirmedControlAuthority(sessionId, {
+                                kind: "implementation_choice", action: mutation === "write" ? "implement" : "commit", paths: [path], projectedCycles: cycle, projectedRetries: 0,
+                            }),
+                        });
+                        if (authored) {
+                            authoredWorkflowThisCycle = true;
+                            this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts, stage: "pre_review" }, sessionId);
+                            this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "review", cycle, path: authored.path, scripts: authored.scripts });
+                        }
+                    }
+                    catch (err) {
+                        if (err instanceof ConfirmedControlAuthorityError)
+                            throw err;
+                        this.deps.logger.warn("[loop] pre-review CI workflow authoring failed (non-fatal; repo will remain without harness-authored CI)", { sessionId, err: String(err) });
+                    }
+                }
                 // beta.108: a revise cycle that moved the branch tip nowhere has nothing
                 // for the adversary to review, and re-reviewing an unchanged diff cannot
                 // do anything but re-emit the previous cycle's findings.
@@ -5674,25 +5726,6 @@ export class OrchestratorLoop {
                     const previewStartedAt = Date.now();
                     let previewHeadSha = "";
                     try {
-                        if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
-                            try {
-                                const authored = await this.deps.ciAuthorWorkflow({
-                                    worktreePath: plan.worktreePath,
-                                    assertMutationAuthorized: (mutation, path) => this.assertConfirmedControlAuthority(sessionId, {
-                                        kind: "implementation_choice", action: mutation === "write" ? "implement" : "commit", paths: [path], projectedCycles: cycle, projectedRetries: 0,
-                                    }),
-                                });
-                                if (authored) {
-                                    authoredWorkflowThisCycle = true;
-                                    this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts, stage: "pre_preview" }, sessionId);
-                                }
-                            }
-                            catch (err) {
-                                if (err instanceof ConfirmedControlAuthorityError)
-                                    throw err;
-                                this.deps.logger.warn("[loop] pre-preview CI workflow authoring failed (non-fatal)", { sessionId, err: String(err) });
-                            }
-                        }
                         if (!this.deps.worktreeHeadSha) {
                             throw new Error("exact-SHA preview verification requires the worktree HEAD probe");
                         }
@@ -5838,7 +5871,8 @@ export class OrchestratorLoop {
                 // effective report that actually drives control flow—not the raw model
                 // response from before deterministic findings changed its verdict.
                 try {
-                    this.saveReview(sessionId, cycle, report);
+                    await this.saveReview(sessionId, cycle, report, plan.worktreePath);
+                    lastReviewCycle = cycle;
                 }
                 catch (err) {
                     this.deps.state.audit("loop.review_failed", { sessionId, cycle, isTimeout: false, stage: "persist_effective_review", error: String(err) }, sessionId);
@@ -5970,33 +6004,9 @@ export class OrchestratorLoop {
             // bare exception) was completely invisible (session 70341bc3). Emit an
             // explicit start + failure event carrying the underlying error.
             this.deps.state.audit("loop.pr_open_started", { sessionId, cycle, branch: plan.branch }, sessionId);
-            // beta.81 (Track B / B3): if the repo has NO CI, AUTHOR a GitHub Actions
-            // workflow running the repo's declared check scripts and COMMIT it into the
-            // worktree BEFORE the push, so verification runs on GitHub (Carel: build the
-            // CI, never run locally). ciAuthorWorkflow returns null when a workflow
-            // already exists or nothing is runnable. Best-effort: a failure here must
-            // not block the push (the PR + review already stand); it just means no CI.
-            if (this.deps.ciAuthorWorkflow && !authoredWorkflowThisCycle) {
-                try {
-                    const authored = await this.deps.ciAuthorWorkflow({
-                        worktreePath: plan.worktreePath,
-                        assertMutationAuthorized: (mutation, path) => this.assertConfirmedControlAuthority(sessionId, {
-                            kind: "implementation_choice", action: mutation === "write" ? "implement" : "commit", paths: [path], projectedCycles: cycle, projectedRetries: 0,
-                        }),
-                    });
-                    if (authored) {
-                        authoredWorkflowThisCycle = true;
-                        this.deps.state.audit("loop.ci_workflow_authored", { sessionId, cycle, path: authored.path, scripts: authored.scripts }, sessionId);
-                        this.deps.interactionLog?.log(sessionId, { event: "ci_workflow_authored", phase: "finalize", cycle, path: authored.path, scripts: authored.scripts });
-                        this.deps.logger.info("[loop] authored a GitHub Actions workflow for a no-CI repo (beta.81 B3)", { sessionId, path: authored.path, scripts: authored.scripts });
-                    }
-                }
-                catch (err) {
-                    if (err instanceof ConfirmedControlAuthorityError)
-                        throw err;
-                    this.deps.logger.warn("[loop] CI workflow authoring failed (non-fatal; repo will simply have no CI)", { sessionId, err: String(err) });
-                }
-            }
+            // CI workflow authoring is deliberately complete before adversary review.
+            // Finalization must never move HEAD after the exact candidate SHA is bound
+            // into the completed review record.
             try {
                 // rc.5 (#2): THE FIX FOR PR #1168.
                 //
@@ -6121,6 +6131,7 @@ export class OrchestratorLoop {
                     this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
                     const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
                     if (ci.outcome === "success") {
+                        finalCiStatus = "success";
                         const required = requiredBehaviorChecks;
                         const observedNames = ci.checkNames ?? [];
                         const observed = observedNames.map((name) => name.toLowerCase());
@@ -6152,6 +6163,7 @@ export class OrchestratorLoop {
                         }
                     }
                     if (ci.outcome === "failure") {
+                        finalCiStatus = "failure";
                         // beta.127: the excerpt now comes from the Actions job log when the
                         // check run carries no output of its own, so this is the failing
                         // assertion rather than the word "failure". 1500 chars was sized for
@@ -6164,6 +6176,7 @@ export class OrchestratorLoop {
                         };
                     }
                     else if (ci.outcome === "timeout") {
+                        finalCiStatus = "pending";
                         ciOverride = {
                             recommendation: "needs_human_review",
                             reason: `CI still running after ${Math.round(ci.waitedSeconds / 60)} min on ${headSha}. ` +
@@ -6171,6 +6184,7 @@ export class OrchestratorLoop {
                         };
                     }
                     else if (ci.outcome === "indeterminate") {
+                        finalCiStatus = undefined;
                         // beta.119: we never got a readable verdict out of GitHub for this
                         // sha. Pre-b119 this path did not exist -- an unreadable check-run
                         // list collapsed into "success" and the run shipped a merge
@@ -6184,6 +6198,7 @@ export class OrchestratorLoop {
                         };
                     }
                     else if (ci.outcome === "authored_workflow_never_registered") {
+                        finalCiStatus = "none";
                         // beta.91 (F4): we authored + pushed a workflow this cycle but GitHub
                         // never registered a run within the grace window. NON-blocking: the
                         // merge recommendation is NOT overridden to needs_human_review (that
@@ -6367,7 +6382,7 @@ export class OrchestratorLoop {
             mergeBlockingFindings: mergeBlockers.length,
             mergeBlockingTitles: mergeBlockers.map((f) => f.title || f.dimension || "(untitled)"),
             reachedCleanPass,
-            ciStatus: undefined, // the merge tool re-checks CI at merge time
+            ciStatus: finalCiStatus,
         });
         // beta.81 (Track B / B2): a CI failure/timeout OVERRIDES the review-derived
         // recommendation to needs_human_review -- CI is the verification spine, so
@@ -6434,8 +6449,8 @@ export class OrchestratorLoop {
         })}`;
         const prNumber = parsePrNumber(prUrl);
         this.deps.state.db
-            .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, status = 'done', updated_at = ? WHERE id = ?`)
-            .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, Date.now(), sessionId);
+            .prepare(`UPDATE sessions SET final_pr_url = ?, pr_number = ?, merge_recommendation = ?, merge_recommendation_reason = ?, final_review_cycle = ?, status = 'done', updated_at = ? WHERE id = ?`)
+            .run(prUrl, prNumber ?? null, finalRecommendation, finalReason, lastReviewCycle || null, Date.now(), sessionId);
         this.recordPublicationEvidence(sessionId, publication);
         this.deps.state.audit("loop.shipped", {
             sessionId, prUrl, prNumber, mergeRecommendation: finalRecommendation, reason: finalReason, ciOverride: !!ciOverride,
