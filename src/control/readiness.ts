@@ -19,6 +19,10 @@ export interface RequiredCiEvidence {
   readonly successfulChecks: readonly string[];
   readonly sha: string;
   readonly status: "success" | "failure" | "pending" | "indeterminate";
+  readonly observedChecks?: readonly string[];
+  readonly policySource?: string;
+  readonly policyStatus?: "readable" | "denied" | "indeterminate";
+  readonly policyDetail?: string;
 }
 export interface DeterminateEvidence { readonly status: "pass" | "fail" | "not_required" | "indeterminate"; readonly detail?: string; readonly sha?: string; readonly observedAt?: number }
 export interface OperationReceipt { readonly operation: string; readonly observedAt: number; readonly sha?: string; readonly source: string }

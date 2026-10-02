@@ -50,6 +50,7 @@ import {
 import type { RuntimeSnapshot } from "../vercel/logs.js";
 import { estimateSubTaskCost } from "../adapters/claude-code.js";
 import { deriveMergeRecommendation } from "./merge-recommendation.js";
+import { plannerCiDiagnostics } from "./ci-authority.js";
 import { reviewFindingsDigest, reviewRecordDigest } from "../control/review-evidence.js";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -1048,7 +1049,7 @@ export interface OrchestratorDeps {
      * instead -- a real verdict over everything Actions ran, blind to any
      * third-party GitHub App check run. Absent is treated as `check_runs`.
      */
-    checksSource?: "check_runs" | "workflow_runs" | "";
+    checksSource?: "check_runs" | "graphql_rollup" | "workflow_runs" | "";
   }>;
 
   /**
@@ -3174,6 +3175,16 @@ export class OrchestratorLoop {
           this.deps.logger.warn("[loop] beta.94 final-scope sub-task elision failed (non-fatal)", { sessionId, err: String(err) });
         }
       }
+      const plannerCiRequirements = plannerCiDiagnostics(plan.subTasks);
+      if (plannerCiRequirements.length > 0) {
+        this.deps.state.audit("planner_ci_requirement_not_authoritative", {
+          sessionId,
+          proposed:plannerCiRequirements,
+          repositoryRequiredChecks:"resolved_from_provider_after_publication",
+          explicitBriefRequirements:[],
+          disposition:"ignored_as_remote_policy; commands remain advisory local guidance",
+        }, sessionId);
+      }
       this.deps.state.db
         .prepare(
           `UPDATE sessions SET lead_plan_json = ?, repo = ?, branch = ?, worktree_path = ?,
@@ -3708,11 +3719,6 @@ export class OrchestratorLoop {
     // separately from the published SHA so "CI was green" can never be read as
     // being about a commit CI never saw.
     let ciPolledSha = "";
-    const requiredBehaviorChecks = plan.subTasks.flatMap((task) =>
-      (task.requiredBehaviorChecks ?? []).filter((check) => check.required !== false),
-    );
-    let behaviorVerificationPassed = requiredBehaviorChecks.length === 0;
-    let behaviorVerificationFailure: string | null = null;
     // Measured across every ship attempt, so the timing reflects what the run
     // actually spent getting to a shippable state.
     const shipStart = Date.now();
@@ -7824,49 +7830,12 @@ export class OrchestratorLoop {
         }
       }
       if (headSha && (this.deps.ciCombinedStatus || this.deps.ciSnapshot)) {
-        behaviorVerificationFailure = null;
         ciPolledSha = headSha;
         this.setStatus(sessionId, "reviewing");
         this.markProgress(sessionId, "ci_wait", "finalize", { cycle, sha: headSha });
         const ci = await this.pollCiStatus({ sessionId, repoFullName: plan.repo, sha: headSha, requester: row.requester, workflowAuthoredThisSession: authoredWorkflowThisCycle });
         if (ci.outcome === "success") {
           finalCiStatus = "success";
-          const required = requiredBehaviorChecks;
-          const observedNames = ci.checkNames ?? [];
-          const observed = observedNames.map((name) => name.toLowerCase());
-          const missing = required.filter((check) => {
-            const wanted = check.ciCheck.toLowerCase();
-            return !observed.some((name) => name === wanted || name.includes(wanted));
-          });
-          if (missing.length > 0) {
-            behaviorVerificationPassed = false;
-            behaviorVerificationFailure =
-              `required CI behavior checks missing on ${headSha}: ${missing.map((check) => check.ciCheck).join(", ")}`;
-            ciOverride = {
-              recommendation: "needs_human_review",
-              reason: `${behaviorVerificationFailure}. Path/commit checks are not behavioral verification.`,
-            };
-            this.deps.state.audit(
-              "loop.behavior_verification_failed",
-              {
-                sessionId,
-                cycle,
-                candidateSha: headSha,
-                ciSha: headSha,
-                required: required.map((check) => ({ id: check.id, ciCheck: check.ciCheck })),
-                observed: observedNames,
-                missing: missing.map((check) => check.ciCheck),
-              },
-              sessionId,
-            );
-          } else if (required.length > 0) {
-            behaviorVerificationPassed = true;
-            this.deps.state.audit(
-              "loop.behavior_verification_passed",
-              { sessionId, cycle, candidateSha: headSha, observed: observedNames, required: required.map((check) => check.ciCheck) },
-              sessionId,
-            );
-          }
         }
         if (ci.outcome === "failure") {
           finalCiStatus = "failure";
@@ -8087,15 +8056,6 @@ export class OrchestratorLoop {
       break shipAttempts;
     }
     } // end shipAttempts
-
-    if (!behaviorVerificationPassed) {
-      return await this.finaliseFailedPreserveWorktree(
-        sessionId,
-        `behavior_verification_failed: ${behaviorVerificationFailure ?? "required CI checks never produced a green verdict on the candidate SHA"}`,
-        cycle,
-        totalCost,
-      );
-    }
 
     // beta.34: derive the post-ship MERGE / DO-NOT-MERGE recommendation from
     // the final review + whether we reached a clean pass. Persist it + the PR

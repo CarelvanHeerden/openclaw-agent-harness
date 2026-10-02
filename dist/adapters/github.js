@@ -195,6 +195,7 @@ const GH_HEADERS = (token) => ({
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "openclaw-agent-harness/0.1",
 });
+const GITHUB_ACTIONS_APP_ID = 15368;
 /** beta.34: fetch a PR's head SHA + state (open/closed, merged). */
 export async function getPullRequest(input) {
     const apiBase = input.apiBase ?? "https://api.github.com";
@@ -305,6 +306,104 @@ function denialRemedy(api, status) {
     return ('the token cannot read the statuses API (HTTP 403). A fine-grained PAT needs the "Commit statuses: read" repository ' +
         'permission; a classic PAT needs the "repo" scope. Waiting will not change this.');
 }
+/** Resolve provider-owned required status contexts for one target branch. */
+export async function getRequiredChecksPolicy(input) {
+    const base = input.apiBase ?? "https://api.github.com";
+    try {
+        const response = await fetch(`${base}/repos/${input.repoFullName}/rules/branches/${encodeURIComponent(input.baseBranch)}`, { headers: GH_HEADERS(input.ghToken), signal: input.signal });
+        if (response.ok) {
+            const rules = await response.json();
+            if (!Array.isArray(rules))
+                return { status: "indeterminate", requiredChecks: [], requiredCheckBindings: [], source: "github_branch_rules", detail: "GitHub branch rules returned an invalid payload." };
+            const requiredCheckBindings = rules
+                .filter((rule) => rule?.type === "required_status_checks")
+                .flatMap((rule) => rule.parameters?.required_status_checks ?? [])
+                .map((check) => ({ context: check.context?.trim() ?? "", ...(Number.isSafeInteger(check.integration_id) && check.integration_id > 0 ? { appId: check.integration_id } : {}) }))
+                .filter((check) => check.context);
+            const classic = await fetch(`${base}/repos/${input.repoFullName}/branches/${encodeURIComponent(input.baseBranch)}/protection/required_status_checks`, { headers: GH_HEADERS(input.ghToken), signal: input.signal });
+            if (classic.ok) {
+                const body = await classic.json();
+                const checks = (body.checks ?? []).map((check) => ({ context: check.context?.trim() ?? "", ...(Number.isSafeInteger(check.app_id) && check.app_id > 0 ? { appId: check.app_id } : {}) }));
+                const contexts = (body.contexts ?? []).map((context) => ({ context: context.trim() }));
+                requiredCheckBindings.push(...(checks.length > 0 ? checks : contexts).filter((check) => check.context));
+            }
+            else {
+                const detail = await classic.text().catch(() => "");
+                const explicitlyUnprotected = classic.status === 404 && /branch not protected/i.test(detail);
+                if (!explicitlyUnprotected) {
+                    return {
+                        status: classic.status === 401 || classic.status === 403 ? "denied" : "indeterminate",
+                        requiredChecks: [],
+                        requiredCheckBindings: [],
+                        source: "github_branch_rules",
+                        detail: `Classic branch protection required checks are not readable (${classic.status}${detail ? `: ${detail.slice(0, 160)}` : ""}).`,
+                    };
+                }
+            }
+            const deduplicatedBindings = requiredCheckBindings.filter((binding, index, all) => all.findIndex((candidate) => candidate.context === binding.context && candidate.appId === binding.appId) === index);
+            const requiredChecks = [...new Set(deduplicatedBindings.map((check) => check.context))];
+            return { status: "readable", requiredChecks, requiredCheckBindings: deduplicatedBindings, source: "github_branch_rules", detail: `Resolved ${requiredChecks.length} required status context(s) from GitHub rulesets and classic protection.` };
+        }
+        if (response.status === 404) {
+            return { status: "indeterminate", requiredChecks: [], requiredCheckBindings: [], source: "github_branch_rules", detail: "GitHub branch rules were not found or are hidden from this credential (404)." };
+        }
+        const body = await response.text().catch(() => "");
+        if (response.status === 401 || response.status === 403) {
+            return { status: "denied", requiredChecks: [], requiredCheckBindings: [], source: "github_branch_rules", detail: `GitHub branch rules are not readable with this credential (${response.status}${body ? `: ${body.slice(0, 160)}` : ""}).` };
+        }
+        return { status: "indeterminate", requiredChecks: [], requiredCheckBindings: [], source: "github_branch_rules", detail: `GitHub branch rules could not be read (${response.status}${body ? `: ${body.slice(0, 160)}` : ""}).` };
+    }
+    catch (error) {
+        return { status: "indeterminate", requiredChecks: [], requiredCheckBindings: [], source: "github_branch_rules", detail: `GitHub branch rules request failed: ${String(error)}` };
+    }
+}
+async function readGraphqlCheckRollup(input) {
+    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], bindings: [], reason: "" };
+    const [owner, name] = input.repoFullName.split("/");
+    if (!owner || !name)
+        return { ...miss, reason: "invalid repository identity for GraphQL check rollup" };
+    const endpoint = input.base === "https://api.github.com"
+        ? "https://api.github.com/graphql"
+        : input.base.replace(/\/api\/v3\/?$/, "/api/graphql");
+    try {
+        const response = await fetch(endpoint, {
+            method: "POST",
+            headers: { ...GH_HEADERS(input.ghToken), "Content-Type": "application/json" },
+            signal: input.signal,
+            body: JSON.stringify({
+                query: `query($owner:String!,$name:String!,$sha:GitObjectID!){repository(owner:$owner,name:$name){object(oid:$sha){... on Commit{statusCheckRollup{contexts(first:100){totalCount nodes{__typename ... on CheckRun{name status conclusion checkSuite{app{databaseId}}}}}}}}}}`,
+                variables: { owner, name, sha: input.sha },
+            }),
+        });
+        if (!response.ok)
+            return { ...miss, reason: `GraphQL check rollup HTTP ${response.status}` };
+        const body = await response.json();
+        if (body.errors?.length)
+            return { ...miss, reason: `GraphQL check rollup returned ${body.errors.length} error(s)` };
+        const contexts = body.data?.repository?.object?.statusCheckRollup?.contexts;
+        const nodes = contexts?.nodes ?? [];
+        if ((contexts?.totalCount ?? nodes.length) > nodes.length)
+            return { ...miss, reason: `GraphQL check rollup truncated (${contexts?.totalCount} total, ${nodes.length} read)` };
+        const runs = nodes.filter((node) => node.__typename === "CheckRun");
+        const bindings = runs.map((run) => ({
+            context: run.name?.trim() ?? "",
+            ...(Number.isSafeInteger(run.checkSuite?.app?.databaseId) && run.checkSuite.app.databaseId > 0 ? { appId: run.checkSuite.app.databaseId } : {}),
+        })).filter((binding) => binding.context);
+        return {
+            ok: true,
+            total: runs.length,
+            incomplete: runs.filter((run) => run.status?.toLowerCase() !== "completed").length,
+            failed: runs.filter((run) => FAILED_CONCLUSIONS.includes(run.conclusion?.toLowerCase() ?? "")).length,
+            passed: runs.filter((run) => run.status?.toLowerCase() === "completed" && PASSING_CONCLUSIONS.includes(run.conclusion?.toLowerCase() ?? "")).length,
+            names: [...new Set(bindings.map((binding) => binding.context))],
+            bindings,
+            reason: "",
+        };
+    }
+    catch (error) {
+        return { ...miss, reason: `GraphQL check rollup threw: ${String(error).slice(0, 120)}` };
+    }
+}
 /**
  * beta.125: read a commit's CI state from the Actions workflow-runs API.
  *
@@ -319,7 +418,7 @@ function denialRemedy(api, status) {
  * where its answer came from.
  */
 async function readWorkflowRuns(input) {
-    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], reason: "" };
+    const miss = { ok: false, total: 0, incomplete: 0, failed: 0, passed: 0, names: [], bindings: [], reason: "" };
     try {
         const res = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs?head_sha=${input.sha}&per_page=100`, { headers: GH_HEADERS(input.ghToken), signal: input.signal });
         if (!res.ok)
@@ -330,14 +429,44 @@ async function readWorkflowRuns(input) {
         if ((body.total_count ?? runs.length) > runs.length) {
             return { ...miss, reason: `workflow-runs truncated (${body.total_count} total, ${runs.length} read)` };
         }
+        const jobBindings = [];
+        const jobReadFailures = [];
+        for (const run of runs) {
+            if (!Number.isSafeInteger(run.id))
+                continue;
+            try {
+                const jobsResponse = await fetch(`${input.base}/repos/${input.repoFullName}/actions/runs/${run.id}/jobs?per_page=100`, { headers: GH_HEADERS(input.ghToken), signal: input.signal });
+                if (!jobsResponse.ok) {
+                    jobReadFailures.push(`${run.id}:${jobsResponse.status}`);
+                    continue;
+                }
+                const jobsBody = await jobsResponse.json();
+                const jobs = jobsBody.jobs ?? [];
+                if ((jobsBody.total_count ?? jobs.length) > jobs.length) {
+                    jobReadFailures.push(`${run.id}:truncated`);
+                    continue;
+                }
+                for (const job of jobs) {
+                    const context = job.name?.trim() ?? "";
+                    if (context)
+                        jobBindings.push({ context, appId: GITHUB_ACTIONS_APP_ID });
+                }
+            }
+            catch (error) {
+                jobReadFailures.push(`${run.id}:${String(error).slice(0, 80)}`);
+            }
+        }
+        const workflowBindings = runs.map((run) => ({ context: run.name?.trim() ?? "", appId: GITHUB_ACTIONS_APP_ID })).filter((binding) => binding.context);
+        const bindings = [...workflowBindings, ...jobBindings];
         return {
             ok: true,
             total: runs.length,
             incomplete: runs.filter((r) => r.status !== "completed").length,
             failed: runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length,
             passed: runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length,
-            names: runs.map((r) => r.name ?? "").filter(Boolean),
-            reason: "",
+            names: [...new Set(bindings.map((binding) => binding.context))],
+            bindings,
+            reason: jobReadFailures.length > 0 ? `workflow jobs partially unreadable (${jobReadFailures.join(", ")})` : "",
         };
     }
     catch (err) {
@@ -368,7 +497,7 @@ export async function getCiSnapshot(input) {
     const base = input.apiBase ?? "https://api.github.com";
     const snap = {
         state: "unknown", statusReadable: false, checksReadable: false,
-        statusState: "", statusCount: 0, checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, checkNames: [], reason: "",
+        statusState: "", statusCount: 0, statusNames: [], statusBindings: [], checkTotal: 0, checkIncomplete: 0, checkFailed: 0, checkPassed: 0, checkNames: [], checkBindings: [], reason: "",
         permanentDenial: "",
         checksSource: "",
     };
@@ -382,6 +511,8 @@ export async function getCiSnapshot(input) {
             snap.statusReadable = true;
             snap.statusState = sj.state ?? "";
             snap.statusCount = sj.total_count ?? 0;
+            snap.statusNames = (sj.statuses ?? []).map((status) => status.context?.trim() ?? "").filter(Boolean);
+            snap.statusBindings = snap.statusNames.map((context) => ({ context }));
         }
         else {
             snap.reason = `statuses API HTTP ${sRes.status}`;
@@ -406,6 +537,7 @@ export async function getCiSnapshot(input) {
             snap.checkFailed = runs.filter((r) => FAILED_CONCLUSIONS.includes(r.conclusion ?? "")).length;
             snap.checkPassed = runs.filter((r) => r.status === "completed" && PASSING_CONCLUSIONS.includes(r.conclusion ?? "")).length;
             snap.checkNames = runs.map((r) => r.name ?? "").filter(Boolean);
+            snap.checkBindings = runs.map((run) => ({ context: run.name?.trim() ?? "", ...(Number.isSafeInteger(run.app?.id) && run.app.id > 0 ? { appId: run.app.id } : {}) })).filter((binding) => binding.context);
             // The list is capped at 100 per page. A commit with more checks than that
             // would silently look complete, so refuse to judge it rather than guess.
             if ((cj.total_count ?? runs.length) > runs.length) {
@@ -422,6 +554,29 @@ export async function getCiSnapshot(input) {
     catch (err) {
         const m = `check-runs API threw: ${String(err).slice(0, 120)}`;
         snap.reason = snap.reason ? `${snap.reason}; ${m}` : m;
+    }
+    if (!snap.checksReadable && denials.length > 0) {
+        const graphql = await readGraphqlCheckRollup({
+            repoFullName: input.repoFullName,
+            sha: input.sha,
+            ghToken: input.ghToken,
+            base,
+            signal: input.signal,
+        });
+        if (graphql.ok) {
+            snap.checksReadable = true;
+            snap.checksSource = "graphql_rollup";
+            snap.checkTotal = graphql.total;
+            snap.checkIncomplete = graphql.incomplete;
+            snap.checkFailed = graphql.failed;
+            snap.checkPassed = graphql.passed;
+            snap.checkNames = graphql.names;
+            snap.checkBindings = graphql.bindings;
+            snap.reason = `${snap.reason}; read ${graphql.total} check run(s) through GraphQL`;
+        }
+        else if (graphql.reason) {
+            snap.reason = `${snap.reason}; ${graphql.reason}`;
+        }
     }
     // beta.125: the Checks API is closed to this token, but the commit's CI may
     // not be. Ask the Actions workflow-runs endpoint, which a fine-grained PAT
@@ -443,7 +598,8 @@ export async function getCiSnapshot(input) {
             snap.checkFailed = wf.failed;
             snap.checkPassed = wf.passed;
             snap.checkNames = wf.names;
-            snap.reason = `${snap.reason}; read ${wf.total} Actions workflow run(s) instead`;
+            snap.checkBindings = wf.bindings;
+            snap.reason = `${snap.reason}; read ${wf.total} Actions workflow run(s) instead${wf.reason ? `; ${wf.reason}` : ""}`;
         }
         else if (wf.reason) {
             snap.reason = `${snap.reason}; ${wf.reason}`;

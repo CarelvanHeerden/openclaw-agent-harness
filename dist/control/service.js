@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { authorityEnvelopeDigest, createAuthorityEnvelope } from "./authority.js";
 import { createVerifiedMergeAuthorization } from "./merge.js";
 import { evaluatePrReadiness } from "./readiness.js";
-export const CONTROL_PLANE_CONTRACT_VERSION = "control-plane-contract/v3";
+export const CONTROL_PLANE_CONTRACT_VERSION = "control-plane-contract/v4";
 export const CONFIRM_DOMAIN = "control-plane-confirm/v2";
 export const MERGE_DOMAIN = "control-plane-merge/v2";
 function stable(value) { if (Array.isArray(value))
@@ -10,6 +10,26 @@ function stable(value) { if (Array.isArray(value))
     return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`; return JSON.stringify(value); }
 export function controlDigest(domain, binding) { return createHash("sha256").update(`${domain}\n${stable(binding)}`).digest("hex"); }
 function digest(value) { return createHash("sha256").update(stable(value)).digest("hex"); }
+function readinessTerminalSummary(input, readiness) {
+    if (readiness.ready)
+        return null;
+    const policyDetail = readiness.failures.some((failure) => failure === "required_ci_unregistered" || failure === "required_ci_not_green")
+        ? input.requiredCi.policyDetail?.trim()
+        : "";
+    return `Readiness failed: ${readiness.failures.join(", ")}${policyDetail ? ` — ${policyDetail}` : ""}`;
+}
+function executionFailureCode(error) {
+    const value = String(error);
+    if (value.includes("explicit_ci_requirement_not_found"))
+        return "explicit_ci_requirement_not_found";
+    if (value.includes("explicit_ci_policy_indeterminate"))
+        return "explicit_ci_policy_indeterminate";
+    return "execution_failed";
+}
+function executionFailureSummary(error) {
+    const code = executionFailureCode(error);
+    return code === "execution_failed" ? "The change did not complete." : `Execution refused: ${code}.`;
+}
 export function confirmationAttestationDigest(reviewDigest, att) {
     return controlDigest(CONFIRM_DOMAIN, { reviewDigest, attestation: { version: att.version, provenance: att.provenance, operation: att.operation, actorIdentity: att.actorIdentity, conversationIdentity: att.conversationIdentity, hostEventId: att.hostEventId, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt } });
 }
@@ -91,7 +111,7 @@ export class ControlPlaneService {
         if (operation === "merge_change") {
             return { operation, changeId, repository: run.repository, baseRef: run.baseRef, pullRequest: { number: p.pr_number, url: p.pr_url, headSha: p.published_sha }, readinessDigest: p.readiness_digest };
         }
-        return { operation, changeId, repository: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), allowedActions: [...run.authorityEnvelope.allowedActions], limits: { budgetUsd: run.authorityEnvelope.limits.budgetUsd, activeTimeMs: run.authorityEnvelope.limits.activeTimeMs, cycles: run.authorityEnvelope.limits.cycles, retries: run.authorityEnvelope.limits.retries }, risk: p.security_class, assumptions: JSON.parse(p.assumptions_json), ...(this.ttl === null ? {} : { proposalExpiresAt: p.proposal_expires_at }) };
+        return { operation, changeId, repository: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), requiredRemoteChecks: parseList(p.required_remote_checks_json), allowedActions: [...run.authorityEnvelope.allowedActions], limits: { budgetUsd: run.authorityEnvelope.limits.budgetUsd, activeTimeMs: run.authorityEnvelope.limits.activeTimeMs, cycles: run.authorityEnvelope.limits.cycles, retries: run.authorityEnvelope.limits.retries }, risk: p.security_class, assumptions: JSON.parse(p.assumptions_json), ...(this.ttl === null ? {} : { proposalExpiresAt: p.proposal_expires_at }) };
     }
     async prepare(input, context) {
         const { actor, conversation } = contextIdentity(context);
@@ -114,6 +134,9 @@ export class ControlPlaneService {
         if (scope.length === 0)
             throw new ControlError("invalid_scope", "At least one explicit repository-relative scope path is required.");
         const excluded = [...new Set(input.excludedScope === undefined ? brief.outOfScope : validateScope(input.excludedScope, "excludedScope"))];
+        const requiredRemoteChecks = input.requiredRemoteChecks === undefined ? [] : [...new Set(validateScope(input.requiredRemoteChecks, "requiredRemoteChecks"))];
+        if (requiredRemoteChecks.length > 100 || requiredRemoteChecks.some(check => check.length > 240))
+            throw new ControlError("invalid_required_remote_checks", "Explicit remote check names exceed the supported bounds.");
         if ([...scope, ...excluded].some(p => p.startsWith("/") || p.startsWith("//") || /^[A-Za-z]:/.test(p) || p.includes("\\") || p.split("/").includes("..")))
             throw new ControlError("path_violation", "Scope paths must be unambiguous repository-relative POSIX paths.");
         if (new Set([...scope, ...excluded].map((path) => path.toLowerCase())).size !== new Set([...scope, ...excluded]).size)
@@ -137,9 +160,9 @@ export class ControlPlaneService {
         const authority = createAuthorityEnvelope({ version: 1, requesterId: actor, conversationId: conversation, repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, briefDigest, policyDigest: resolved.policyDigest, scope: { paths: scope }, allowedActions: ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"], limits: { budgetUsd: budget, activeTimeMs: time * 1000, cycles, retries }, issuedAt: now, expiresAt: proposalExpiresAt, nonce: randomBytes(18).toString("base64url") });
         let run = this.deps.repository.createRun({ id, authority, createdAt: now });
         run = this.deps.repository.transition({ runId: id, expectedVersion: run.version, to: "awaiting_confirmation", actor: "control_service", reason: "prepared", at: now });
-        this.deps.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,policy_version,minimum_runtime_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, 1, 1, resolved.baseRevision, JSON.stringify(brief), JSON.stringify(scope), JSON.stringify(excluded), credentialRouteDigest, resolved.securityClass, JSON.stringify(assumptions), proposalExpiresAt, CONTROL_PLANE_CONTRACT_VERSION, this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14", now, now);
+        this.deps.db.prepare(`INSERT INTO control_proposals (run_id,generation,confirmable,base_revision,brief_json,scope_json,excluded_scope_json,required_remote_checks_json,credential_route_digest,security_class,assumptions_json,proposal_expires_at,policy_version,minimum_runtime_version,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(id, 1, 1, resolved.baseRevision, JSON.stringify(brief), JSON.stringify(scope), JSON.stringify(excluded), JSON.stringify(requiredRemoteChecks), credentialRouteDigest, resolved.securityClass, JSON.stringify(assumptions), proposalExpiresAt, CONTROL_PLANE_CONTRACT_VERSION, this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14", now, now);
         this.deps.db.prepare(`INSERT INTO control_monitor_capabilities (token_digest,run_id,actor_identity,conversation_identity,created_at) VALUES (?,?,?,?,?)`).run(digest(monitorToken), id, actor, conversation, now);
-        return { ok: true, changeId: id, state: "prepared", confirmable: true, summary: brief.title, brief: structuredClone(brief), repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, baseRevision: resolved.baseRevision, scope, excludedScope: excluded, allowedActions: [...authority.allowedActions], budget: { currency: "USD", maximum: budget.toFixed(2) }, timeLimitSeconds: time, limits: { cycles, retries }, risk: resolved.securityClass, assumptions, contract: { policyVersion: CONTROL_PLANE_CONTRACT_VERSION, minimumRuntimeVersion: this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14" }, monitoring: { token: monitorToken, readOnly: true, changeId: id }, confirmation: { ...(this.ttl === null ? {} : { expiresAt: new Date(proposalExpiresAt).toISOString() }), reviewDigest: this.confirmBindingDigest(id) } };
+        return { ok: true, changeId: id, state: "prepared", confirmable: true, summary: brief.title, brief: structuredClone(brief), repository: resolved.repositoryIdentity, baseRef: resolved.baseRef, baseRevision: resolved.baseRevision, scope, excludedScope: excluded, requiredRemoteChecks, allowedActions: [...authority.allowedActions], budget: { currency: "USD", maximum: budget.toFixed(2) }, timeLimitSeconds: time, limits: { cycles, retries }, risk: resolved.securityClass, assumptions, contract: { policyVersion: CONTROL_PLANE_CONTRACT_VERSION, minimumRuntimeVersion: this.deps.minimumRuntimeVersion ?? "2.0.0-rc.14" }, monitoring: { token: monitorToken, readOnly: true, changeId: id }, confirmation: { ...(this.ttl === null ? {} : { expiresAt: new Date(proposalExpiresAt).toISOString() }), reviewDigest: this.confirmBindingDigest(id) } };
     }
     async confirm(changeId, context) {
         const { actor, conversation } = contextIdentity(context);
@@ -331,7 +354,7 @@ export class ControlPlaneService {
         const p = this.proposal(changeId);
         const assertCurrent = () => { const row = this.deps.db.prepare(`SELECT status,lease_owner,lease_fence,lease_expires_at FROM control_dispatch_intents WHERE run_id=?`).get(changeId); if (!row || row.status !== "running" || row.lease_owner !== owner || row.lease_fence !== intent.lease_fence || row.lease_expires_at <= this.now() || !this.deps.repository.validateLease(lease, this.now()))
             throw new Error(`stale_dispatch:${changeId}`); };
-        const input = await this.deps.executeEngine({ changeId, brief: JSON.parse(p.brief_json), actorIdentity: run.requesterId, conversationIdentity: run.conversationId, repositoryIdentity: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), credentialRouteDigest: p.credential_route_digest, lease, assertCurrent, checkpoint: (sha, payload) => { assertCurrent(); this.deps.engine.checkpoint(changeId, lease, sha, payload); } });
+        const input = await this.deps.executeEngine({ changeId, brief: JSON.parse(p.brief_json), actorIdentity: run.requesterId, conversationIdentity: run.conversationId, repositoryIdentity: run.repository, baseRef: run.baseRef, baseRevision: p.base_revision, budgetUsd: run.authorityEnvelope.limits.budgetUsd, timeLimitSeconds: Math.floor(run.authorityEnvelope.limits.activeTimeMs / 1000), scope: parseList(p.scope_json), excludedScope: parseList(p.excluded_scope_json), requiredRemoteChecks: parseList(p.required_remote_checks_json), credentialRouteDigest: p.credential_route_digest, lease, assertCurrent, checkpoint: (sha, payload) => { assertCurrent(); this.deps.engine.checkpoint(changeId, lease, sha, payload); } });
         assertCurrent();
         const readiness = evaluatePrReadiness(input, this.now());
         this.persistDispatchCompletion(changeId, owner, intent.lease_fence, lease, p, input, readiness);
@@ -352,8 +375,8 @@ export class ControlPlaneService {
         }
         const run = this.deps.repository.getRun(changeId);
         if (run?.state === "autonomous_run" && lease && this.deps.repository.validateLease(lease, this.now()))
-            this.deps.repository.transitionFenced({ runId: changeId, expectedVersion: run.version, to: "failed", actor: "autonomous_engine", reason: "execution_failed", terminalCode: "execution_failed", lease, at: this.now() });
-        this.deps.db.prepare(`UPDATE control_proposals SET terminal_summary='The change did not complete.',updated_at=? WHERE run_id=?`).run(this.now(), changeId);
+            this.deps.repository.transitionFenced({ runId: changeId, expectedVersion: run.version, to: "failed", actor: "autonomous_engine", reason: executionFailureCode(error), terminalCode: executionFailureCode(error), lease, at: this.now() });
+        this.deps.db.prepare(`UPDATE control_proposals SET terminal_summary=?,updated_at=? WHERE run_id=?`).run(executionFailureSummary(error), this.now(), changeId);
         this.deps.db.prepare(`UPDATE control_dispatch_intents SET status='failed',last_error=?,completed_at=?,updated_at=? WHERE run_id=? AND lease_owner=? AND lease_fence=?`).run(String(error).slice(0, 500), this.now(), this.now(), changeId, owner, intent.lease_fence);
     } }
     persistDispatchCompletion(changeId, owner, intentFence, lease, p, input, readiness) { const at = this.now(), generation = p.generation + 1; this.deps.db.exec("BEGIN IMMEDIATE"); try {
@@ -362,7 +385,7 @@ export class ControlPlaneService {
             throw new Error(`stale_dispatch:${changeId}`);
         this.deps.db.prepare(`INSERT INTO control_readiness_results (run_id,lease_fence,ready,verified_sha,failures_json,created_at) VALUES (?,?,?,?,?,?)`).run(changeId, lease.fence, readiness.ready ? 1 : 0, readiness.ready ? readiness.verifiedSha : null, JSON.stringify(readiness.ready ? [] : readiness.failures), at);
         this.deps.db.prepare(`INSERT INTO control_readiness_attestations (content_digest,run_id,generation,policy_version,ready,verified_sha,input_json,failures_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(readiness.contentDigest, changeId, generation, readiness.policyVersion, readiness.ready ? 1 : 0, readiness.ready ? readiness.verifiedSha : null, JSON.stringify(input), JSON.stringify(readiness.ready ? [] : readiness.failures), readiness.checkedAt);
-        this.deps.db.prepare(`UPDATE control_proposals SET generation=?,pr_number=?,pr_url=?,published_sha=?,readiness_digest=?,spend_usd=?,terminal_summary=?,updated_at=? WHERE run_id=?`).run(generation, input.pullRequest.number ?? null, input.pullRequest.url ?? null, input.publication?.sha ?? null, readiness.contentDigest, input.spendUsd, readiness.ready ? null : `Readiness failed: ${readiness.failures.join(", ")}`, at, changeId);
+        this.deps.db.prepare(`UPDATE control_proposals SET generation=?,pr_number=?,pr_url=?,published_sha=?,readiness_digest=?,spend_usd=?,terminal_summary=?,updated_at=? WHERE run_id=?`).run(generation, input.pullRequest.number ?? null, input.pullRequest.url ?? null, input.publication?.sha ?? null, readiness.contentDigest, input.spendUsd, readinessTerminalSummary(input, readiness), at, changeId);
         const changed = this.deps.db.prepare(`UPDATE control_runs SET state=?,version=version+1,updated_at=?,terminal_code=? ,pull_request_url=COALESCE(?,pull_request_url) WHERE id=? AND state='autonomous_run' AND version=?`).run(readiness.ready ? "pr_ready" : "failed", at, readiness.ready ? null : (readiness.failures[0] ?? "readiness_failed"), input.pullRequest.url ?? null, changeId, Number(live.version));
         if (Number(changed.changes) !== 1)
             throw new Error(`stale_write:${changeId}`);
@@ -399,7 +422,7 @@ export class ControlPlaneService {
         throw new ControlError(operation === "merge_change" ? "merge_attestation_required" : "confirmation_attestation_required", "An independently verified host attestation is required."); return att; }
     consumeAttestation(id, att, now) { const attestationId = randomUUID(); this.deps.db.prepare(`INSERT INTO control_host_attestations (id,run_id,operation_kind,provenance,actor_identity,conversation_identity,host_event_id,nonce,binding_digest,issued_at,expires_at,consumed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(attestationId, id, att.operation, att.provenance, att.actorIdentity, att.conversationIdentity, att.hostEventId, att.nonce, att.bindingDigest, att.issuedAt, att.expiresAt, now); return attestationId; }
     confirmBindingDigest(id, att) { const run = this.deps.repository.getRun(id); const p = this.proposal(id); if (!run || !p)
-        return ""; const reviewDigest = controlDigest(CONFIRM_DOMAIN, { changeId: id, version: run.version, requesterId: run.requesterId, conversationId: run.conversationId, repository: run.repository, baseRef: run.baseRef, authorityEnvelope: run.authorityEnvelope, proposal: { generation: p.generation, confirmable: p.confirmable, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: JSON.parse(p.scope_json), excludedScope: JSON.parse(p.excluded_scope_json), credentialRouteDigest: p.credential_route_digest, securityClass: p.security_class, assumptions: JSON.parse(p.assumptions_json), expiresAt: p.proposal_expires_at, policyVersion: p.policy_version, minimumRuntimeVersion: p.minimum_runtime_version, createdAt: p.created_at } }); return att ? confirmationAttestationDigest(reviewDigest, att) : reviewDigest; }
+        return ""; const reviewDigest = controlDigest(CONFIRM_DOMAIN, { changeId: id, version: run.version, requesterId: run.requesterId, conversationId: run.conversationId, repository: run.repository, baseRef: run.baseRef, authorityEnvelope: run.authorityEnvelope, proposal: { generation: p.generation, confirmable: p.confirmable, baseRevision: p.base_revision, brief: JSON.parse(p.brief_json), scope: JSON.parse(p.scope_json), excludedScope: JSON.parse(p.excluded_scope_json), requiredRemoteChecks: JSON.parse(p.required_remote_checks_json), credentialRouteDigest: p.credential_route_digest, securityClass: p.security_class, assumptions: JSON.parse(p.assumptions_json), expiresAt: p.proposal_expires_at, policyVersion: p.policy_version, minimumRuntimeVersion: p.minimum_runtime_version, createdAt: p.created_at } }); return att ? confirmationAttestationDigest(reviewDigest, att) : reviewDigest; }
     mergeBindingDigest(id, att) { const run = this.deps.repository.getRun(id); const p = this.proposal(id); if (!run || !p)
         return ""; return controlDigest(MERGE_DOMAIN, { changeId: id, version: run.version, repository: run.repository, baseRef: run.baseRef, prNumber: p.pr_number, publishedSha: p.published_sha, readinessDigest: p.readiness_digest, actorIdentity: att.actorIdentity, conversationIdentity: att.conversationIdentity, hostEventId: att.hostEventId, nonce: att.nonce, issuedAt: att.issuedAt, expiresAt: att.expiresAt }); }
     summary(state) { return state === "awaiting_confirmation" ? "Ready for confirmation." : state === "autonomous_run" ? "The change is in progress." : state === "pr_ready" ? "The pull request is ready." : state === "done" ? "The pull request was merged." : "The change did not complete."; }

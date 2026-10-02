@@ -644,7 +644,7 @@ export function validatePlan(plan, config) {
             }
         }
         for (const check of task.requiredBehaviorChecks ?? []) {
-            if (!check.id?.trim() || !check.ciCheck?.trim()) {
+            if (!check.id?.trim() || (!check.ciCheck?.trim() && !check.command?.trim())) {
                 throw new LeadPlanValidationError(`sub-task ${task.seq} has an invalid requiredBehaviorCheck`);
             }
         }

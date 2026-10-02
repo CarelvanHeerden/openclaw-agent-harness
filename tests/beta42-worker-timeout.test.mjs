@@ -18,7 +18,7 @@ test("beta42: elapsed execution beyond the confirmed limit fails readiness", () 
 });
 
 test("beta42: engine throws become a terminal failed run and failed dispatch", () => {
-  assert.match(service, /reason:"execution_failed",terminalCode:"execution_failed"/);
+  assert.match(service, /reason:executionFailureCode\(error\),terminalCode:executionFailureCode\(error\)/);
   assert.match(service, /SET status='failed',last_error=/);
-  assert.match(service, /terminal_summary='The change did not complete\.'/);
+  assert.match(service, /terminal_summary=\?,updated_at=\?/);
 });

@@ -624,10 +624,10 @@ export function buildArtifactSubstitutionAmendment(input: {
     const criteria = revised.successCriteria.join("\n");
     const checks = [];
     if (/\b(?:typecheck|tsc\b|typescript)\b/i.test(criteria)) {
-      checks.push({ id: "typecheck", ciCheck: "typecheck", required: true });
+      checks.push({ id: "typecheck", command: "npm run typecheck", required: true });
     }
     if (/\b(?:security\s+tests?|focused\s+tests?|test\s+suite|tests?\s+pass)\b/i.test(criteria)) {
-      checks.push({ id: "focused-security-tests", ciCheck: "test", required: true });
+      checks.push({ id: "focused-security-tests", command: "npm test", required: true });
     }
     if (checks.length > 0) {
       revised.requiredBehaviorChecks = checks;

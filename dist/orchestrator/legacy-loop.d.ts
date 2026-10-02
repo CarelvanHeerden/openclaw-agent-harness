@@ -664,7 +664,7 @@ export interface OrchestratorDeps {
          * instead -- a real verdict over everything Actions ran, blind to any
          * third-party GitHub App check run. Absent is treated as `check_runs`.
          */
-        checksSource?: "check_runs" | "workflow_runs" | "";
+        checksSource?: "check_runs" | "graphql_rollup" | "workflow_runs" | "";
     }>;
     /**
      * beta.81 (Track B / B2): on CI `failure`, fetch a short excerpt of the

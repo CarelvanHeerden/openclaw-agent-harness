@@ -25,6 +25,7 @@ import { runningSessionIds } from "./orchestrator/loop.js";
 import { createVerifyProbes } from "./orchestrator/verify-probes.js";
 import { blocksMerge, classifyFinding, normaliseSeverity } from "./orchestrator/finding-classify.js";
 import { deriveMergeRecommendation } from "./orchestrator/merge-recommendation.js";
+import { resolveTrustedCiEvidence } from "./orchestrator/ci-authority.js";
 import { prLabelsFor } from "./orchestrator/pr-labels.js";
 import { PrMergedWatcher } from "./adapters/github-watcher.js";
 import { BudgetEnforcer } from "./budgets/enforcer.js";
@@ -51,7 +52,7 @@ import { catalogueStore } from "./state/price-cache.js";
 import { memoiseSuccess } from "./adapters/shared/once.js";
 import { GitAdapter } from "./adapters/git-worktree.js";
 import { buildScoutSystemPrompt, buildScoutUserMessage, SCOUT_ALLOWED_TOOLS, SCOUT_DENIED_TOOLS, SCOUT_MAX_TURNS, } from "./orchestrator/lead-scout.js";
-import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getMergeBase, getTokenScopes, listPullRequestCommits, mergePullRequest, postPrComment } from "./adapters/github.js";
+import { createPullRequest, getPullRequest, getCombinedStatus, getCiSnapshot, getFailingCheckLogs, getMergeBase, getRequiredChecksPolicy, getTokenScopes, listPullRequestCommits, mergePullRequest, postPrComment } from "./adapters/github.js";
 import { getGitLabCiSnapshot, getGitLabMergeRequest, getGitLabMergeRequestFiles, getGitLabRevision, mergeGitLabMergeRequest } from "./adapters/gitlab.js";
 import { linkPullRequest } from "./orchestrator/pr-link.js";
 import { canPushWorkflows } from "./orchestrator/workflow-scope.js";
@@ -1719,7 +1720,7 @@ function bootstrapHarnessSync(api) {
                     return payload.sha.toLowerCase();
                 })();
             return { repositoryIdentity: repository.toLowerCase(), baseRef: ref, baseRevision, credentialRoute: controlCredentialRoute(route),
-                policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v3", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" };
+                policyDigest: createHash("sha256").update(JSON.stringify({ contract: "control-plane-contract/v4", allowedRepos: config.repos?.allowed ?? [], baseRef: ref })).digest("hex"), securityClass: "medium" };
         },
         executeEngine: async (change) => {
             change.assertCurrent();
@@ -1796,6 +1797,33 @@ function bootstrapHarnessSync(api) {
                 route = boundRoute;
                 return { route: boundRoute, token: await resolveGitToken(boundRoute) };
             };
+            if (change.requiredRemoteChecks.length > 0) {
+                const credential = await boundProviderCredential("test");
+                const baseCi = credential.route.provider === "gitlab"
+                    ? await getGitLabCiSnapshot({ repoFullName: change.repositoryIdentity, sha: change.baseRevision, token: credential.token, apiBase: credential.route.apiBase })
+                    : await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: change.baseRevision, ghToken: credential.token, apiBase: credential.route.apiBase });
+                const basePolicy = credential.route.provider === "gitlab"
+                    ? { status: "readable", requiredChecks: [], requiredCheckBindings: [], detail: "GitLab exact-base pipeline evidence." }
+                    : await getRequiredChecksPolicy({ repoFullName: change.repositoryIdentity, baseBranch: change.baseRef, ghToken: credential.token, apiBase: credential.route.apiBase });
+                const baseObserved = [...new Set([...(baseCi.statusNames ?? []), ...baseCi.checkNames])];
+                const explicitEvidence = resolveTrustedCiEvidence({
+                    policyStatus: basePolicy.status,
+                    policyChecks: basePolicy.requiredChecks,
+                    policyBindings: basePolicy.requiredCheckBindings,
+                    observedChecks: baseObserved,
+                    observedBindings: [
+                        ...(baseCi.statusBindings ?? []),
+                        ...(baseCi.checkBindings ?? []),
+                    ],
+                    explicitChecks: change.requiredRemoteChecks,
+                    providerState: baseCi.state === "success" ? "success" : baseCi.state === "failure" ? "failure" : baseCi.state === "pending" ? "pending" : "indeterminate",
+                });
+                const missingExplicit = change.requiredRemoteChecks.filter((required) => !explicitEvidence.successfulChecks.includes(required));
+                if (basePolicy.status !== "readable")
+                    throw new Error(`explicit_ci_policy_indeterminate: ${basePolicy.detail}`);
+                if (missingExplicit.length > 0)
+                    throw new Error(`explicit_ci_requirement_not_found: ${missingExplicit.join(", ")}`);
+            }
             authorize({ kind: "implementation_choice", action: "implement", paths: [], projectedBudgetUsd: 0, projectedActiveTimeMs: 0, projectedCycles: 0, projectedRetries: 0 });
             const now = Date.now();
             const controlledBrief = { ...change.brief, repoHint: change.repositoryIdentity, filesLikelyTouched: [...change.scope], outOfScope: [...change.excludedScope],
@@ -1839,6 +1867,9 @@ function bootstrapHarnessSync(api) {
             const ci = ciCredential.route.provider === "gitlab"
                 ? await getGitLabCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, token: ciCredential.token, apiBase: ciCredential.route.apiBase })
                 : await getCiSnapshot({ repoFullName: change.repositoryIdentity, sha: pr.headSha, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
+            const ciPolicy = ciCredential.route.provider === "gitlab"
+                ? { status: "readable", requiredChecks: [], requiredCheckBindings: [], source: "gitlab_pipeline", detail: "GitLab pipeline policy is represented by exact-SHA pipeline evidence." }
+                : await getRequiredChecksPolicy({ repoFullName: change.repositoryIdentity, baseBranch: pr.baseBranch, ghToken: ciCredential.token, apiBase: ciCredential.route.apiBase });
             const findingsJson = review?.findings ?? "[]";
             const findings = JSON.parse(findingsJson);
             const reviewVerdict = review?.verdict === "pass" || review?.verdict === "revise" || review?.verdict === "block"
@@ -1936,12 +1967,25 @@ function bootstrapHarnessSync(api) {
                 repoHasTestScript: true,
                 hasDeclaredGenerators: !resolveGenerators(config.verify?.generators).empty,
             }))).length;
-            const ciStatus = ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : undefined;
+            const observedChecks = [...new Set([...(ci.statusNames ?? []), ...ci.checkNames])];
+            const observedBindings = [
+                ...(ci.statusBindings ?? []),
+                ...(ci.checkBindings ?? []),
+            ];
+            const trustedCi = resolveTrustedCiEvidence({
+                policyStatus: ciPolicy.status,
+                policyChecks: ciPolicy.requiredChecks,
+                policyBindings: ciPolicy.requiredCheckBindings,
+                observedChecks,
+                observedBindings,
+                explicitChecks: change.requiredRemoteChecks,
+                providerState: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate",
+            });
             const refreshedRecommendation = deriveMergeRecommendation({
                 review: reviewBound ? { verdict: reviewVerdict, findings } : undefined,
                 reachedCleanPass: reviewBound && reviewVerdict === "pass" && blockingFindings === 0,
                 blockingFindings,
-                ciStatus,
+                ciStatus: trustedCi.status === "indeterminate" ? undefined : trustedCi.status,
             });
             state.db.prepare(`UPDATE sessions SET merge_recommendation=?,merge_recommendation_reason=?,updated_at=? WHERE id=?`)
                 .run(refreshedRecommendation.recommendation, refreshedRecommendation.reason, Date.now(), change.changeId);
@@ -1950,7 +1994,7 @@ function bootstrapHarnessSync(api) {
                 candidateSha: String(row.published_sha),
                 reviewVerdict,
                 reviewBound,
-                ciStatus: ciStatus ?? "indeterminate",
+                ciStatus: trustedCi.status,
                 recommendation: refreshedRecommendation.recommendation,
                 reason: refreshedRecommendation.reason,
             }, change.changeId);
@@ -1980,8 +2024,17 @@ function bootstrapHarnessSync(api) {
                 candidateSha: String(row.published_sha), publication: { sha: String(row.published_sha), observedAt: publicationObservedAt },
                 pullRequest: { repository: change.repositoryIdentity, baseRef: pr.baseBranch, headSha: pr.headSha, open: pr.state === "open" && !pr.merged, number: Number(row.pr_number), url: String(row.final_pr_url) },
                 expectedRepository: change.repositoryIdentity, expectedBaseRef: change.baseRef,
-                requiredCi: { registered: ci.statusReadable && ci.checksReadable && ci.checkNames.length > 0, requiredChecks: ci.checkNames, successfulChecks: ci.state === "success" ? ci.checkNames : [], sha: pr.headSha,
-                    status: ci.state === "success" ? "success" : ci.state === "failure" ? "failure" : ci.state === "pending" ? "pending" : "indeterminate" },
+                requiredCi: {
+                    registered: trustedCi.registered,
+                    requiredChecks: trustedCi.requiredChecks,
+                    successfulChecks: trustedCi.successfulChecks,
+                    observedChecks,
+                    policySource: ciPolicy.source,
+                    policyStatus: ciPolicy.status,
+                    policyDetail: ciPolicy.detail,
+                    sha: pr.headSha,
+                    status: trustedCi.status,
+                },
                 runtimeEvidence,
                 securityEvidence: { status: !securityReceiptExact || !secretScanComplete ? "indeterminate" : reviewBound && reviewVerdict === "pass" && !hasSecurityFinding && !secretScan.found ? "pass" : "fail", sha: String(row.published_sha), ...(securityReceiptExact ? { observedAt: securityReceipt.observed_at } : {}) }, elapsedTimeMs: Number(row.updated_at) - Number(row.created_at), timeLimitMs: change.timeLimitSeconds * 1000, readinessTimeoutMs: config.control.readiness_timeout_seconds * 1000,
                 changedPaths, allowedScope: change.scope, excludedScope: change.excludedScope,

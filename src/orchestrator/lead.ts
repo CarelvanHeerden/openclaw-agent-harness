@@ -141,8 +141,9 @@ export interface ObserveContract {
 
 export interface RequiredBehaviorCheck {
   id: string;
-  /** CI check/job whose green conclusion proves this behavior on candidateSha. */
-  ciCheck: string;
+  /** Legacy planner hint only. Never authoritative remote CI policy. */
+  ciCheck?: string;
+  /** Advisory repository-local verification command. */
   command?: string;
   required?: boolean;
 }
@@ -1130,7 +1131,7 @@ export function validatePlan(
       }
     }
     for (const check of task.requiredBehaviorChecks ?? []) {
-      if (!check.id?.trim() || !check.ciCheck?.trim()) {
+      if (!check.id?.trim() || (!check.ciCheck?.trim() && !check.command?.trim())) {
         throw new LeadPlanValidationError(`sub-task ${task.seq} has an invalid requiredBehaviorCheck`);
       }
     }

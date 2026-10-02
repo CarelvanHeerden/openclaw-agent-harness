@@ -5,7 +5,7 @@ import type { InternalMergeService } from "./merge.js";
 import type { ControlRepository, RunLease } from "./repository.js";
 import type { ControlRun } from "./types.js";
 import { type PrReadinessInput } from "./readiness.js";
-export declare const CONTROL_PLANE_CONTRACT_VERSION = "control-plane-contract/v3";
+export declare const CONTROL_PLANE_CONTRACT_VERSION = "control-plane-contract/v4";
 export declare const CONFIRM_DOMAIN = "control-plane-confirm/v2";
 export declare const MERGE_DOMAIN = "control-plane-merge/v2";
 export type ControlOperation = "confirm_change" | "merge_change";
@@ -32,6 +32,7 @@ export interface PrepareChangeInput {
     baseRef?: string;
     scope?: string[];
     excludedScope?: string[];
+    requiredRemoteChecks?: string[];
     budgetUsd?: number;
     timeLimitSeconds?: number;
 }
@@ -66,6 +67,7 @@ export interface ExecuteControlInput {
     scope: readonly string[];
     excludedScope: readonly string[];
     credentialRouteDigest: string;
+    requiredRemoteChecks: readonly string[];
     lease: RunLease;
     assertCurrent: () => void;
     checkpoint: (sha: string, payloadDigest: string) => void;

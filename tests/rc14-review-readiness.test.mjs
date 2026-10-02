@@ -143,6 +143,6 @@ test("review binding columns migrate durably onto existing state stores",()=>{
     for(const name of ["base_sha","candidate_sha","findings_digest","review_digest","completed"])assert.ok(columns.has(name),name);
     const sessionColumns=new Set(store.db.prepare("PRAGMA table_info(sessions)").all().map((row)=>row.name));
     assert.ok(sessionColumns.has("final_review_cycle"));
-    assert.equal(store.db.prepare("SELECT value FROM control_metadata WHERE key='control_plane_schema_version'").get().value,"12");
+    assert.equal(store.db.prepare("SELECT value FROM control_metadata WHERE key='control_plane_schema_version'").get().value,"13");
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });

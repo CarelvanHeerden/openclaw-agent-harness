@@ -62,19 +62,22 @@ Success returns a single review object:
   "baseRevision": "0123456789abcdef…",
   "scope": ["src/**", "tests/**"],
   "excludedScope": ["secrets/**"],
+  "requiredRemoteChecks": [],
   "allowedActions": ["implement", "retry", "repair", "test", "commit", "push_feature_branch", "open_pull_request", "update_pull_request", "deploy"],
   "budget": { "currency": "USD", "maximum": "12.00" },
   "timeLimitSeconds": 3600,
   "limits": { "cycles": 3, "retries": 10 },
   "risk": "medium",
   "assumptions": [],
-  "contract": { "policyVersion": "control-plane-contract/v3", "minimumRuntimeVersion": "2.0.0-rc.14" },
+  "contract": { "policyVersion": "control-plane-contract/v4", "minimumRuntimeVersion": "2.0.0-rc.14" },
   "confirmation": {
     "expiresAt": "2026-09-24T08:33:00.000Z",
     "reviewDigest": "0123456789abcdef…"
   }
 }
 ```
+
+`requiredRemoteChecks` is empty unless the user explicitly names an additional remote check in the confirmed request. It is shown in the approval review and bound into the confirmation digest. Planner suggestions never populate or widen it; repository-required checks come from provider rules and exact-SHA evidence.
 
 The persisted and reviewed brief schema is exactly:
 

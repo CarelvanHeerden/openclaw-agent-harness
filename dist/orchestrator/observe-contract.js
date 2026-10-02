@@ -80,7 +80,8 @@ function contractPatch(binding) {
             !value.requiredBehaviorChecks.every((check) => check &&
                 typeof check === "object" &&
                 typeof check.id === "string" &&
-                typeof check.ciCheck === "string")))
+                (typeof check.ciCheck === "string" ||
+                    typeof check.command === "string"))))
         return undefined;
     return value;
 }

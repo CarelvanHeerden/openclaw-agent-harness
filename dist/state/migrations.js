@@ -466,6 +466,13 @@ UPDATE control_metadata SET value='11',updated_at=CAST(strftime('%s','now') AS I
 UPDATE control_metadata SET value='12',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
 `,
     }),
+    Object.freeze({
+        id: "20261002_013_explicit_remote_checks",
+        sql: `
+ALTER TABLE control_proposals ADD COLUMN required_remote_checks_json TEXT NOT NULL DEFAULT '[]';
+UPDATE control_metadata SET value='13',updated_at=CAST(strftime('%s','now') AS INTEGER)*1000 WHERE key='control_plane_schema_version';
+`,
+    }),
 ]);
 function terminaliseLegacyControlChanges(db) {
     const present = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='control_changes'").get();

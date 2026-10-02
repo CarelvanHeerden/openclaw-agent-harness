@@ -138,8 +138,9 @@ export interface ObserveContract {
 }
 export interface RequiredBehaviorCheck {
     id: string;
-    /** CI check/job whose green conclusion proves this behavior on candidateSha. */
-    ciCheck: string;
+    /** Legacy planner hint only. Never authoritative remote CI policy. */
+    ciCheck?: string;
+    /** Advisory repository-local verification command. */
     command?: string;
     required?: boolean;
 }

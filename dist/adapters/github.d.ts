@@ -158,6 +158,11 @@ export interface CiSnapshot {
     /** Legacy Statuses API. */
     statusState: string;
     statusCount: number;
+    statusNames: string[];
+    statusBindings: Array<{
+        context: string;
+        appId?: number;
+    }>;
     /** Check Runs API. */
     checkTotal: number;
     checkIncomplete: number;
@@ -166,6 +171,10 @@ export interface CiSnapshot {
     checkPassed: number;
     /** Names of check runs/workflows observed on this exact SHA. */
     checkNames: string[];
+    checkBindings: Array<{
+        context: string;
+        appId?: number;
+    }>;
     /** Which rule produced `state`, for the audit trail. */
     reason: string;
     /**
@@ -188,8 +197,26 @@ export interface CiSnapshot {
      * ran is accounted for, and a check run created by a third-party GitHub App
      * is not visible. Callers that report a green must say which one they had.
      */
-    checksSource: "check_runs" | "workflow_runs" | "";
+    checksSource: "check_runs" | "graphql_rollup" | "workflow_runs" | "";
 }
+export interface RequiredChecksPolicy {
+    status: "readable" | "denied" | "indeterminate";
+    requiredChecks: string[];
+    requiredCheckBindings: Array<{
+        context: string;
+        appId?: number;
+    }>;
+    source: "github_branch_rules";
+    detail: string;
+}
+/** Resolve provider-owned required status contexts for one target branch. */
+export declare function getRequiredChecksPolicy(input: {
+    repoFullName: string;
+    baseBranch: string;
+    ghToken: string;
+    apiBase?: string;
+    signal?: AbortSignal;
+}): Promise<RequiredChecksPolicy>;
 /**
  * beta.34: combined CI status for a commit SHA, merging the legacy Statuses API
  * and the Check Runs API into one verdict.

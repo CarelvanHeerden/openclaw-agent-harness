@@ -46,6 +46,7 @@ const PREPARE_SCHEMA = {
         baseRef: { type: "string", minLength: 1, maxLength: 240 },
         scope: { type: "array", maxItems: 200, description: "Repository-relative paths the user authorized this change to touch.", items: { type: "string", minLength: 1, maxLength: 500 } },
         excludedScope: { type: "array", maxItems: 200, description: "Repository-relative paths or areas the user excluded. Never silently drop a negative instruction.", items: { type: "string", minLength: 1, maxLength: 500 } },
+        requiredRemoteChecks: { type: "array", maxItems: 100, description: "Exact remote check names the user explicitly required in ordinary language. Never infer, rename, or add planner-suggested checks.", items: { type: "string", minLength: 1, maxLength: 240 } },
         budgetUsd: { type: "number", exclusiveMinimum: 0, description: "Dollar limit interpreted from the user's words; omit only when the user gave no limit." },
         timeLimitSeconds: { type: "integer", minimum: 60, description: "Active execution duration interpreted from the user's words. Waiting for approval does not consume it." },
     },

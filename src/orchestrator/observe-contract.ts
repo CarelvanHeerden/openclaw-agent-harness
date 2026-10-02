@@ -128,7 +128,10 @@ function contractPatch(binding: ObserveBindingResult): ObserveContractPatch | un
         check &&
         typeof check === "object" &&
         typeof (check as { id?: unknown }).id === "string" &&
-        typeof (check as { ciCheck?: unknown }).ciCheck === "string"
+        (
+          typeof (check as { ciCheck?: unknown }).ciCheck === "string" ||
+          typeof (check as { command?: unknown }).command === "string"
+        )
       ))
   ) return undefined;
   return value as ObserveContractPatch;
